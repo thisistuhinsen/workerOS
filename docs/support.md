@@ -66,6 +66,14 @@ children. The samples are point observations. Independent custody, activity
 between samples, other descendants, and whole-scope cleanup remain unmeasured.
 Native Windows CI checks the installation and import boundary.
 
+The overlap fixture keeps handoff and reap evidence separate from qualification
+reports. Missing, unavailable, or wrong-run reports leave the requested
+custody or whole-scope coverage unverified. A positive combined qualification
+would need a qualified independent custody source and a meter reporting begin
+and end for the same declared execution scope. The
+[strict sealed-file fixture](../scripts/check-strict-custody-linux.py) covers
+independent custody for one sealed, read-only grant.
+
 ## Choosing an inherited reader
 
 The reader packages never launch workers. All use positional reads; none
