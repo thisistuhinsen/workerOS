@@ -298,10 +298,10 @@ def trial(case, account):
         print(f"PASS strict custody {case}")
 
 
-def main(account_name):
+def main(account_name, expected_version):
     assert sys.platform == "linux" and os.getresuid() == (0, 0, 0)
     assert Path(worker_handoff.__file__).resolve().is_relative_to(Path(sys.prefix).resolve())
-    assert version("worker-handoff") == "0.3.0"
+    assert version("worker-handoff") == expected_version
     account = pwd.getpwnam(account_name)
     assert account.pw_uid != 0 and account.pw_gid != 0
     for case in ("positive", "missing", "mock", "wrong-scope", "prior-writer"):

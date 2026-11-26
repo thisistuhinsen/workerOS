@@ -30,12 +30,11 @@ jobs:
           stage=$(sudo -n mktemp -d /tmp/worker-handoff-strict.XXXXXXXX)
           trap 'sudo -n rm -rf -- "$stage"; rm -rf -- "$built"' EXIT
 
+          version=$("$python_path" -I -c 'import tomllib; print(tomllib.load(open("pyproject.toml", "rb"))["project"]["version"])')
           "$python_path" -m pip wheel --no-deps . -w "$built"
-          wheels=("$built"/worker_handoff-0.3.0-*.whl)
-          [[ ${#wheels[@]} == 1 && -f ${wheels[0]} ]]
-          wheel=${wheels[0]##*/}
-          digest=$(sha256sum "${wheels[0]}" | cut -d ' ' -f 1)
-          sudo -n install -m 0644 "${wheels[0]}" "$stage/$wheel"
+          wheel="worker_handoff-${version}-py3-none-any.whl"
+          digest=$(sha256sum "$built/$wheel" | cut -d ' ' -f 1)
+          sudo -n install -m 0644 "$built/$wheel" "$stage/$wheel"
           sudo -n install -m 0644 scripts/check-strict-custody-linux.py "$stage/fixture.py"
           sudo -n chmod 0755 "$stage"
           printf '%s  %s\n' "$digest" "$stage/$wheel" | sha256sum --check --status
@@ -43,4 +42,4 @@ jobs:
 
           sudo -n "$python_path" -m venv "$stage/venv"
           sudo -n "$stage/venv/bin/python" -I -m pip install --no-index --no-deps "$stage/$wheel"
-          sudo -n "$stage/venv/bin/python" -I "$stage/fixture.py" check nobody
+          sudo -n "$stage/venv/bin/python" -I "$stage/fixture.py" check nobody "$version"

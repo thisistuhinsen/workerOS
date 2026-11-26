@@ -12,8 +12,6 @@ import sys
 from tempfile import TemporaryDirectory
 from time import monotonic_ns
 
-import worker_handoff
-
 
 EXAMPLES = Path(__file__).resolve().parent
 LANGUAGES = {
@@ -118,9 +116,19 @@ def run_worker(language, argv, fd, roster):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--language", action="append", choices=LANGUAGES,
-                        help="run this language (repeat to select several, defaults to all)")
+                        help="require this example to pass (repeat to select several, defaults to discovery)")
     args = parser.parse_args()
     selected = set(args.language or LANGUAGES)
+    required = args.language is not None
+    if sys.platform != "linux":
+        for language, label in LANGUAGES.items():
+            target = "64-bit Linux" if language == "java" else "Linux"
+            reason = f"{target} required" if language in selected else "language was not selected"
+            print(f"{label}: SKIPPED ({reason})", flush=True)
+        return int(required)
+
+    import worker_handoff
+
     print(f"worker-handoff {version('worker-handoff')} from {worker_handoff.__file__}", flush=True)
 
     failed = False
@@ -134,14 +142,15 @@ def main():
                 if language not in selected:
                     print(f"{label}: SKIPPED (language was not selected)", flush=True)
                     continue
-                if sys.platform != "linux" or (language == "java" and struct.calcsize("P") != 8):
-                    target = "64-bit Linux" if language == "java" else "Linux"
-                    print(f"{label}: SKIPPED ({target} required)", flush=True)
+                if language == "java" and struct.calcsize("P") != 8:
+                    failed = failed or required
+                    print(f"{label}: SKIPPED (64-bit Linux required)", flush=True)
                     continue
                 try:
                     command = worker_command(language, output)
                     run_worker(language, command, file.fileno(), roster)
                 except ToolchainUnavailable as error:
+                    failed = failed or required
                     print(f"{label}: UNAVAILABLE ({error})", flush=True)
                 except (OSError, RuntimeError, subprocess.SubprocessError) as error:
                     failed = True
