@@ -1,0 +1,154 @@
+name: WorkerOS synthetic serial fixture
+
+'on':
+  push:
+    branches:
+      - fixture/ubuntu24-serial-01
+    paths:
+      - .github/workflows/ubuntu24-serial-fixture.yml
+      - tests/hosted/serial_fixture_ubuntu24.py
+
+permissions: {}
+
+concurrency:
+  group: workeros-ubuntu24-serial-fixture
+  cancel-in-progress: false
+
+jobs:
+  synthetic-fixture:
+    if: >-
+      ${{
+        github.event_name == 'push' &&
+        github.repository == 'thisistuhinsen/workerOS' &&
+        github.ref == 'refs/heads/fixture/ubuntu24-serial-01' &&
+        github.event.deleted == false &&
+        github.event.after == github.sha &&
+        github.run_attempt == '1'
+      }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 8
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout exact synthetic fixture revision
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+          fetch-depth: 1
+          path: fixture-source
+          sparse-checkout-cone-mode: false
+          sparse-checkout: /tests/hosted/serial_fixture_ubuntu24.py
+
+      - name: Checkout exact public package source
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: 193004b72d03f06b8acd5f600ffaed6b3ab48afd
+          persist-credentials: false
+          fetch-depth: 1
+          path: runtime-source
+
+      - name: Verify venue and source
+        shell: bash
+        env:
+          WORKEROS_RUNNER_ENVIRONMENT: ${{ runner.environment }}
+        run: |
+          refuse() {
+            printf 'workerOS fixture preflight refused: %s\n' "$1" >&2
+            exit 1
+          }
+
+          test "$WORKEROS_RUNNER_ENVIRONMENT" = github-hosted || refuse runner_not_github_hosted
+          test "$(/usr/bin/git -C "$GITHUB_WORKSPACE/fixture-source" rev-parse HEAD)" = "$GITHUB_SHA" \
+            || refuse fixture_checkout_sha_mismatch
+          runtime="$GITHUB_WORKSPACE/runtime-source"
+          test "$(git -C "$runtime" rev-parse HEAD)" = 193004b72d03f06b8acd5f600ffaed6b3ab48afd \
+            || refuse package_checkout_sha_mismatch
+          test "$(git -C "$runtime" rev-parse HEAD^{tree})" = 3bd3bb25909f649c84dcedb1410e6f8c92a3dd66 \
+            || refuse package_tree_mismatch
+          grep -Fxq 'ID=ubuntu' /etc/os-release || refuse expected_ubuntu
+          grep -Fxq 'VERSION_ID="24.04"' /etc/os-release || refuse expected_ubuntu_2404
+          test "$(< /proc/1/comm)" = systemd || refuse expected_systemd_pid_1
+          version="$(/usr/bin/systemctl --system --no-ask-password show --property=Version --value)" \
+            || refuse unavailable_system_manager
+          case "$version" in
+            255.*|255-*) ;;
+            *) refuse expected_systemd_255 ;;
+          esac
+          cgroup_mount="$(/usr/bin/findmnt -nr -o FSTYPE,VFS-OPTIONS --mountpoint /sys/fs/cgroup)" \
+            || refuse unavailable_cgroup_mount
+          case "$cgroup_mount" in
+            "cgroup2 rw"|"cgroup2 rw,"*) ;;
+            *) refuse expected_writable_cgroup_v2 ;;
+          esac
+          for controller in cpu memory pids; do
+            grep -Fwq "$controller" /sys/fs/cgroup/cgroup.subtree_control \
+              || refuse "root_controller_not_enabled_$controller"
+          done
+          /usr/bin/python3 -I -B -c 'import ensurepip, venv' || refuse unavailable_offline_venv
+          printf 'workerOS fixture venue: Ubuntu 24.04; systemd %s; cgroup v2\n' "$version"
+
+      - name: Build the pinned public wheel
+        shell: bash
+        run: |
+          umask 022
+          export SOURCE_DATE_EPOCH=1795651200 TZ=UTC LC_ALL=C PYTHONDONTWRITEBYTECODE=1
+          work="$RUNNER_TEMP/worker-handoff-public-build"
+          mkdir -p "$work/source" "$work/extract"
+          git -C "$GITHUB_WORKSPACE/runtime-source" -c tar.umask=0022 archive HEAD \
+            | tar -xf - -C "$work/source"
+          /usr/bin/python3 -m venv "$work/build-env"
+          build_python="$work/build-env/bin/python"
+          "$build_python" -I -m pip --disable-pip-version-check install --no-deps \
+            'build==1.3.0' 'setuptools==80.10.2' 'wheel==0.45.1' \
+            'packaging==26.4' 'pyproject_hooks==1.3.3'
+          "$build_python" -I -m build --sdist --no-isolation --outdir "$work" "$work/source"
+          tar -xzf "$work/worker_handoff-0.5.0.tar.gz" -C "$work/extract"
+          "$build_python" -I -m build --wheel --no-isolation --outdir "$work" \
+            "$work/extract/worker_handoff-0.5.0"
+          wheel="$work/worker_handoff-0.5.0-py3-none-any.whl"
+          sha256sum "$wheel"
+          printf '%s  %s\n' 04261c977863c4c467856e2696cb470286d2f5c3d87ab9598cfad1f05e1ff1b1 "$wheel" \
+            | sha256sum --check --strict
+
+      - name: Run one offline synthetic fixture
+        shell: bash
+        run: |
+          runner="$GITHUB_WORKSPACE/fixture-source/tests/hosted/serial_fixture_ubuntu24.py"
+          wheel="$RUNNER_TEMP/worker-handoff-public-build/worker_handoff-0.5.0-py3-none-any.whl"
+          printf '%s  %s\n' 1d445aa2fa7ed49fb077d38b78f9c76e6ba5ffcb8821cd224a77559c5b2b34b4 "$runner" \
+            | sha256sum --check --strict
+          receipt_dir="$(/usr/bin/mktemp -d "$RUNNER_TEMP/workeros-fixture.XXXXXXXX")"
+          /usr/bin/timeout --signal=TERM --kill-after=20s 120s \
+            /usr/bin/sudo -n -- /usr/bin/unshare --net -- /usr/bin/env -i \
+            PATH=/usr/bin:/bin LC_ALL=C \
+            /usr/bin/python3 -I -B - "$runner" "$wheel" <<'FIXTURE_BOOTSTRAP' | /usr/bin/tee "$receipt_dir/result.json"
+          import hashlib
+          import os
+          import stat
+          import sys
+
+          runner, wheel = sys.argv[1:]
+          fd = os.open(runner, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW | os.O_NONBLOCK)
+          with os.fdopen(fd, "rb") as stream:
+              if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
+                  raise SystemExit("workerOS fixture runner must be a regular file")
+              source = stream.read(65537)
+          if hashlib.sha256(source).hexdigest() != "1d445aa2fa7ed49fb077d38b78f9c76e6ba5ffcb8821cd224a77559c5b2b34b4":
+              raise SystemExit("workerOS fixture runner digest mismatch")
+          sys.argv = [runner, "commission", wheel]
+          exec(compile(source, runner, "exec"), {
+              "__name__": "__main__", "__file__": runner, "VERIFIED_FIXTURE_SOURCE": source,
+          })
+          FIXTURE_BOOTSTRAP
+
+          /usr/bin/python3 -I -B - "$receipt_dir/result.json" <<'FIXTURE_RECEIPT'
+          import json
+          import sys
+          from pathlib import Path
+
+          receipt = json.loads(Path(sys.argv[1]).read_text())
+          expected = "synthetic_serial_qualified_and_retired"
+          if receipt.get("status") != expected or receipt.get("retired") is not True:
+              raise SystemExit("workerOS fixture completion or retirement was not verified")
+          FIXTURE_RECEIPT
