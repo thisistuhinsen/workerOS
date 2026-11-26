@@ -1,17 +1,17 @@
 # Terminal animation transcripts
 
-## One small ticket
+## Everything is green
 
-A joke about making infrastructure for a single job. The terminal lines are
-a cartoon, not literal workerOS output.
+A cartoon about mistaking a status label for an outcome. This is not literal
+workerOS output.
 
 ```text
-ticket   Run one thumbnail worker.
-meeting  Obviously, Redis.
-meeting  And a dashboard for Redis.
-meeting  The dashboard needs a worker.
-worker   thumbnail: exit 0
-ticket   Can we put the thumbnail in charge?
+lead       All three workers are green.
+dashboard  I colored the labels.
+renderer   I finished.
+sync       I timed out.
+auditor    Nobody started me. Uptime: flawless.
+lead       Promote Audit.
 ```
 
 ## Report handoff

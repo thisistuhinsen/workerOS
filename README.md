@@ -1,17 +1,18 @@
 # workerOS
 
-Starting a subprocess is easy. Keeping track of ten tools that can hang,
-exit halfway through a job, or read the wrong input is where your app starts
-growing its own process manager.
+Starting a subprocess is easy. Keeping track of a renderer, a sync job,
+and an auditor that all start and finish differently is where your app
+starts growing its own process manager. When one job times out, you need
+to know what actually happened before you retry it.
 
-workerOS gives Python apps a small, local worker layer on Linux. Run a
-callable, a renderer, or someone else's executable. Track the actual child
-and find out how it ended. Pass an open file only when the job needs one.
-You don't need to deploy a queue to make a thumbnail.
+workerOS gives Python apps a small, local worker layer on Linux. Name the
+workers and their roles, run trusted callables or executables, and supervise
+direct children. Pass an open file only when a job needs one. Start with one
+worker, or run several without wiring up a queue first.
 
-![Terminal cartoon: a request for one thumbnail worker turns into a meeting about Redis and a dashboard. The worker finishes, so the ticket asks whether the thumbnail can take charge.](docs/media/one-small-ticket.gif)
+![Terminal cartoon: The lead says all three workers are green. The dashboard says it colored the labels. The renderer finished, sync timed out, and the auditor was never started.](docs/media/one-small-ticket.gif)
 
-[Read the cartoon as text](docs/media/README.md#one-small-ticket).
+[Read the cartoon as text](docs/media/README.md#everything-is-green).
 
 - **Run a calculation or invoke a tool.** Give the worker a name and join it
   for an exit status. Use the direct-child supervisor when you need a
@@ -86,11 +87,12 @@ npm install "$release/worker-handoff-0.4.0.tgz"
 On npm 12, opt into that direct URL with `--allow-remote=all` or download the
 tarball and install it from disk.
 
-## Run a worker without a file
+## Run three workers without a file
 
 Run this with the package installed on Linux or WSL2 with pidfd support.
-The controller runs a normal local executable and waits for its exit. It
-passes no file bindings and starts no shell.
+The three tiny commands stand in for whatever tools your app already uses.
+All three start before the controller waits for any of them. No file
+bindings, shell, or queue.
 
 ```python
 import sys
@@ -100,21 +102,30 @@ from worker_handoff import DirectChildSupervisor
 
 supervisor = DirectChildSupervisor()
 deadline = monotonic_ns() + 5_000_000_000
-worker = supervisor.start_executable(
-    "quick-math", "compute",
-    [sys.executable, "-c", "print(sum(range(10)))"],
-    due_ns=deadline, env={},
-)
-result = supervisor.wait(
-    worker.name, due_ns=deadline, cleanup_due_ns=deadline + 2_000_000_000,
-)
-assert result.returncode == 0, result
+jobs = [
+    ("thumbnail", "renderer", "print(sum(range(10)))"),
+    ("catalog", "sync", "print('synced')"),
+    ("checks", "auditor", "print('audited')"),
+]
+workers = [
+    supervisor.start_executable(
+        name, role, [sys.executable, "-c", code], due_ns=deadline, env={},
+    )
+    for name, role, code in jobs
+]
+for worker in workers:
+    result = supervisor.wait(
+        worker.name, due_ns=deadline, cleanup_due_ns=deadline + 2_000_000_000,
+    )
+    print(f"{worker.name} ({worker.role}): exit {result.returncode}")
+    assert result.returncode == 0, result
 ```
 
-Expected output: `45`. The cleanup deadline applies after timeout or
-cancellation. The supervisor manages direct children it launches or is
-explicitly given control of. To run an importable Python callable instead,
-use `WorkerRoster.start`. Worker names and roles are application labels.
+Each named worker reports exit `0`. The workers' own output can arrive in
+any order. The cleanup deadline applies after timeout or cancellation. The
+supervisor manages direct children it launches or is explicitly given
+control of. To run an importable Python callable instead, use
+`WorkerRoster.start`. Worker names and roles are application labels.
 Programs still run with their existing OS permissions; workerOS doesn't
 provide a sandbox or a distributed queue. A roster keeps used names for its
 lifetime; use one roster per workload or batch if names need to be reused.
