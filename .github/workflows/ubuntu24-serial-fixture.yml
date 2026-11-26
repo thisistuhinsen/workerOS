@@ -116,7 +116,7 @@ jobs:
         run: |
           runner="$GITHUB_WORKSPACE/fixture-source/tests/hosted/serial_fixture_ubuntu24.py"
           wheel="$RUNNER_TEMP/worker-handoff-public-build/worker_handoff-0.5.0-py3-none-any.whl"
-          printf '%s  %s\n' 1d445aa2fa7ed49fb077d38b78f9c76e6ba5ffcb8821cd224a77559c5b2b34b4 "$runner" \
+          printf '%s  %s\n' cf33443d873cfcf412c491714ecc7420ea5572b50c5fb7511945ca7202e802ad "$runner" \
             | sha256sum --check --strict
           receipt_dir="$(/usr/bin/mktemp -d "$RUNNER_TEMP/workeros-fixture.XXXXXXXX")"
           /usr/bin/timeout --signal=TERM --kill-after=20s 120s \
@@ -134,7 +134,7 @@ jobs:
               if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
                   raise SystemExit("workerOS fixture runner must be a regular file")
               source = stream.read(65537)
-          if hashlib.sha256(source).hexdigest() != "1d445aa2fa7ed49fb077d38b78f9c76e6ba5ffcb8821cd224a77559c5b2b34b4":
+          if hashlib.sha256(source).hexdigest() != "cf33443d873cfcf412c491714ecc7420ea5572b50c5fb7511945ca7202e802ad":
               raise SystemExit("workerOS fixture runner digest mismatch")
           sys.argv = [runner, "commission", wheel]
           exec(compile(source, runner, "exec"), {

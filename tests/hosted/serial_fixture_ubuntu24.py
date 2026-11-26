@@ -50,6 +50,7 @@ PROVIDER_REASONS = frozenset({
     "custody_request_invalid", "custody_retirement_invalid", "expired_attempt",
     "fixture_packet_eof", "fixture_packet_invalid", "fixture_packet_peer_mismatch",
     "fixture_seed_incomplete", "input_or_execution_unavailable", "meter_phase_invalid",
+    "meter_scope_identity_mismatch", "meter_scope_local_view_unavailable",
     "meter_scope_mount_context_unavailable", "meter_scope_mount_not_visible",
     "ordinary_provider_required", "provider_outside_fixture_unit", "reader_role_not_distinct",
 })
@@ -397,6 +398,25 @@ def custodian(run_id, controller_pid):
             os.close(reader)
 
 
+@contextmanager
+def meter_scope_view(run_id, granted_fd):
+    """Open the same scope in the meter's existing read-only mount view."""
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | os.O_NOFOLLOW
+    grant = os.fstat(granted_fd)
+    with ExitStack() as stack:
+        try:
+            root_fd = os.open("/sys/fs/cgroup", flags)
+            stack.callback(os.close, root_fd)
+            view_fd = os.open(slice_name(run_id), flags, dir_fd=root_fd)
+            stack.callback(os.close, view_fd)
+        except OSError as exc:
+            raise Refused("meter_scope_local_view_unavailable") from exc
+        view = os.fstat(view_fd)
+        expect((view.st_dev, view.st_ino) == (grant.st_dev, grant.st_ino),
+               "meter_scope_identity_mismatch")
+        yield view_fd
+
+
 def meter(run_id, controller_pid):
     with role_channel(run_id, "meter", controller_pid) as control:
         binding, _, fd = receive_packet(control, (controller_pid, 0), with_fd=True)
@@ -404,7 +424,12 @@ def meter(run_id, controller_pid):
             run = RunBinding(run_id, binding["plan_digest"], binding["clock_id"],
                              binding["started_ns"], binding["finished_ns"])
             scope = EvidenceScope(run, run_id, run.started_ns, run.finished_ns)
-            with CgroupScopeMeter(scope=scope, provider_id="serial-fixture-meter", directory_fd=fd) as provider:
+            with (
+                meter_scope_view(run_id, fd) as local_fd,
+                CgroupScopeMeter(
+                    scope=scope, provider_id="serial-fixture-meter", directory_fd=local_fd,
+                ) as provider,
+            ):
                 send_packet(control, {"sample": asdict(provider.sample(ScopePhase.METER_BEGIN))})
                 done, _, _ = receive_packet(control, (controller_pid, 0))
                 expect(done == {"event": "sample_final"}, "meter_phase_invalid")
