@@ -50,8 +50,11 @@ using disposable files and owned children.
   evidence, with a metadata-only reference case when `O_PATH` is available.
 - Current-attempt receipt checks before managed write, with an observed
   uncertain write that the caller leaves pending reconciliation.
-- A completed write and sync before a read-only handoff, exact recipient EOF
-  and closure, and cleanup scoped to each owned direct child.
+- A completed write and sync before read-only handoff, with writer-slot closure
+  exercised both before and after delivery. The overlap variant samples the
+  two held slots before writer closure, then checks recipient EOF, closure and
+  separate reaps. An injected lookup failure leaves the name unknown, and an
+  injected mount mismatch leaves the slot unknown.
 
 Run `bash scripts/check-linux.sh` from the checkout to build and test the
 installed wheel. Given a verified wheel installation, use
@@ -59,9 +62,9 @@ installed wheel. Given a verified wheel installation, use
 checkout to run just these profiles.
 
 The fixtures validate recipient bytes and observe designated slots and direct
-children. Independent custody, continuous file access, other descendants, and
-whole-scope cleanup remain outside these measurements. Native Windows CI checks
-the installation and import boundary.
+children. The samples are point observations. Independent custody, activity
+between samples, other descendants, and whole-scope cleanup remain unmeasured.
+Native Windows CI checks the installation and import boundary.
 
 ## Choosing an inherited reader
 

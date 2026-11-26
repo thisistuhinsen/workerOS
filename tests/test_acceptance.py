@@ -21,6 +21,7 @@ from unittest.mock import patch
 from uuid import uuid4
 
 import worker_handoff
+import worker_handoff.lifecycle as lifecycle
 from worker_handoff import (
     CleanupStatus, DeliveryStatus, DirectChildSupervisor, EffectStatus,
     LifecycleStatus, PositionalWrite, ReleasePlan, SupervisionStartError, Worker,
@@ -346,6 +347,12 @@ class AcceptanceProfiles(TestCase):
                 self.assertFalse(marker.exists())
 
     def test_completed_write_precedes_read_and_cleanup_stays_with_each_child(self):
+        self._completed_write_and_read(hold_writer_during_delivery=False)
+
+    def test_writer_and_reader_hold_the_original_before_writer_closure(self):
+        self._completed_write_and_read(hold_writer_during_delivery=True)
+
+    def _completed_write_and_read(self, *, hold_writer_during_delivery):
         payload = b"completed write"
         path = self.tmp / "ordinary-input"
         path.write_bytes(b"old")
@@ -429,13 +436,24 @@ wait_for("exit")
         (writer_gate / "write").touch()
         self.assertEqual(int(self.note(writer_gate / "written")), len(payload))
         self.assertEqual(os.pread(ref, len(payload) + 1, 0), payload)
+        os.fsync(self.fd(path.parent, os.O_DIRECTORY | os.O_RDONLY))
         write_complete = RunEvent(writer_run, "writer", 2, started, monotonic_ns(), observations=(
             EvidenceObservation("write-complete", EvidenceState.OBSERVED),
         ))
-        (writer_gate / "close").touch()
-        self.assertEqual(self.note(writer_gate / "closed"), "writer")
-        closed, writer_closed = self.point(writer_run, writer_view, 3, "writer-slot-closed")
-        self.assertEqual((closed.process, closed.slot_match), (ProcessState.LIVE, Match.ABSENT))
+        writer_events = [writer_held, write_complete]
+
+        def close_writer():
+            (writer_gate / "close").touch()
+            self.assertEqual(self.note(writer_gate / "closed"), "writer")
+            sample, event = self.point(
+                writer_run, writer_view, len(writer_events) + 1, "writer-slot-closed",
+            )
+            self.assertEqual((sample.process, sample.slot_match), (ProcessState.LIVE, Match.ABSENT))
+            writer_events.append(event)
+            return sample
+
+        if not hold_writer_during_delivery:
+            closed = close_writer()
 
         started = monotonic_ns()
         send_original(channel, ref, peer=reader, identity=identity,
@@ -447,16 +465,33 @@ wait_for("exit")
         holding, reader_held = self.point(reader_run, reader_view, 3, "reader-slot-held")
         self.assertEqual((holding.process, holding.slot_match), (ProcessState.LIVE, Match.ORIGINAL))
         self.assertEqual(holding.flags & (getattr(os, "O_PATH", 0) | os.O_ACCMODE), os.O_RDONLY)
-        self.assertLessEqual(closed.finished_ns, dispatched.started_ns)
-        # Inject one missing lookup while the real worker holds its named slot.
-        # This leaves the fixture's permissions and the held FD alone.
-        with patch.object(reader_view, "_slot_sample", side_effect=OSError(errno.EIO, "fixture lookup")):
-            unavailable, lookup_unknown = self.point(
-                reader_run, reader_view, 4, "reader-slot-unavailable",
+        if hold_writer_during_delivery:
+            # Both children are gated before closure and before the read.
+            overlapping, writer_at_delivery = self.point(
+                writer_run, writer_view, 3, "writer-slot-after-delivery",
             )
-        self.assertEqual((unavailable.process, unavailable.slot_match, unavailable.flags),
-                         (ProcessState.LIVE, Match.UNKNOWN, None))
+            self.assertEqual((overlapping.process, overlapping.slot_match),
+                             (ProcessState.LIVE, Match.ORIGINAL))
+            self.assertEqual(overlapping.flags & (getattr(os, "O_PATH", 0) | os.O_ACCMODE),
+                             os.O_WRONLY)
+            self.assertEqual(overlapping.original, holding.original)
+            self.assertLessEqual(holding.finished_ns, overlapping.started_ns)
+            writer_events.append(writer_at_delivery)
+            lookup_unknown = self._check_unavailable_observations(reader_run, reader_view, reader, path)
+            closed = close_writer()
+            self.assertLessEqual(overlapping.finished_ns, closed.started_ns)
+        else:
+            self.assertLessEqual(closed.finished_ns, dispatched.started_ns)
+            # Inject one missing lookup while the real worker holds its named slot.
+            error = OSError(errno.EIO, "fixture lookup")
+            with patch.object(reader_view, "_slot_sample", side_effect=error):
+                unavailable, lookup_unknown = self.point(
+                    reader_run, reader_view, 4, "reader-slot-unavailable",
+                )
+            self.assertEqual((unavailable.process, unavailable.slot_match, unavailable.flags),
+                             (ProcessState.LIVE, Match.UNKNOWN, None))
         started = monotonic_ns()
+        self.assertLessEqual(closed.finished_ns, started)
         (reader_gate / "read").touch()
         data, count, dev, ino, eof, closed_at = json.loads(self.note(reader_gate / "receipt"))
         self.assertEqual((bytes.fromhex(data), count, dev, ino),
@@ -472,13 +507,16 @@ wait_for("exit")
         self.assertEqual((exited.process, exited.slot_match), (ProcessState.EXITED, Match.UNKNOWN))
         self.assertEqual((before.session, before.scope), (exited.session, exited.scope))
         self.assertIs(reader_reap.cleanup, CleanupStatus.REAPED)
-        still_live, other_child = self.point(writer_run, writer_view, 4, "writer-after-reader-reap")
+        still_live, other_child = self.point(
+            writer_run, writer_view, len(writer_events) + 1, "writer-after-reader-reap",
+        )
         self.assertEqual((still_live.process, still_live.slot_match), (ProcessState.LIVE, Match.ABSENT))
         self.assertEqual(observe(alias).identity, identity)
         self.assertEqual(observe(alias).flags & os.O_ACCMODE, os.O_WRONLY)
-        writer_reap = self.reap(writer_run, writer, writer_gate, 5)
+        writer_events.append(other_child)
+        writer_events.append(self.reap(writer_run, writer, writer_gate, len(writer_events) + 1))
         validate_run_evidence(
-            writer_run, (writer_held, write_complete, writer_closed, other_child, writer_reap),
+            writer_run, tuple(writer_events),
             require_observed=(("writer", "write-complete"),), require_terminal_from="supervisor",
         )
         validate_run_evidence(
@@ -489,3 +527,32 @@ wait_for("exit")
                               ("recipient", "read-to-eof")),
             require_terminal_from="supervisor",
         )
+
+    def _check_unavailable_observations(self, binding, provider, worker, path):
+        # Vary only the one observer input. Both real slots stay open.
+        stat = os.stat
+        fields = lifecycle._fields
+        slot_info = f"/proc/{worker.pid}/fdinfo/{provider._slot}"
+
+        def unavailable_name(name, *args, **kwargs):
+            if (name == path.name and kwargs.get("dir_fd") == provider._directory
+                    and kwargs.get("follow_symlinks") is False):
+                raise OSError(errno.EIO, "fixture named-entry lookup")
+            return stat(name, *args, **kwargs)
+
+        def mismatched_mount(name):
+            row = fields(name)
+            if name == slot_info:
+                row[b"mnt_id"] = str(int(row[b"mnt_id"]) + 1).encode()
+            return row
+
+        with patch.object(lifecycle.os, "stat", side_effect=unavailable_name):
+            sample = provider.sample()
+        self.assertEqual((sample.process, sample.slot_match, sample.name_match, sample.reasons),
+                         (ProcessState.LIVE, Match.ORIGINAL, Match.UNKNOWN, (f"name_errno:{errno.EIO}",)))
+        self.assertEqual(sample.flags & (getattr(os, "O_PATH", 0) | os.O_ACCMODE), os.O_RDONLY)
+        with patch.object(lifecycle, "_fields", side_effect=mismatched_mount):
+            sample, event = self.point(binding, provider, 4, "reader-slot-mount-unconfirmed")
+        self.assertEqual((sample.process, sample.slot_match, sample.name_match, sample.flags, sample.reasons),
+                         (ProcessState.LIVE, Match.UNKNOWN, Match.ORIGINAL, None, ("mount_mismatch",)))
+        return event
