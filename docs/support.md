@@ -41,6 +41,28 @@ The project supports the latest published release. Report failures against that 
   a success verdict. Use the returned lifecycle and cleanup fields
   separately.
 
+## Installed composition acceptance
+
+The installed Python suite includes [three acceptance profiles](../tests/test_acceptance.py)
+using disposable files and owned children.
+
+- Readable prebound input, identity refusal, and separate recipient read
+  evidence, with a metadata-only reference case when `O_PATH` is available.
+- Current-attempt receipt checks before managed write, with an observed
+  uncertain write that the caller leaves pending reconciliation.
+- A completed write and sync before a read-only handoff, exact recipient EOF
+  and closure, and cleanup scoped to each owned direct child.
+
+Run `bash scripts/check-linux.sh` from the checkout to build and test the
+installed wheel. Given a verified wheel installation, use
+`python -I -m unittest discover -s tests -p test_acceptance.py -v` from the
+checkout to run just these profiles.
+
+The fixtures validate recipient bytes and observe designated slots and direct
+children. Independent custody, continuous file access, other descendants, and
+whole-scope cleanup remain outside these measurements. Native Windows CI checks
+the installation and import boundary.
+
 ## Choosing an inherited reader
 
 The reader packages never launch workers. All use positional reads; none
