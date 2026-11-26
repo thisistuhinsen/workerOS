@@ -145,6 +145,8 @@ def read_original(run_id):
     fd = int(os.environ["WORKER_HANDOFF_FD_INPUT"])
     due = int(os.environ["WORKER_HANDOFF_DEADLINE_NS"])
     expect(fd >= 3, "invalid_input_fd")
+    # The exec ABI makes the descriptor inheritable at entry. Adopt it before reading.
+    os.set_inheritable(fd, False)
     identity = Identity(int(os.environ["WORKER_HANDOFF_DEV_INPUT"]), int(os.environ["WORKER_HANDOFF_INO_INPUT"]))
     with Original(fd, identity) as original:
         sink = BytesIO()
