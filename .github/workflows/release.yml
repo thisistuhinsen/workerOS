@@ -53,46 +53,7 @@ jobs:
           REQUESTED_REVISION: ${{ inputs.revision }}
           REQUESTED_PUBLISH: ${{ inputs.publish }}
           BEFORE_SHA: ${{ github.event.before }}
-        run: |
-          set -euo pipefail
-          [[ "$GITHUB_REPOSITORY" == thisistuhinsen/workerOS && "$GITHUB_REF" == refs/heads/main && "$DEFAULT_BRANCH" == main ]]
-          [[ "$GITHUB_SHA" =~ ^[a-f0-9]{40}$ && "$(git rev-parse HEAD)" == "$GITHUB_SHA" ]]
-          read -r live_sha live_ref < <(git ls-remote --exit-code origin refs/heads/main)
-          [[ "$live_sha" == "$GITHUB_SHA" && "$live_ref" == refs/heads/main ]] || {
-            echo 'The release SHA must still be the public default-branch tip.' >&2
-            exit 1
-          }
-          version=$(python -c 'import tomllib; print(tomllib.load(open("pyproject.toml","rb"))["project"]["version"])')
-          [[ "$version" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]
-          publish=false
-          case "$GITHUB_EVENT_NAME" in
-            push) publish=true ;;
-            workflow_dispatch)
-              [[ "$REQUESTED_REVISION" == "$GITHUB_SHA" && "$REQUESTED_VERSION" == "$version" ]] || {
-                echo 'Dispatch must name the exact checked-out SHA and version.' >&2
-                exit 1
-              }
-              [[ "$REQUESTED_PUBLISH" == true || "$REQUESTED_PUBLISH" == false ]]
-              publish=$REQUESTED_PUBLISH ;;
-            *) exit 1 ;;
-          esac
-          if [[ "$publish" == true ]]; then
-            [[ "$REF_PROTECTED" == true ]] || {
-              echo 'Release blocked: GitHub reports the default main ref is unprotected.' >&2
-              exit 1
-            }
-            parent=$(git rev-parse HEAD^)
-            [[ $(git rev-list --parents -1 HEAD | wc -w) == 2 ]]
-            [[ "$(git diff --name-only "$parent" HEAD)" == .github/release-version ]] || {
-              echo 'Release authorization requires a standalone version-marker commit.' >&2
-              exit 1
-            }
-            if [[ "$GITHUB_EVENT_NAME" == push ]]; then
-              [[ "$BEFORE_SHA" == "$parent" ]]
-            fi
-            printf '%s\n' "$version" | cmp - .github/release-version
-          fi
-          printf 'version=%s\npublish=%s\n' "$version" "$publish" >> "$GITHUB_OUTPUT"
+        run: bash scripts/release-target.sh
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version: '24.22.3'
@@ -150,6 +111,10 @@ jobs:
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: workerOS-release-${{ github.sha }}
@@ -185,7 +150,9 @@ jobs:
           }
           releases_for_tag() {
             gh api --paginate "repos/$GH_REPO/releases?per_page=100" |
-              jq -sc --arg tag "$tag" '[.[][] | select(.tag_name == $tag)]'
+              jq -esc --arg tag "$tag" '
+                if length > 0 and all(.[]; type == "array" and all(.[]; type == "object" and (.tag_name | type == "string")))
+                then [.[][] | select(.tag_name == $tag)] else error("Invalid release listing") end'
           }
           draft_assets() {
             gh api --paginate "repos/$GH_REPO/releases/$id/assets?per_page=100" |
@@ -197,9 +164,15 @@ jobs:
                 '.ref == $ref and .object.type == "commit" and .object.sha == $sha' >/dev/null
           }
           verify_protected_main
-          gh api "repos/$GH_REPO/git/matching-refs/tags/$tag" |
-            jq -e --arg ref "$ref" 'all(.[]; .ref != $ref)' >/dev/null
-          releases_for_tag | jq -e 'length == 0' >/dev/null
+          readback=$(mktemp -d)
+          trap 'rm -rf -- "$readback"' EXIT
+          gh api "repos/$GH_REPO/git/matching-refs/tags/$tag" > "$readback/refs.json"
+          releases_for_tag > "$readback/releases.json"
+          [[ "$(git -C "$GITHUB_WORKSPACE" rev-parse HEAD)" == "$GITHUB_SHA" ]]
+          python3 -I "$GITHUB_WORKSPACE/scripts/classify-release-effect.py" \
+            "$VERSION" "$GITHUB_SHA" "$readback/refs.json" "$readback/releases.json"
+
+          trap 'printf "Publish stopped for %s at %s. Inspect the exact effects in docs/releasing.md before considering any recovery.\n" "$tag" "$GITHUB_SHA" >&2' ERR
 
           # The create-only ref request reserves an absent tag at the exact SHA.
           gh api --method POST "repos/$GH_REPO/git/refs" -f ref="$ref" -f sha="$GITHUB_SHA" >/dev/null
@@ -214,8 +187,6 @@ jobs:
             select(length == 1) | .[0] | select(.draft and (.body | contains($proof))) | .id')
           remote=$(draft_assets)
           [[ "$(jq length <<<"$remote")" == "${#assets[@]}" ]]
-          readback=$(mktemp -d)
-          trap 'rm -rf -- "$readback"' EXIT
           for asset in "${assets[@]}"; do
             size=$(wc -c < "$asset")
             asset_id=$(jq -er --arg name "$asset" --argjson size "$size" '
@@ -227,7 +198,52 @@ jobs:
           verify_protected_main
           verify_tag
           gh api "repos/$GH_REPO/releases/$id" |
-            jq -e --arg tag "$tag" --arg proof "$proof" '.draft and .tag_name == $tag and (.body | contains($proof))' >/dev/null
+            jq -e --arg tag "$tag" --arg proof "$proof" \
+              '.draft == true and .prerelease == false and .tag_name == $tag and (.body | contains($proof))' >/dev/null
           [[ "$(draft_assets)" == "$remote" ]]
           gh api --method PATCH "repos/$GH_REPO/releases/$id" -F draft=false |
-            jq -er --arg tag "$tag" 'select(.draft == false and .tag_name == $tag) | .html_url'
+            jq -er --arg tag "$tag" 'select(.draft == false and .prerelease == false and .tag_name == $tag) | .html_url'
+
+  public-consumers:
+    needs: [build, publish]
+    if: needs.publish.result == 'success'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions: {}
+    steps:
+      - name: Fetch the exact source without credentials
+        run: |
+          set -euo pipefail
+          [[ "$GITHUB_REPOSITORY" == thisistuhinsen/workerOS && "$GITHUB_SHA" =~ ^[a-f0-9]{40}$ ]]
+          export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 GIT_TERMINAL_PROMPT=0 GIT_ALLOW_PROTOCOL=https
+          git init -q
+          git fetch --depth=1 --no-tags https://github.com/thisistuhinsen/workerOS.git "$GITHUB_SHA"
+          git checkout --detach FETCH_HEAD
+          [[ "$(git rev-parse HEAD)" == "$GITHUB_SHA" ]]
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: workerOS-release-${{ github.sha }}
+          path: ${{ runner.temp }}/expected-release/
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: '24.22.3'
+          package-manager-cache: false
+      - uses: actions/setup-java@d1374f8ac74474200d16ef8ecee22c7ae7a51880 # v6.3.0
+        with:
+          distribution: temurin
+          java-version: '25'
+      - name: Check anonymous release bytes and installed consumers
+        env:
+          VERSION: ${{ needs.build.outputs.version }}
+        run: |
+          set -euo pipefail
+          unset GH_TOKEN GITHUB_TOKEN GH_ENTERPRISE_TOKEN GITHUB_ENTERPRISE_TOKEN NODE_AUTH_TOKEN NPM_TOKEN
+          python -I scripts/check-public-release.py "$VERSION" "$GITHUB_SHA" \
+            "$RUNNER_TEMP/expected-release" "$RUNNER_TEMP/public-release"
+          python -m pip install 'build==1.3.0' 'setuptools==80.10.2' 'wheel==0.45.1' \
+            'packaging==26.4' 'pyproject_hooks==1.3.3' 'uv==0.13.9' 'conan==2.34.0' 'cmake==4.3.0'
+          bash scripts/build-release.sh --verify-public "$RUNNER_TEMP/public-release"
+          bash scripts/check-git-consumers.sh --public "$RUNNER_TEMP/public-release/worker_handoff-$VERSION-py3-none-any.whl"
