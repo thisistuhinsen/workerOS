@@ -1,6 +1,6 @@
 # Support and verification
 
-workerOS is a Linux file-descriptor handoff library. Use the [release’s checks](../README.md#verify-and-contribute) for the exact source version you are deploying. The table describes what each verification path covers.
+workerOS launches and supervises local Linux workers, with optional file-descriptor handoff. Use the [release’s checks](../README.md#verify-and-contribute) for the exact source version you are deploying. The table describes what each verification path covers.
 
 | Path | Required environment and evidence |
 | --- | --- |
@@ -33,6 +33,10 @@ The project supports the latest published release. Report failures against that 
 - For managed file release, dispatch, write effect, exit and cleanup are
   separate. A successful or partial write can precede failed delivery.
   Reconcile what took effect before retrying.
+- Treat deadlines as bounds on the wait or cleanup attempt, not proof of
+  when a child exited. A timeout, cancellation, or pending cleanup is not
+  a success verdict. Use the returned lifecycle and cleanup fields
+  separately.
 
 ## Choosing an inherited reader
 

@@ -90,47 +90,25 @@ tarball and install it from disk.
 ## Run three workers without a file
 
 Run this with the package installed on Linux or WSL2 with pidfd support.
-The three tiny commands stand in for whatever tools your app already uses.
-All three start before the controller waits for any of them. No file
-bindings, shell, or queue.
+Here's the [three-worker example](examples/run_local_workers.py). The three
+tiny commands stand in for tools your app already uses. It starts all three
+before waiting for any of them, keeps every started handle, and reports
+each result and cleanup separately. No file bindings, shell, or queue.
 
-```python
-import sys
-from time import monotonic_ns
+From a workerOS checkout with the released Python package installed:
 
-from worker_handoff import DirectChildSupervisor
-
-supervisor = DirectChildSupervisor()
-deadline = monotonic_ns() + 5_000_000_000
-jobs = [
-    ("thumbnail", "renderer", "print(sum(range(10)))"),
-    ("catalog", "sync", "print('synced')"),
-    ("checks", "auditor", "print('audited')"),
-]
-workers = [
-    supervisor.start_executable(
-        name, role, [sys.executable, "-c", code], due_ns=deadline, env={},
-    )
-    for name, role, code in jobs
-]
-for worker in workers:
-    result = supervisor.wait(
-        worker.name, due_ns=deadline, cleanup_due_ns=deadline + 2_000_000_000,
-    )
-    print(f"{worker.name} ({worker.role}): exit {result.returncode}")
-    assert result.returncode == 0, result
+```sh
+python examples/run_local_workers.py
 ```
 
-Each named worker reports exit `0`. The workers' own output can arrive in
-any order. The cleanup deadline applies after timeout or cancellation. The
-supervisor manages direct children it launches or is explicitly given
-control of. To run an importable Python callable instead, use
-`WorkerRoster.start`. Worker names and roles are application labels.
-Programs still run with their existing OS permissions; workerOS doesn't
-provide a sandbox or a distributed queue. A roster keeps used names for its
-lifetime; use one roster per workload or batch if names need to be reused.
-For ownership differences and timeout behavior, see
-[Support and recovery](docs/support.md).
+Expected: each worker reports exit `0` and `cleanup reaped`. Their own output
+can arrive in any order. The supervisor manages direct children it launches
+or is explicitly given control of. To run an importable Python callable
+instead, use `WorkerRoster.start`. Roles are application labels, not OS
+permissions. workerOS doesn't provide a sandbox or a distributed queue.
+A roster or supervisor keeps used names for its lifetime; use a fresh
+instance for a new finite workload if names need to be reused. See
+[Support and recovery](docs/support.md) for ownership and timeout behavior.
 
 ## Packages
 
