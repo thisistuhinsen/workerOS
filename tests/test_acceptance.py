@@ -519,14 +519,46 @@ wait_for("exit")
             writer_run, tuple(writer_events),
             require_observed=(("writer", "write-complete"),), require_terminal_from="supervisor",
         )
-        validate_run_evidence(
-            reader_run,
-            (before_grant, dispatched, reader_held, lookup_unknown,
-             validated, reader_closed, reader_reap, after_exit),
-            require_observed=(("sender", "descriptor-sent"), ("observer", "reader-slot-held"),
-                              ("recipient", "read-to-eof")),
-            require_terminal_from="supervisor",
-        )
+        reader_events = (before_grant, dispatched, reader_held, lookup_unknown,
+                         validated, reader_closed, reader_reap, after_exit)
+        handoff = (("sender", "descriptor-sent"), ("observer", "reader-slot-held"),
+                   ("recipient", "read-to-eof"))
+        validate_run_evidence(reader_run, reader_events, require_observed=handoff,
+                              require_terminal_from="supervisor")
+        if hold_writer_during_delivery:
+            self._check_qualification_limits(reader_run, writer_run, reader_events, handoff)
+
+    def _check_qualification_limits(self, binding, other_run, events, handoff):
+        # The added qualification reports are synthetic validator inputs.
+        # Keep the real slot absence and reap in every evidence history.
+        for source, subjects in (
+            ("custody-observer", ("independent-custody",)),
+            ("scope-meter", ("scope-begin", "scope-end")),
+        ):
+            required = handoff + tuple((source, subject) for subject in subjects)
+            now = monotonic_ns()
+            unavailable = RunEvent(binding, source, len(events) + 1, now, now, observations=tuple(
+                EvidenceObservation(subject, EvidenceState.UNAVAILABLE) for subject in subjects
+            ))
+            reports = events + (unavailable,)
+            validate_run_evidence(binding, reports, require_observed=handoff,
+                                  require_terminal_from="supervisor")
+            observed = replace(unavailable, observations=tuple(
+                EvidenceObservation(subject, EvidenceState.OBSERVED) for subject in subjects
+            ))
+            cases = [
+                ("missing", events, "missing required observations"),
+                ("unavailable", reports, "missing required observations"),
+                ("wrong run", events + (replace(observed, binding=other_run),), "event run"),
+            ]
+            if source == "scope-meter":
+                for point in observed.observations:
+                    partial = replace(observed, observations=(point,))
+                    cases.append((f"{point.subject} only", events + (partial,), "missing required observations"))
+            for status, history, reason in cases:
+                with self.subTest(source=source, status=status), self.assertRaisesRegex(ValueError, reason):
+                    validate_run_evidence(binding, history, require_observed=required,
+                                          require_terminal_from="supervisor")
 
     def _check_unavailable_observations(self, binding, provider, worker, path):
         # Vary only the one observer input. Both real slots stay open.
