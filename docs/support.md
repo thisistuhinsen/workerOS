@@ -68,11 +68,14 @@ Native Windows CI checks the installation and import boundary.
 
 The overlap fixture keeps handoff and reap evidence separate from qualification
 reports. Missing, unavailable, or wrong-run reports leave the requested
-custody or whole-scope coverage unverified. A positive combined qualification
-would need a qualified independent custody source and a meter reporting begin
-and end for the same declared execution scope. The
-[strict sealed-file fixture](../scripts/check-strict-custody-linux.py) covers
-independent custody for one sealed, read-only grant.
+custody or whole-scope coverage unverified. Whole-scope coverage also requires
+both meter endpoints. A positive combined qualification would need a qualified
+independent custody source and a meter reporting begin and end for the same
+declared execution scope. The
+[strict sealed-file fixture](../scripts/check-strict-custody-linux.py)
+authenticates a separate Linux principal for one sealed, read-only grant.
+Separate administrative control and combined whole-scope qualification remain
+unmeasured.
 
 ## Choosing an inherited reader
 

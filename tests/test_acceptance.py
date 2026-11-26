@@ -529,8 +529,8 @@ wait_for("exit")
             self._check_qualification_limits(reader_run, writer_run, reader_events, handoff)
 
     def _check_qualification_limits(self, binding, other_run, events, handoff):
-        # This ordinary-user fixture has neither qualification provider.
-        # Keep its real slot absence and reap in every evidence history.
+        # The added qualification reports are synthetic validator inputs.
+        # Keep the real slot absence and reap in every evidence history.
         for source, subjects in (
             ("custody-observer", ("independent-custody",)),
             ("scope-meter", ("scope-begin", "scope-end")),
@@ -543,11 +543,19 @@ wait_for("exit")
             reports = events + (unavailable,)
             validate_run_evidence(binding, reports, require_observed=handoff,
                                   require_terminal_from="supervisor")
-            for status, history, reason in (
+            observed = replace(unavailable, observations=tuple(
+                EvidenceObservation(subject, EvidenceState.OBSERVED) for subject in subjects
+            ))
+            cases = [
                 ("missing", events, "missing required observations"),
                 ("unavailable", reports, "missing required observations"),
-                ("wrong run", events + (replace(unavailable, binding=other_run),), "event run"),
-            ):
+                ("wrong run", events + (replace(observed, binding=other_run),), "event run"),
+            ]
+            if source == "scope-meter":
+                for point in observed.observations:
+                    partial = replace(observed, observations=(point,))
+                    cases.append((f"{point.subject} only", events + (partial,), "missing required observations"))
+            for status, history, reason in cases:
                 with self.subTest(source=source, status=status), self.assertRaisesRegex(ValueError, reason):
                     validate_run_evidence(binding, history, require_observed=required,
                                           require_terminal_from="supervisor")
