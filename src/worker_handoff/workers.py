@@ -1,16 +1,57 @@
 """Names and optional process creation. A role is not an isolation boundary."""
 
 from dataclasses import dataclass, field
+from functools import partial, partialmethod
+import inspect
 from multiprocessing import get_context
 import os
 import re
 import stat
 import subprocess
 from time import monotonic_ns
+from types import AsyncGeneratorType, FunctionType, GeneratorType, MethodType
 from typing import Any
 
 _ABI_PREFIX = "WORKER_HANDOFF_"
 _BINDING_NAME = re.compile(r"[A-Z][A-Z0-9_]*", re.ASCII)
+
+
+def _is_async_or_generator_target(target):
+    while (issubclass(type(target), partial)
+           and inspect.getattr_static(type(target), "__call__") is partial.__call__):
+        target = partial.func.__get__(target)
+    if type(target) not in (FunctionType, MethodType):
+        target = inspect.getattr_static(type(target), "__call__", None)
+        if type(target) is partialmethod:
+            target = target.func
+        if type(target) in (staticmethod, classmethod):
+            target = target.__func__
+    if type(target) is MethodType:
+        target = target.__func__
+    # Decorators can copy coroutine markers onto a synchronous bridge.
+    return type(target) is FunctionType and bool(
+        target.__code__.co_flags
+        & (inspect.CO_COROUTINE | inspect.CO_ASYNC_GENERATOR | inspect.CO_GENERATOR)
+    )
+
+
+def _has_await_method(kind):
+    # Special methods come from the actual type hierarchy. Do not invoke
+    # attribute hooks on the result or its metaclass.
+    for base in type.__dict__["__mro__"].__get__(kind):
+        members = type.__dict__["__dict__"].__get__(base)
+        if "__await__" in members:
+            return members["__await__"] is not None
+    return False
+
+
+def _run_sync_target(target, args):
+    result = target(*args)
+    kind = type(result)
+    if (kind is AsyncGeneratorType
+            or (kind is GeneratorType and result.gi_code.co_flags & inspect.CO_ITERABLE_COROUTINE)
+            or _has_await_method(kind)):
+        raise TypeError("WorkerRoster synchronous target returned an awaitable or async generator")
 
 
 def _exec_context(name, role, argv, fds, due_ns, env):
@@ -104,8 +145,11 @@ class WorkerRoster:
         return worker
 
     def start(self, name, role, target, *, args=(), context=None, uid=None):
-        """Start the caller's Python handler; the caller supplies its arguments.
+        """Start the caller's synchronous Python handler with positional arguments.
 
+        Async and generator functions are refused. Returning an awaitable or
+        async generator fails in the child after the handler runs. Other return
+        values are ignored.
         On a start exception, retain the process in `owned()` for reconciliation;
         a partly started child is never automatically replaced. This class is
         driven by one supervising caller, not a concurrent scheduler.
@@ -113,10 +157,12 @@ class WorkerRoster:
         self._free(name, role)
         if not callable(target) or type(args) is not tuple:
             raise TypeError("a callable handler and an argument tuple are required")
+        if _is_async_or_generator_target(target):
+            raise TypeError("WorkerRoster requires a synchronous, non-generator target")
         if uid is not None and (type(uid) is not int or uid < 0):
             raise ValueError("expected worker UID must be nonnegative")
         process = (context if context is not None else get_context("spawn")).Process(
-            name=name, target=target, args=args)
+            name=name, target=_run_sync_target, args=(target, args))
         self._owned[name] = process
         process.start()
         worker = Worker(name, role, process.pid, uid, process)
