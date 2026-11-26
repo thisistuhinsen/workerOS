@@ -4,7 +4,9 @@ from subprocess import TimeoutExpired
 import sys
 from time import monotonic_ns
 
-from worker_handoff import CleanupStatus, DirectChildSupervisor, SupervisionStartError
+from worker_handoff import (
+    CleanupStatus, DirectChildSupervisor, LifecycleStatus, SupervisionStartError,
+)
 
 SECOND = 1_000_000_000
 
@@ -67,7 +69,8 @@ def main():
     for name, result in outcomes.items():
         print(f"{name}: {result.lifecycle.value}; exit {result.returncode}; "
               f"cleanup {cleanup[name].status.value}")
-    return int(any(result.returncode != 0 for result in outcomes.values()) or
+    return int(any(result.lifecycle is not LifecycleStatus.EXITED or result.returncode != 0
+                   for result in outcomes.values()) or
                any(receipt.status is not CleanupStatus.REAPED for receipt in cleanup.values()))
 
 
