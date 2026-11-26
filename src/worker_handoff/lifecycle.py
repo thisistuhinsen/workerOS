@@ -14,6 +14,7 @@ import stat
 from time import monotonic_ns
 from uuid import uuid4
 
+from .evidence import EvidenceObservation, EvidenceScope, EvidenceState, ScopePhase, ScopeReport
 from .original import Identity, observe
 from .workers import Worker
 
@@ -76,6 +77,47 @@ def _boot():
         return source.read().strip()
 
 
+def _clock_context():
+    return _context(_boot), _context(lambda: os.readlink("/proc/thread-self/ns/time"))
+
+
+def monotonic_clock_id(boot_id: str | None, time_namespace: str | None) -> str | None:
+    """Describe the Linux monotonic clock when both kernel identifiers are known."""
+    if any(type(value) is not str or not value.strip() for value in (boot_id, time_namespace)):
+        return None
+    return f"linux-monotonic:{boot_id}:{time_namespace}"
+
+
+def _scope_observation(sample, subject):
+    expired = "expired" in sample.reasons
+    if subject == "process":
+        process = sample.process
+        if expired:
+            state = EvidenceState.UNAVAILABLE
+        elif process is ProcessState.UNKNOWN:
+            state = EvidenceState.INDETERMINATE
+        else:
+            state = EvidenceState.OBSERVED
+        return EvidenceObservation(subject, state, process.value)
+
+    if subject == "slot":
+        match = sample.slot_match
+        unavailable = any(reason.startswith("slot_errno:") or reason in (
+            "kernel_metadata_unavailable", "leader_file_table_unavailable",
+        ) for reason in sample.reasons)
+    else:
+        match = sample.name_match
+        unavailable = any(reason.startswith("name_errno:") for reason in sample.reasons)
+    state = {
+        Match.ORIGINAL: EvidenceState.OBSERVED,
+        Match.OTHER: EvidenceState.INDETERMINATE,
+        Match.ABSENT: EvidenceState.CONFIRMED_ABSENT,
+        Match.UNKNOWN: EvidenceState.UNAVAILABLE if expired or unavailable else EvidenceState.INDETERMINATE,
+        Match.NOT_REQUESTED: EvidenceState.NOT_REQUESTED,
+    }[match]
+    return EvidenceObservation(subject, state, match.value)
+
+
 def _duplicate(stack, fd):
     if type(fd) is not int or fd < 0:
         raise ValueError("expected a borrowed descriptor")
@@ -134,8 +176,7 @@ class RegularFileObserver:
             self._owner = os.getpid()
             self._observer_uids = os.getresuid()
             self._session = uuid4().hex
-            self._boot = _context(_boot)
-            self._time_ns = _context(lambda: os.readlink("/proc/thread-self/ns/time"))
+            self._boot, self._time_ns = _clock_context()
             self._owned = owned.pop_all()
         self._closed = False
 
@@ -217,6 +258,36 @@ class RegularFileObserver:
         if flags & (select.POLLERR | select.POLLNVAL):
             return ProcessState.UNKNOWN
         return ProcessState.EXITED if flags & (select.POLLIN | select.POLLHUP) else ProcessState.UNKNOWN
+
+    def sample_for_scope(
+        self, scope: EvidenceScope, *, provider_id: str, subject: str = "slot",
+    ) -> tuple[Sample, ScopeReport]:
+        """Return the raw sample and a bound report about slot, name, or process.
+
+        Refuse an unmatched scope, an unavailable or mismatched clock, or an
+        observation interval outside the declared window. Reports about a
+        slot or name describe the prebound original, with a different object
+        reported as indeterminate. Process reports describe pidfd liveness.
+        """
+        if type(scope) is not EvidenceScope or scope.scope_id != self._scope:
+            raise ValueError("expected the observer's predeclared evidence scope")
+        if type(provider_id) is not str or not provider_id.strip():
+            raise ValueError("provider_id must be a nonempty string")
+        if type(subject) is not str or subject not in ("slot", "name", "process"):
+            raise ValueError("expected an observation subject of slot, name, or process")
+        clock = scope.run.clock_id
+        if (monotonic_clock_id(self._boot, self._time_ns) != clock
+                or monotonic_clock_id(*_clock_context()) != clock):
+            raise ValueError("observer monotonic clock is unavailable or does not match scope")
+        if not scope.started_ns <= monotonic_ns() <= scope.finished_ns:
+            raise ValueError("observation is outside the scope window")
+        raw = self.sample()
+        if monotonic_clock_id(*_clock_context()) != clock:
+            raise ValueError("observer monotonic clock became unavailable or changed during sampling")
+        return raw, ScopeReport(
+            scope, provider_id, ScopePhase.OBSERVATION, raw.started_ns, raw.finished_ns,
+            _scope_observation(raw, subject),
+        )
 
     def sample(self):
         if self._closed or os.getpid() != self._owner or os.getresuid() != self._observer_uids:

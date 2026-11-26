@@ -1,7 +1,8 @@
 """Disposable Linux regular-file profile. No elevated access, service or network."""
 from contextlib import ExitStack
-from dataclasses import asdict
+from dataclasses import asdict, replace
 import errno
+from io import StringIO
 import json
 import os
 from pathlib import Path
@@ -14,9 +15,12 @@ from time import monotonic_ns
 from unittest import TestCase, mock, skipUnless
 
 from worker_handoff import Identity, Worker, observe, send_original
-from worker_handoff.lifecycle import Match, ProcessState, RegularFileObserver
+from worker_handoff.evidence import EvidenceScope, EvidenceState, RunBinding, ScopePhase
+from worker_handoff.lifecycle import Match, ProcessState, RegularFileObserver, monotonic_clock_id
+from worker_handoff.observer_cli import main as observer_main
 
 _SCOPE = '1a' * 32
+_FIXTURE_CLOCK = ("fixture-boot", "time:[123]")
 _QUALIFY = os.environ.get("WORKER_HANDOFF_OBSERVER_QUALIFY") == "1"
 _PYTHON = [sys.executable, "-I"] if sys.flags.isolated else [sys.executable]
 _CHILD = """
@@ -289,3 +293,115 @@ class LifecycleTests(TestCase):
         with self.assertRaises(ValueError):
             provider.sample()
         self.assertEqual(observe(self.ref).identity, self.ident)
+
+    def evidence_scope(self):
+        clock = monotonic_clock_id(*_FIXTURE_CLOCK)
+        self.assertEqual(clock, "linux-monotonic:fixture-boot:time:[123]")
+        run = RunBinding("fixture-run", "fixture-artifact", clock, 0, self.due)
+        return EvidenceScope(run, _SCOPE, 0, self.due + 1_000_000)
+
+    def test_actual_clock_context_controls_attribution(self):
+        observer = self.bind()
+        sample = observer.sample()
+        clock = monotonic_clock_id(sample.boot_id, sample.time_namespace)
+        scope = self.evidence_scope()
+        if clock is None:
+            with (mock.patch.object(observer, "sample") as read,
+                  self.assertRaisesRegex(ValueError, "clock is unavailable")):
+                observer.sample_for_scope(scope, provider_id="fixture")
+            read.assert_not_called()
+        else:
+            scope = replace(scope, run=replace(scope.run, clock_id=clock))
+            _, report = observer.sample_for_scope(scope, provider_id="fixture")
+            self.assertIs(report.observation.state, EvidenceState.OBSERVED)
+
+    @mock.patch("worker_handoff.lifecycle._clock_context", return_value=_FIXTURE_CLOCK)
+    def test_scope_report_preserves_slot_state_and_raw_sample(self, _clock):
+        scope = self.evidence_scope()
+        observer = self.bind()
+        raw, report = observer.sample_for_scope(scope, provider_id="fixture")
+        self.assertEqual(raw.slot_match, Match.ORIGINAL)
+        self.assertIs(report.scope, scope)
+        self.assertEqual((report.provider_id, report.phase), ("fixture", ScopePhase.OBSERVATION))
+        self.assertEqual((report.started_ns, report.finished_ns), (raw.started_ns, raw.finished_ns))
+        self.assertEqual((report.observation.subject, report.observation.state),
+                         ("slot", EvidenceState.OBSERVED))
+
+        with mock.patch.object(observer, "_slot_sample", side_effect=PermissionError(errno.EACCES, "denied")):
+            raw, report = observer.sample_for_scope(scope, provider_id="fixture")
+        self.assertEqual((raw.slot_match, report.observation.state), (Match.UNKNOWN, EvidenceState.UNAVAILABLE))
+
+        with mock.patch.object(observer, "_slot_sample", return_value=(Match.UNKNOWN, None, ("slot_changed",))):
+            raw, report = observer.sample_for_scope(scope, provider_id="fixture")
+        self.assertEqual((raw.slot_match, report.observation.state), (Match.UNKNOWN, EvidenceState.INDETERMINATE))
+
+        raw, report = self.bind(slot=424242).sample_for_scope(scope, provider_id="fixture")
+        self.assertEqual((raw.slot_match, report.observation.state),
+                         (Match.ABSENT, EvidenceState.CONFIRMED_ABSENT))
+
+        observer = self.bind(directory_fd=None, leaf=None)
+        raw, report = observer.sample_for_scope(scope, provider_id="fixture", subject="name")
+        self.assertEqual((raw.name_match, report.observation.state),
+                         (Match.NOT_REQUESTED, EvidenceState.NOT_REQUESTED))
+
+    @mock.patch("worker_handoff.lifecycle._clock_context", return_value=_FIXTURE_CLOCK)
+    def test_scope_and_clock_checked_before_observer_sample(self, _clock):
+        scope = self.evidence_scope()
+        observer = self.bind()
+        for bad, reason in (
+            (replace(scope, scope_id="2a" * 32), "scope"),
+            (replace(scope, run=replace(scope.run, clock_id="other-clock")), "clock"),
+            (replace(scope, finished_ns=0), "window"),
+        ):
+            with (self.subTest(reason=reason),
+                  mock.patch.object(observer, "sample") as sample,
+                  self.assertRaisesRegex(ValueError, reason)):
+                observer.sample_for_scope(bad, provider_id="fixture")
+            sample.assert_not_called()
+        with (mock.patch("worker_handoff.lifecycle._clock_context", return_value=(None, "time:[1]")),
+              mock.patch.object(observer, "sample") as sample,
+              self.assertRaisesRegex(ValueError, "clock")):
+            observer.sample_for_scope(scope, provider_id="fixture")
+        sample.assert_not_called()
+        with (mock.patch("worker_handoff.lifecycle._clock_context",
+                         side_effect=[_FIXTURE_CLOCK, ("fixture-boot", "time:[456]")]),
+              self.assertRaisesRegex(ValueError, "clock became unavailable or changed")):
+            observer.sample_for_scope(scope, provider_id="fixture")
+
+    @mock.patch("worker_handoff.lifecycle._clock_context", return_value=_FIXTURE_CLOCK)
+    def test_expired_same_clock_sample_cannot_report_observed(self, _clock):
+        scope = self.evidence_scope()
+        observer = self.bind()
+        with mock.patch("worker_handoff.lifecycle.monotonic_ns",
+                        side_effect=[self.due - 1, self.due - 1, self.due]):
+            raw, report = observer.sample_for_scope(scope, provider_id="fixture")
+        self.assertEqual(raw.reasons, ("expired",))
+        self.assertIs(report.observation.state, EvidenceState.UNAVAILABLE)
+        scope = replace(scope, finished_ns=self.due - 1)
+        with (mock.patch("worker_handoff.lifecycle.monotonic_ns",
+                         side_effect=[self.due - 2, self.due - 2, self.due]),
+              self.assertRaisesRegex(ValueError, "report interval is outside the scope window")):
+            observer.sample_for_scope(scope, provider_id="fixture")
+
+    @mock.patch("worker_handoff.lifecycle._clock_context", return_value=_FIXTURE_CLOCK)
+    def test_observer_cli_scope_report_opt_in_preserves_default_shape(self, _clock):
+        config = dict(scope=_SCOPE, due_ns=self.due, original_fd=self.ref,
+                      pidfd=self.pin(os.getpid()), pid=os.getpid(), uid=os.getuid(),
+                      device=self.ident.device, inode=self.ident.inode, slot=self.ref,
+                      directory_fd=self.dir, leaf="report")
+
+        def invoke(plan):
+            with (mock.patch("sys.stdin", StringIO(json.dumps(plan) + "\n")),
+                  mock.patch("sys.stdout", new_callable=StringIO) as out):
+                observer_main()
+            return json.loads(out.getvalue())
+
+        plain = invoke(config)
+        scope = self.evidence_scope()
+        adapted = invoke(config | {"scope_report": {"scope": asdict(scope), "provider_id": "fixture"}})
+        self.assertEqual(set(adapted), {"sample", "scope_report"})
+        self.assertEqual(adapted["sample"].keys(), plain.keys())
+        report = adapted["scope_report"]
+        self.assertEqual(report["scope"], asdict(scope))
+        self.assertEqual((report["phase"], report["provider_id"]), ("observation", "fixture"))
+        self.assertEqual(report["observation"]["state"], "observed")

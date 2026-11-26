@@ -8,6 +8,7 @@ import json
 import os
 import sys
 
+from .evidence import EvidenceScope, RunBinding
 from .lifecycle import RegularFileObserver
 from .original import Identity
 from .workers import Worker
@@ -28,7 +29,18 @@ def main():
         pidfd=plan["pidfd"], worker=Worker("target", "observed", plan["pid"], plan["uid"]),
         slot=plan["slot"], directory_fd=plan.get("directory_fd"), leaf=plan.get("leaf"),
     ) as provider:
-        print(json.dumps(asdict(provider.sample()), separators=(",", ":")))
+        if "scope_report" in plan:
+            request = plan["scope_report"]
+            scope_fields = dict(request["scope"])
+            scope_fields["run"] = RunBinding(**scope_fields["run"])
+            sample, report = provider.sample_for_scope(
+                EvidenceScope(**scope_fields), provider_id=request["provider_id"],
+                subject=request.get("subject", "slot"),
+            )
+            result = {"sample": asdict(sample), "scope_report": asdict(report)}
+        else:
+            result = asdict(provider.sample())
+        print(json.dumps(result, separators=(",", ":")))
 
 
 if __name__ == "__main__":

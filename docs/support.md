@@ -111,6 +111,71 @@ handles duplicate submissions across calls. Strict custody decisions still
 use the pre-grant custody path. The acceptance fixture exercises this API with
 a real owned-child point sample and synthetic meter readings.
 
+## Producing observation and meter reports
+
+`RegularFileObserver.sample_for_scope(scope, provider_id=..., subject="slot")`
+returns the original `Sample` and a bound `ScopeReport`. The subject can also
+be `name` or `process`. A slot match concerns the exact prebound original at
+the sampled file descriptor. A process report concerns pidfd liveness.
+
+The existing `python -I -m worker_handoff.observer_cli` reads its one-line
+plan and returns a raw sample by default. Add a `scope_report` object with
+`scope` (the `asdict()` form of the `EvidenceScope`), `provider_id`, and an
+optional `subject` to return `sample` and `scope_report` together. The scope
+ID must match the plan's bound SHA-256. A separately operated caller still
+supplies the already-authorized handles, trusted plan and procfs access.
+
+`CgroupScopeMeter` in `worker_handoff.scope_meter` borrows a non-inheritable
+directory FD from one already accessible cgroup v2. Each `sample()` reads
+`cpu.stat` and, if present, `cgroup.events` from that directory. It retains the
+pinned device, inode, mount ID, meter session, local PID and effective UID,
+clock context, and reading interval. `usage_usec` is cumulative CPU time in
+microseconds for the cgroup and its descendants. `populated` is a separate
+point reading of live-process presence. The reads are sequential. The
+population field can be unavailable at the hierarchy root while CPU remains
+available. [Linux cgroup v2 interface](https://docs.kernel.org/admin-guide/cgroup-v2.html)
+
+Keep one meter instance for both phases. Build the `EvidenceScope` using
+`worker_handoff.scope_meter.monotonic_clock_id()` from a verified common
+boot and time namespace. If that context is unavailable, the meter can return
+raw values with no bound report. The observer still offers its raw sample path.
+
+```python
+from worker_handoff.evidence import ScopePhase, validate_scope_evidence
+from worker_handoff.scope_meter import CgroupScopeMeter, cpu_delta_usec
+
+with CgroupScopeMeter(scope=scope, provider_id="meter", directory_fd=cgroup_fd) as meter:
+    begin = meter.sample(ScopePhase.METER_BEGIN)
+    # Run the application and retain its own launch time, observer receipt,
+    # and terminal cleanup evidence before taking the final sample.
+    end = meter.sample(ScopePhase.METER_END)
+
+interval = (launch_started_ns, cleanup_finished_ns)
+aggregate_cpu_usec = cpu_delta_usec(begin, end, require_meter_for=interval)
+validate_scope_evidence(scope, (begin.report, observer_report, end.report),
+                        observer_id="observer", meter_id="meter", require_meter_for=interval)
+```
+
+`cpu_delta_usec` requires matching raw meter provenance, the same cgroup and
+session, comparable clocks, bracketing readings, and a nondecreasing CPU
+counter. Keep both raw samples with the result. A caller needs workload
+membership and an exclusive scope to attribute the full delta to its run.
+An empty population point and an owned-child reap each describe a different
+fact. Whole-scope cleanup and continuous custody need separate evidence.
+
+For a separately launched meter, use `python -I -m worker_handoff.scope_meter`
+with the already-open directory inherited. Send one JSON plan line with
+`scope`, `provider_id`, and `directory_fd`, then a JSON string line
+`"meter_begin"`. Wait for the response before launch. After cleanup send
+`"meter_end"`. Each response has `sample` and a `scope_report` that may be
+null. The caller owns the worker's I/O and termination deadlines.
+
+After installing the wheel, run the disposable owned-child example from the
+checkout with `python -I -m unittest discover -v -s tests -p test_scope_meter.py`.
+It compares real aggregate kernel counters around launch and reap in the
+fixture's existing cgroup. It reports when the clock cannot bind those
+readings to the observer. The fixture's shared scope measures compatibility.
+
 ## Choosing an inherited reader
 
 The reader packages never launch workers. All use positional reads; none
