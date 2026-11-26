@@ -169,7 +169,8 @@ class WorkerRoster:
         self._workers[name] = worker
         return worker
 
-    def start_executable(self, name, role, argv, *, due_ns, fds=None, env=None, uid=None):
+    def start_executable(self, name, role, argv, *, due_ns, fds=None, env=None, uid=None,
+                         cwd=None, stdin=None, stdout=None, stderr=None):
         """Start an application-supplied executable with the Linux FD ABI v1.
 
         The caller retains its own descriptors. Child inherits only named
@@ -185,7 +186,7 @@ class WorkerRoster:
         # of a child based on a missing local return.
         self._owned[name] = None
         process = subprocess.Popen(tuple(argv), shell=False, close_fds=True,
-                                   pass_fds=handles, env=context)
+                                   pass_fds=handles, env=context, cwd=cwd, stdin=stdin, stdout=stdout, stderr=stderr)
         self._owned[name] = process
         worker = Worker(name, role, process.pid, uid, process)
         self._workers[name] = worker

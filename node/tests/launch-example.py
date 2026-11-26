@@ -14,6 +14,8 @@ def main(node, example):
         path = Path(directory) / "input"
         path.write_bytes(b"Worker input\n")
         with path.open("rb", buffering=0) as original:
+            path.rename(Path(directory) / "renamed-input")
+            path.write_bytes(b"Replacement input\n")
             fd = original.fileno()
             os.lseek(fd, 2, os.SEEK_SET)
             deadline = monotonic_ns() + 10_000_000_000

@@ -14,6 +14,7 @@ import stat
 from time import monotonic_ns
 from uuid import uuid4
 
+from .evidence import EvidenceObservation, EvidenceScope, EvidenceState, ScopePhase, ScopeReport
 from .original import Identity, observe
 from .workers import Worker
 
@@ -76,6 +77,47 @@ def _boot():
         return source.read().strip()
 
 
+def _clock_context():
+    return _context(_boot), _context(lambda: os.readlink("/proc/thread-self/ns/time"))
+
+
+def monotonic_clock_id(boot_id: str | None, time_namespace: str | None) -> str | None:
+    """Describe the Linux monotonic clock when both kernel identifiers are known."""
+    if any(type(value) is not str or not value.strip() for value in (boot_id, time_namespace)):
+        return None
+    return f"linux-monotonic:{boot_id}:{time_namespace}"
+
+
+def _scope_observation(sample, subject):
+    expired = "expired" in sample.reasons
+    if subject == "process":
+        process = sample.process
+        if expired:
+            state = EvidenceState.UNAVAILABLE
+        elif process is ProcessState.UNKNOWN:
+            state = EvidenceState.INDETERMINATE
+        else:
+            state = EvidenceState.OBSERVED
+        return EvidenceObservation(subject, state, process.value)
+
+    if subject == "slot":
+        match = sample.slot_match
+        unavailable = any(reason.startswith("slot_errno:") or reason in (
+            "kernel_metadata_unavailable", "leader_file_table_unavailable",
+        ) for reason in sample.reasons)
+    else:
+        match = sample.name_match
+        unavailable = any(reason.startswith("name_errno:") for reason in sample.reasons)
+    state = {
+        Match.ORIGINAL: EvidenceState.OBSERVED,
+        Match.OTHER: EvidenceState.INDETERMINATE,
+        Match.ABSENT: EvidenceState.CONFIRMED_ABSENT,
+        Match.UNKNOWN: EvidenceState.UNAVAILABLE if expired or unavailable else EvidenceState.INDETERMINATE,
+        Match.NOT_REQUESTED: EvidenceState.NOT_REQUESTED,
+    }[match]
+    return EvidenceObservation(subject, state, match.value)
+
+
 def _duplicate(stack, fd):
     if type(fd) is not int or fd < 0:
         raise ValueError("expected a borrowed descriptor")
@@ -95,9 +137,13 @@ class RegularFileObserver:
     """
 
     def __init__(self, *, scope, due_ns, original_fd, identity, pidfd, worker,
-                 slot, directory_fd=None, leaf=None):
+                 slot, directory_fd=None, leaf=None, evidence_scope: EvidenceScope | None = None):
         if type(scope) is not str or not re.fullmatch("[0-9a-f]{64}", scope):
             raise ValueError("expected the trusted plan's SHA-256 scope")
+        if evidence_scope is not None and (
+            type(evidence_scope) is not EvidenceScope or evidence_scope.scope_id != scope
+        ):
+            raise ValueError("evidence scope must match the trusted plan's scope")
         if type(due_ns) is not int or not monotonic_ns() < due_ns < 1 << 63:
             raise ValueError("expected a future absolute monotonic deadline")
         if type(identity) is not Identity or type(worker) is not Worker or worker.uid is None:
@@ -129,13 +175,13 @@ class RegularFileObserver:
             if self._directory is not None and not stat.S_ISDIR(os.fstat(self._directory).st_mode):
                 raise ValueError("expected a directory descriptor")
             self._scope, self._due, self._identity = scope, due_ns, identity
+            self._evidence_scope = evidence_scope
             self._pid, self._uid, self._slot = worker.pid, worker.uid, slot
             self._leaf = leaf
             self._owner = os.getpid()
             self._observer_uids = os.getresuid()
             self._session = uuid4().hex
-            self._boot = _context(_boot)
-            self._time_ns = _context(lambda: os.readlink("/proc/thread-self/ns/time"))
+            self._boot, self._time_ns = _clock_context()
             self._owned = owned.pop_all()
         self._closed = False
 
@@ -217,6 +263,37 @@ class RegularFileObserver:
         if flags & (select.POLLERR | select.POLLNVAL):
             return ProcessState.UNKNOWN
         return ProcessState.EXITED if flags & (select.POLLIN | select.POLLHUP) else ProcessState.UNKNOWN
+
+    def sample_for_scope(
+        self, scope: EvidenceScope, *, provider_id: str, subject: str = "slot",
+    ) -> tuple[Sample, ScopeReport]:
+        """Return the raw sample and a bound report about slot, name, or process.
+
+        The complete EvidenceScope must have been supplied at construction.
+        Refuse a different scope, an unavailable or mismatched clock, or an
+        interval outside the declared window. Slot and name reports describe
+        the prebound original, with a different object reported as
+        indeterminate. Process reports describe pidfd liveness.
+        """
+        if type(scope) is not EvidenceScope or scope != self._evidence_scope:
+            raise ValueError("expected the observer's predeclared evidence scope")
+        if type(provider_id) is not str or not provider_id.strip():
+            raise ValueError("provider_id must be a nonempty string")
+        if type(subject) is not str or subject not in ("slot", "name", "process"):
+            raise ValueError("expected an observation subject of slot, name, or process")
+        clock = scope.run.clock_id
+        if (monotonic_clock_id(self._boot, self._time_ns) != clock
+                or monotonic_clock_id(*_clock_context()) != clock):
+            raise ValueError("observer monotonic clock is unavailable or does not match scope")
+        if not scope.started_ns <= monotonic_ns() <= scope.finished_ns:
+            raise ValueError("observation is outside the scope window")
+        raw = self.sample()
+        if monotonic_clock_id(*_clock_context()) != clock:
+            raise ValueError("observer monotonic clock became unavailable or changed during sampling")
+        return raw, ScopeReport(
+            scope, provider_id, ScopePhase.OBSERVATION, raw.started_ns, raw.finished_ns,
+            _scope_observation(raw, subject),
+        )
 
     def sample(self):
         if self._closed or os.getpid() != self._owner or os.getresuid() != self._observer_uids:

@@ -53,6 +53,9 @@ jobs:
           java-version: '25'
       - name: Test installed wheel and all seven examples
         run: bash -c "$WORKEROS_CI_CHECK"
+      - name: Test the release gates with inert fixtures
+        if: matrix.runner == 'ubuntu-24.04' && matrix.python == '3.12'
+        run: python -I -m unittest discover -s scripts/tests -v
 
   distro-userspace:
     runs-on: ubuntu-24.04
@@ -99,20 +102,42 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-python@v6
         with:
-          python-version: '3.12'
-      - name: Verify baseline builds and Linux-only APIs do not load
+          python-version: '3.14'
+      - name: Verify the exact installed wheel and console boundary
         shell: pwsh
         run: |
-          python -m pip wheel --no-deps . -w dist
-          $wheel = (Get-ChildItem dist/worker_handoff-*.whl).FullName
-          python -m pip install --no-index --no-deps $wheel
-          @'
-          try:
-              import worker_handoff
-          except ModuleNotFoundError as exc:
-              if exc.name != "fcntl":
-                  raise
-              print("Expected: native Windows has no Linux descriptor API")
-          else:
-              raise SystemExit("Unexpected native import: revisit platform support and update this check")
-          '@ | python -
+          $ErrorActionPreference = 'Stop'
+          $revision = git rev-parse HEAD
+          if ($LASTEXITCODE -ne 0 -or $revision -cne $env:GITHUB_SHA) { throw 'Unexpected checkout revision' }
+          $version = @'
+          from pathlib import Path
+          import tomllib
+          print(tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))["project"]["version"])
+          '@ | python -I -
+          if ($LASTEXITCODE -ne 0 -or $version -notmatch '^[0-9]+\.[0-9]+\.[0-9]+$') { throw 'Cannot identify the checkout version' }
+          $work = Join-Path $env:RUNNER_TEMP ("workeros-native-" + [guid]::NewGuid().ToString('N'))
+          $dist = Join-Path $work 'dist'
+          $venv = Join-Path $work 'venv'
+          New-Item -ItemType Directory -Path $work | Out-Null
+          New-Item -ItemType Directory -Path $dist | Out-Null
+          python -I -m pip --isolated --disable-pip-version-check wheel --no-deps --wheel-dir $dist .
+          if ($LASTEXITCODE -ne 0) { throw 'Native Windows wheel build failed' }
+          $wheels = @(Get-ChildItem -LiteralPath $dist -File)
+          if ($wheels.Count -ne 1 -or $wheels[0].Name -cne "workeros-$version-py3-none-any.whl") {
+            throw 'Expected the single exact branded wheel'
+          }
+          $wheel = $wheels[0].FullName
+          Write-Host "Candidate $revision wheel SHA-256 $((Get-FileHash -LiteralPath $wheel -Algorithm SHA256).Hash)"
+          python -I -m venv $venv
+          if ($LASTEXITCODE -ne 0) { throw 'Native Windows virtual environment creation failed' }
+          $venvPython = Join-Path $venv 'Scripts\python.exe'
+          & $venvPython -I -m pip --isolated --disable-pip-version-check install --no-index --no-deps --no-cache-dir $wheel
+          if ($LASTEXITCODE -ne 0) { throw 'Native Windows offline wheel installation failed' }
+          $probe = Join-Path $env:GITHUB_WORKSPACE 'scripts\check-native-windows.py'
+          Push-Location -LiteralPath $work
+          try {
+            & $venvPython -I $probe $version
+            if ($LASTEXITCODE -ne 0) { throw 'Native Windows boundary verification failed' }
+          } finally {
+            Pop-Location
+          }

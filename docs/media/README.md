@@ -1,9 +1,11 @@
 # Terminal animation transcripts
 
+Each animation plays once and settles on its full exchange. The transcripts
+below give the same dialogue in text.
+
 ## Everything is green
 
-A cartoon about mistaking a status label for an outcome. This is not literal
-workerOS output.
+An office joke about mistaking a status label for an observed outcome.
 
 ```text
 lead       All three workers are green.

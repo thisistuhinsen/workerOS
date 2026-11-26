@@ -1,4 +1,4 @@
-"""Run read-only FD ABI examples against the installed worker-handoff wheel."""
+"""Run read-only FD ABI examples against the installed workerOS wheel."""
 
 import argparse
 from importlib.metadata import version
@@ -129,7 +129,7 @@ def main():
 
     import worker_handoff
 
-    print(f"worker-handoff {version('worker-handoff')} from {worker_handoff.__file__}", flush=True)
+    print(f"workerOS {version('workeros')} from {worker_handoff.__file__}", flush=True)
 
     failed = False
     with TemporaryDirectory(prefix="workeros-examples-") as directory:

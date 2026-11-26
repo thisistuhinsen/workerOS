@@ -1,5 +1,14 @@
 include CONTRIBUTING.md SECURITY.md
 include docs/releasing.md docs/support.md docs/media/README.md
+include docs/install.md docs/package-python.md docs/workers.md docs/regular-file-observer.md
+include docs/api.md docs/configuration.md docs/host-preflight.md
+include docs/brand/README.md docs/brand/*.png skills/workeros/SKILL.md
 include docs/media/custody-lanyard.gif docs/media/fd-7.gif docs/media/one-small-ticket.gif
 include examples/report_worker.c examples/run_local_report.py examples/run_local_workers.py
+include examples/run_host_preflight.py
+include examples/evidence_config.json examples/workflow_policy.json src/worker_handoff/configuration.schema.json
 recursive-include tests *.py
+include go/README.md java/README.md native/README.md node/README.md rust/README.md
+include native/tests/c/CMakeLists.txt native/tests/c/conanfile.txt native/tests/c/read_input.c
+include native/tests/cpp/CMakeLists.txt native/tests/cpp/conanfile.txt native/tests/cpp/read_input.cpp
+include scripts/check-strict-custody-linux.py

@@ -10,6 +10,30 @@ The release workflow builds packages with a read-only token. A separate job gets
 
 Each release includes the Python wheel and sdist, npm tarball, Maven JAR and POM, Conan recipe archive, and `SHA256SUMS`. Go and Cargo consume the same reviewed source tag. The [Git consumer check](https://github.com/thisistuhinsen/workerOS/blob/main/scripts/check-git-consumers.sh) verifies a disposable tag at the exact candidate commit and launches both external consumers with the built wheel. The GitHub release job publishes the exact tested artifact from its build job.
 
+### Package names in a branded candidate
+
+The 0.7.0 offline bundle uses `workeros` for the Python distribution, npm
+package, and release filenames. The v0.4.0 release retains its original
+assets. The 0.7.0 tag inside the bundle is for local source consumption.
+The release workflow acts on a separately authorized protected main commit.
+
+- **pip and uv.** Install the branded wheel in a fresh environment and update
+  the dependency declaration to `workeros`. Keep `import worker_handoff`.
+  Both distributions install the same module paths, so use separate
+  environments for the two packages.
+- **npm.** Import `workeros` after installing the branded tarball. To keep a
+  consumer's existing imports while migrating, follow the
+  [verified npm alias steps](../node/README.md) with the same local tarball.
+- **Other packages.** The Maven and Conan downloads use branded filenames
+  and retain the published package coordinates. The Cargo package and Go
+  module and import paths stay compatible with existing manifests.
+
+The offline handoff includes the release checksums, the exact source bundle
+and separate Go and Cargo resolution receipts. After an authorized public
+release, verify the anonymous downloads and public source tag before
+advertising those URLs. Capture the public Go checksum from that tagged
+source and compare it independently to the public checksum service.
+
 ## Authorize a public release
 
 After candidate review, the maintainer commits only `.github/release-version` with the chosen version and one trailing newline. Push that marker commit on its own. The exact marker commit is the release SHA. The workflow also accepts a manual run with `publish` checked when the exact marked tip and version are supplied.

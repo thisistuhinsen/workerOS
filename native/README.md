@@ -1,29 +1,90 @@
-# worker-handoff for Conan
+# workerOS for C and C++
 
-`worker-handoff/0.4.0` is a header-only Conan 2 package for Linux. Its C and
-C++ API reads a regular file already inherited from a workerOS launcher.
-Launch a child with `WorkerRoster.start_executable(..., fds={"INPUT": fd})`
-to supply the FD and ABI metadata.
+`worker-handoff/0.7.0` is a header-only Conan 2 package for Linux. Both C and
+C++ readers take an already-open regular file from the workerOS launcher.
+The release download uses curl and GNU coreutils (`sha256sum`).
 
-Extract the GitHub release archive and create the package in your local
-Conan cache. Use an existing Linux Conan profile, or run
-`conan profile detect` for a new cache.
+## Try the public release
+
+After the matching v0.7.0 Conan archive and Python wheel are published,
+[install the Python controller](../docs/install.md#python) and activate its
+environment. Install Conan 2, CMake, Make and C and C++ compilers. Set
+`WORKEROS_PYTHON` to use a particular Python interpreter.
 
 ```sh
-release=https://github.com/thisistuhinsen/workerOS/releases/download/v0.4.0
-archive=worker-handoff-conan-0.4.0.tar.gz
-curl -fL "$release/$archive" -o "$archive" &&
-    curl -fL "$release/SHA256SUMS" -o SHA256SUMS &&
-    sha256sum --check --ignore-missing SHA256SUMS &&
-    tar -xzf "$archive" &&
-    conan create ./worker-handoff-conan-0.4.0 --no-remote
+(
+    set -eu
+    python=$(command -v "${WORKEROS_PYTHON:-python3}")
+    work=$(mktemp -d)
+    trap 'rm -rf -- "$work"' EXIT
+    cd "$work"
+    release=https://github.com/thisistuhinsen/workerOS/releases/download/v0.7.0
+    archive=workeros-conan-0.7.0.tar.gz
+    for file in "$archive" SHA256SUMS; do
+        curl --fail --silent --show-error --location "$release/$file" --output "$file"
+    done
+    awk -v name="$archive" '$2 == name { print; count++ } END { if (count != 1) exit 1 }' \
+        SHA256SUMS > "$archive.sha256"
+    sha256sum --strict --check "$archive.sha256"
+    tar -xzf "$archive"
+    PYTHON="$python" bash "$work/workeros-conan-0.7.0/check-conan.sh"
+)
 ```
 
-Add `worker-handoff/0.4.0` to your consumer's `[requires]` in
-`conanfile.txt`. With Conan's `CMakeDeps` and `CMakeToolchain`, use
-`find_package(worker-handoff CONFIG REQUIRED)` and link your target to
-`worker-handoff::worker-handoff`. A source checkout uses
-`conan create native --no-remote` for the same recipe.
+Expect `C: PASSED` and `C++: PASSED`. The checked archive contains both
+consumer fixtures and the script that launches them with an inherited file.
+
+## Try the private offline bundle
+
+[Install the Python controller](../docs/install.md#python) and set
+`WORKEROS_OFFLINE` to the absolute path of the verified
+private `workerOS-0.7.0-offline` directory. The block uses the pip environment.
+For uv, set `WORKEROS_PYTHON="$WORKEROS_OFFLINE/.venv-0.7.0-uv/bin/python"`
+first. Install Conan 2, CMake, Make and the C and C++ compilers before
+running this block.
+
+```sh
+(
+    set -eu
+    offline=${WORKEROS_OFFLINE:?set WORKEROS_OFFLINE to the extracted bundle directory}
+    python=${WORKEROS_PYTHON:-"$offline/.venv-0.7.0/bin/python"}
+    work=$(mktemp -d)
+    trap 'rm -rf -- "$work"' EXIT
+    tar -xzf "$offline/assets/workeros-conan-0.7.0.tar.gz" -C "$work"
+    PYTHON="$python" bash "$work/workeros-conan-0.7.0/check-conan.sh"
+)
+```
+
+The script uses a fresh Conan home, builds separate C and C++ consumers and
+gives each a real inherited file. Expect `C: PASSED` and `C++: PASSED`.
+
+## Use the recipe from your own project
+
+Use the verified archive from the release or private bundle. In the
+directory containing the archive, extract it and create the package in your
+chosen local Conan cache. Run `conan profile detect` first if that cache
+needs a default profile.
+
+```sh
+tar -xzf workeros-conan-0.7.0.tar.gz &&
+conan create ./workeros-conan-0.7.0 --no-remote
+```
+
+The [historical v0.4.0 release](https://github.com/thisistuhinsen/workerOS/releases/tag/v0.4.0)
+has its own recipe archive and checksums.
+
+Use this in your consumer's `conanfile.txt`. With CMake, use
+`find_package(worker-handoff CONFIG REQUIRED)` and link to
+`worker-handoff::worker-handoff`.
+
+```ini
+[requires]
+worker-handoff/0.7.0
+
+[generators]
+CMakeDeps
+CMakeToolchain
+```
 
 ## Read an inherited input
 
@@ -49,30 +110,13 @@ int main(void)
 }
 ```
 
-The binding is validated against ABI version 1 and the live descriptor's
-kernel file type, device, inode and access mode. Both `read` and
-`read-write` bindings can be read. `worker_handoff_read_at` returns a byte
-count, zero at EOF, or `-1` with `errno`, and preserves the shared offset.
-The API performs positional reads only.
+The binding is checked against ABI version 1 and the live descriptor's
+file type, device, inode and access mode. Both `read` and `read-write`
+bindings can be read. `worker_handoff_read_at` returns a byte count, zero
+at EOF, or `-1` with `errno`. Positional reads preserve the shared offset.
 
 Initialize each handle with `WORKER_HANDOFF_INPUT_INIT`. An owned handle
-closes the descriptor once. Closing a borrowed handle invalidates just that
-handle. Keep the slot stable and give an owned handle exclusive close
-authority. The functions recheck file metadata and access before reading
-or closing an owned handle. Handle copying, concurrent descriptor rebinding
-and concurrent mutation of the ABI environment are outside this contract.
-The launcher and caller retain responsibility for authorization, deadlines,
-supervision and custody.
-
-## Verify both languages
-
-The included check uses a fresh Conan home, installs a separate C and C++
-consumer, and launches each executable through the Python workerOS
-package. It checks the inherited ABI, positional offset, ownership and
-refusals. Install the Python wheel in a venv first and pass that Python
-executable to the script. Conan 2, CMake, Make and C/C++ compilers must be
-on PATH.
-
-```sh
-PYTHON=/path/to/venv/bin/python bash ./worker-handoff-conan-0.4.0/check-conan.sh
-```
+closes the descriptor once. Closing a borrowed handle invalidates just
+that handle. Keep the slot stable and give an owned handle exclusive
+close authority. The launcher and caller retain responsibility for
+authorization, deadlines and supervision.
