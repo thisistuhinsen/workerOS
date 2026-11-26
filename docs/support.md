@@ -72,7 +72,7 @@ custody or whole-scope coverage unverified. Whole-scope coverage also requires
 both meter endpoints. A positive combined qualification would need a qualified
 independent custody source and a meter reporting begin and end for the same
 declared execution scope. The
-[strict sealed-file fixture](../scripts/check-strict-custody-linux.py)
+[strict sealed-file fixture](https://github.com/thisistuhinsen/workerOS/blob/v0.5.0/scripts/check-strict-custody-linux.py)
 authenticates a separate Linux principal for one sealed, read-only grant.
 Separate administrative control and combined whole-scope qualification remain
 unmeasured.
@@ -113,17 +113,20 @@ a real owned-child point sample and synthetic meter readings.
 
 ## Producing observation and meter reports
 
-`RegularFileObserver.sample_for_scope(scope, provider_id=..., subject="slot")`
-returns the original `Sample` and a bound `ScopeReport`. The subject can also
-be `name` or `process`. A slot match concerns the exact prebound original at
-the sampled file descriptor. A process report concerns pidfd liveness.
+Pass `evidence_scope=scope` to `RegularFileObserver(...)` to pre-pin the full
+`EvidenceScope`. Its scope ID must match the separately supplied plan digest.
+`sample_for_scope(scope, provider_id=..., subject="slot")` compares the complete
+pinned scope, including its `RunBinding` and interval, and returns the raw
+`Sample` and a bound `ScopeReport`. The subject can also be `name` or `process`.
+A slot match concerns the exact prebound original at the sampled descriptor.
+A process report concerns pidfd liveness.
 
 The existing `python -I -m worker_handoff.observer_cli` reads its one-line
-plan and returns a raw sample by default. Add a `scope_report` object with
-`scope` (the `asdict()` form of the `EvidenceScope`), `provider_id`, and an
-optional `subject` to return `sample` and `scope_report` together. The scope
-ID must match the plan's bound SHA-256. A separately operated caller still
-supplies the already-authorized handles, trusted plan and procfs access.
+plan and returns a raw sample by default. To opt in, add a `scope_report`
+object to that startup plan with `scope` (the `asdict()` form of the
+`EvidenceScope`), `provider_id`, and optional `subject`. The CLI pins that
+complete scope before returning `sample` and `scope_report` together. The
+caller still supplies the authorized handles, trusted plan and procfs access.
 
 `CgroupScopeMeter` in `worker_handoff.scope_meter` borrows a non-inheritable
 directory FD from one already accessible cgroup v2. Each `sample()` reads
@@ -174,6 +177,26 @@ with the already-open directory inherited. Send one JSON plan line with
 `"meter_begin"`. Wait for the response before launch. After cleanup send
 `"meter_end"`. Each response has `sample` and a `scope_report` that may be
 null. The caller owns the worker's I/O and termination deadlines.
+
+Keep the original `begin_line` and `end_line` alongside the typed endpoints.
+Decode the samples and use the same evidence checks as for the in-process
+meter.
+
+```python
+import json
+from worker_handoff.evidence import validate_scope_evidence
+from worker_handoff.scope_meter import CgroupSample, cpu_delta_usec
+
+begin = CgroupSample.from_dict(json.loads(begin_line)["sample"])
+end = CgroupSample.from_dict(json.loads(end_line)["sample"])
+interval = (launch_started_ns, cleanup_finished_ns)
+aggregate_cpu_usec = cpu_delta_usec(begin, end, require_meter_for=interval)
+validate_scope_evidence(scope, (begin.report, observer_report, end.report),
+                        observer_id="observer", meter_id="meter", require_meter_for=interval)
+```
+
+The caller authenticates each source and supplies any independent custody or
+external cost evidence its decisions require.
 
 After installing the wheel, run the disposable owned-child example from the
 checkout with `python -I -m unittest discover -v -s tests -p test_scope_meter.py`.

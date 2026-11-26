@@ -16,6 +16,12 @@ from .workers import Worker
 
 def main():
     plan = json.loads(sys.stdin.readline())
+    evidence_scope = None
+    if "scope_report" in plan:
+        request = plan["scope_report"]
+        scope_fields = dict(request["scope"])
+        scope_fields["run"] = RunBinding(**scope_fields["run"])
+        evidence_scope = EvidenceScope(**scope_fields)
     refs = [plan["original_fd"], plan["pidfd"]]
     if "directory_fd" in plan:
         refs.append(plan["directory_fd"])
@@ -28,13 +34,11 @@ def main():
         original_fd=plan["original_fd"], identity=Identity(plan["device"], plan["inode"]),
         pidfd=plan["pidfd"], worker=Worker("target", "observed", plan["pid"], plan["uid"]),
         slot=plan["slot"], directory_fd=plan.get("directory_fd"), leaf=plan.get("leaf"),
+        evidence_scope=evidence_scope,
     ) as provider:
-        if "scope_report" in plan:
-            request = plan["scope_report"]
-            scope_fields = dict(request["scope"])
-            scope_fields["run"] = RunBinding(**scope_fields["run"])
+        if evidence_scope is not None:
             sample, report = provider.sample_for_scope(
-                EvidenceScope(**scope_fields), provider_id=request["provider_id"],
+                evidence_scope, provider_id=request["provider_id"],
                 subject=request.get("subject", "slot"),
             )
             result = {"sample": asdict(sample), "scope_report": asdict(report)}

@@ -242,7 +242,7 @@ error.
 [Observer source](../src/worker_handoff/lifecycle.py)
 
 `RegularFileObserver(scope=..., due_ns=..., original_fd=..., identity=...,
-pidfd=..., worker=..., slot=..., directory_fd=None, leaf=None)` borrows and
+pidfd=..., worker=..., slot=..., directory_fd=None, leaf=None, evidence_scope=None)` borrows and
 duplicates already held references to a regular file and a live pidfd.
 The caller pins the worker PID and expected UID and supplies the plan's
 SHA-256 scope. Use a read-only or metadata-only `O_PATH` original reference.
@@ -258,10 +258,13 @@ other descriptors, reaping, and lifecycle history to other sources.
 `close()` releases the observer's duplicates and leaves the caller's FDs
 open.
 
-Opt in with `sample_for_scope(scope, *, provider_id, subject="slot")` to get
-`(Sample, ScopeReport)` for `subject="slot"`, `"name"` or `"process"`.
-The adapter checks the predeclared scope ID, the interval, and the actual
-boot and time-namespace identifiers against `scope.run.clock_id`. Use
+For scoped reports, pre-pin the complete `EvidenceScope` at construction with
+`RegularFileObserver(..., evidence_scope=scope)`. Its scope ID must match the
+plan digest. `sample_for_scope(scope, *, provider_id, subject="slot")` then
+returns `(Sample, ScopeReport)` for `"slot"`, `"name"` or `"process"`. It
+compares the entire pinned scope, including its `RunBinding` and interval,
+and verifies actual boot and time-namespace identifiers against
+`scope.run.clock_id`. Use
 `worker_handoff.lifecycle.monotonic_clock_id(boot_id, time_namespace)`
 to format those identifiers. It returns `None` if either is unavailable.
 The scoped adapter refuses unavailable or incompatible clocks and intervals
@@ -271,11 +274,12 @@ observations that were not requested. Raw samples retain the reasons and
 the actual flags.
 
 `python -m worker_handoff.observer_cli` accepts the existing one-line
-launcher plan with inherited FDs and returns the raw sample. Add a
-`scope_report` object with `scope` (including its nested `run`),
-`provider_id`, and optional `subject` to receive
-`{"sample": ..., "scope_report": ...}`. The plan still needs the legacy
-top-level scope digest, deadline, identity, slots, PID and UID fields.
+launcher plan with inherited FDs and returns the raw sample by default. To
+opt in, declare `scope_report` in the startup plan with `scope` (including
+its nested `run`), `provider_id`, and optional `subject`. The CLI pins that
+complete scope before sampling and returns `{"sample": ..., "scope_report": ...}`.
+The plan still needs the top-level scope digest, deadline, identity, slots,
+PID and UID fields.
 
 ## Validate run and provider evidence
 
@@ -315,7 +319,8 @@ top-level scope digest, deadline, identity, slots, PID and UID fields.
 These functions preserve the input tuples on success and raise `ValueError`
 on validation failure. Bindings and provider labels establish structural
 matching. The caller handles source authentication, meter coverage,
-qualification, and cross-call replay.
+qualification, and cross-call replay. Continuous custody and costs outside a
+provider's coverage require their own evidence.
 
 ## Measure an already provisioned cgroup v2 scope
 
@@ -365,15 +370,22 @@ Each returns one JSON line with the raw `sample` and its `scope_report`,
 which can be `null`. This is an ordinary inherited-FD entry point for a
 caller-provisioned meter process.
 
+Use `CgroupSample.from_dict(json.loads(line)["sample"])` to decode each
+meter reply for Python consumers. Keep the original lines with the typed
+begin and end samples. Use `cpu_delta_usec` to check and compare those
+samples, then pass their `.report` values and the observer report to
+`validate_scope_evidence` for the declared scope. Decoding reconstructs the
+sample's types. The application authenticates the meter and its replies.
+
 ## Inherited readers and platform boundaries
 
 | Runtime | Package API and lifetime |
 | --- | --- |
-| [C and C++ with Conan](https://github.com/thisistuhinsen/workerOS/blob/main/native/README.md) | Linux header-only API for C99+ and C++11+. Initialize `worker_handoff_input`, then use `worker_handoff_open_inherited`, `worker_handoff_read_at`, and `worker_handoff_close` with borrowed or owned semantics. |
-| [Node.js](https://github.com/thisistuhinsen/workerOS/blob/main/node/README.md) | Linux x64 or ARM64 with procfs and Node.js 22+. `openInherited`, `readAt`, and `close`. Borrowed is the default. Owned closes the validated inherited slot. |
-| [Go](https://github.com/thisistuhinsen/workerOS/blob/main/go/README.md) | Go 1.22+ on Linux amd64 or arm64. `workerhandoff.Open`, `ReadAt`, and `Close` operate on a private duplicate. `ReadAt` checks the deadline before reading. |
-| [Rust](https://github.com/thisistuhinsen/workerOS/blob/main/rust/README.md) | Rust 1.85+ on Linux x86-64 or AArch64. `open_read` takes a read-only binding, and `read_at` uses a private duplicate that closes on drop. |
-| [Java](https://github.com/thisistuhinsen/workerOS/blob/main/java/README.md) | 64-bit Linux x64 or ARM64 with procfs, JDK 22+, and FFM native access enabled. Use `InheritedReader.open`, `readAt`, and try-with-resources to close its private duplicate. |
+| [C and C++ with Conan](https://github.com/thisistuhinsen/workerOS/blob/v0.5.0/native/README.md) | Linux header-only API for C99+ and C++11+. Initialize `worker_handoff_input`, then use `worker_handoff_open_inherited`, `worker_handoff_read_at`, and `worker_handoff_close` with borrowed or owned semantics. |
+| [Node.js](https://github.com/thisistuhinsen/workerOS/blob/v0.5.0/node/README.md) | Linux x64 or ARM64 with procfs and Node.js 22+. `openInherited`, `readAt`, and `close`. Borrowed is the default. Owned closes the validated inherited slot. |
+| [Go](https://github.com/thisistuhinsen/workerOS/blob/v0.5.0/go/README.md) | Go 1.22+ on Linux amd64 or arm64. `workerhandoff.Open`, `ReadAt`, and `Close` operate on a private duplicate. `ReadAt` checks the deadline before reading. |
+| [Rust](https://github.com/thisistuhinsen/workerOS/blob/v0.5.0/rust/README.md) | Rust 1.85+ on Linux x86-64 or AArch64. `open_read` takes a read-only binding, and `read_at` uses a private duplicate that closes on drop. |
+| [Java](https://github.com/thisistuhinsen/workerOS/blob/v0.5.0/java/README.md) | 64-bit Linux x64 or ARM64 with procfs, JDK 22+, and FFM native access enabled. Use `InheritedReader.open`, `readAt`, and try-with-resources to close its private duplicate. |
 
 These adapters consume the inherited descriptor ABI and perform positional reads.
 Allow for short reads and EOF. Go, Rust and Java leave the original inherited

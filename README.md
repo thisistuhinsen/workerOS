@@ -119,11 +119,11 @@ FDs. They leave launching, writes, supervision and custody to the application.
 | --- | --- | --- |
 | Python | pip or uv | `worker-handoff` from the wheel above |
 | Node.js | npm | `worker-handoff` from the tarball above. Linux x64 or ARM64 with procfs and Node.js 22+ |
-| Go | Go modules | `go get "github.com/thisistuhinsen/workerOS/go/workerhandoff@v$version"` · [Go reader and v0.4.0 checksum fallback](https://github.com/thisistuhinsen/workerOS/blob/main/go/README.md) |
-| Rust | Cargo | `worker-handoff = { git = "https://github.com/thisistuhinsen/workerOS", tag = "v0.5.0" }` in `Cargo.toml` · [Rust reader](https://github.com/thisistuhinsen/workerOS/blob/main/rust/README.md) |
-| C | Conan 2 | `worker-handoff/0.5.0` · [C consumer](https://github.com/thisistuhinsen/workerOS/tree/main/native/tests/c/) |
-| C++ | Conan 2 | `worker-handoff/0.5.0` · [C++ consumer](https://github.com/thisistuhinsen/workerOS/tree/main/native/tests/cpp/) |
-| Java | Maven | `io.github.thisistuhinsen:worker-handoff:0.5.0` · [Java reader and Maven install](https://github.com/thisistuhinsen/workerOS/blob/main/java/README.md). Linux x64 or ARM64 with procfs and JDK 22+ |
+| Go | Go modules | `go get "github.com/thisistuhinsen/workerOS/go/workerhandoff@v$version"` · [Go reader and v0.4.0 checksum fallback](https://github.com/thisistuhinsen/workerOS/blob/v0.5.0/go/README.md) |
+| Rust | Cargo | `worker-handoff = { git = "https://github.com/thisistuhinsen/workerOS", tag = "v0.5.0" }` in `Cargo.toml` · [Rust reader](https://github.com/thisistuhinsen/workerOS/blob/v0.5.0/rust/README.md) |
+| C | Conan 2 | `worker-handoff/0.5.0` · [C consumer](https://github.com/thisistuhinsen/workerOS/tree/v0.5.0/native/tests/c/) |
+| C++ | Conan 2 | `worker-handoff/0.5.0` · [C++ consumer](https://github.com/thisistuhinsen/workerOS/tree/v0.5.0/native/tests/cpp/) |
+| Java | Maven | `io.github.thisistuhinsen:worker-handoff:0.5.0` · [Java reader and Maven install](https://github.com/thisistuhinsen/workerOS/blob/v0.5.0/java/README.md). Linux x64 or ARM64 with procfs and JDK 22+ |
 
 For Maven, download and verify the JAR and matching POM. Install both into
 your local Maven repository, then add the matching coordinates to your application's POM.
@@ -133,7 +133,7 @@ mvn -B org.apache.maven.plugins:maven-install-plugin:3.1.4:install-file \
   -Dfile="worker-handoff-$version.jar" -DpomFile="worker-handoff-$version.pom"
 ```
 
-For C or C++, follow the [Conan download and checksum instructions](https://github.com/thisistuhinsen/workerOS/blob/main/native/README.md).
+For C or C++, follow the [Conan download and checksum instructions](https://github.com/thisistuhinsen/workerOS/blob/v0.5.0/native/README.md).
 In the directory with the extracted recipe, run
 `conan create "./worker-handoff-conan-$version" --no-remote` with a Linux profile.
 In your consumer, add `worker-handoff/<version>` under `[requires]` and run
@@ -161,7 +161,7 @@ python -I "$launcher" --language python
 ```
 
 For the npm-installed reader, follow the
-[runnable Node.js walkthrough](https://github.com/thisistuhinsen/workerOS/blob/main/node/README.md#read-one-inherited-file).
+[runnable Node.js walkthrough](https://github.com/thisistuhinsen/workerOS/blob/v0.5.0/node/README.md#read-one-inherited-file).
 It starts the example from `node_modules` through Python and checks that the
 parent's file offset stays put.
 
@@ -214,7 +214,7 @@ leaves the descriptor open when the wrapper closes. The helper checks the
 named ABI binding against the live file's device, inode and access mode. It
 reads from `read` and `read-write` bindings. Keep the descriptor slot stable
 while the handle is open. Validation failure leaves the slot with its caller.
-Start the [packaged reader](https://github.com/thisistuhinsen/workerOS/blob/main/node/examples/read-input.cjs)
+Start the [packaged reader](https://github.com/thisistuhinsen/workerOS/blob/v0.5.0/node/examples/read-input.cjs)
 through a launcher that supplies the actual FD. Launch, Unix-socket handoff,
 supervision and custody use the Python APIs below.
 
@@ -286,7 +286,7 @@ uncertain write before deciding what to do about a failed or uncertain dispatch.
 
 ### Observe a worker and measure its scope
 
-The v0.5.0 [regular-file observer](https://github.com/thisistuhinsen/workerOS/blob/main/docs/regular-file-observer.md)
+The v0.5.0 [regular-file observer](docs/regular-file-observer.md)
 can sample a designated descriptor slot, a pinned name or a pidfd with handles
 your application already authorizes. The [provider examples](docs/support.md#producing-observation-and-meter-reports)
 show how to bind a point observation and start/end readings from an existing
@@ -297,12 +297,12 @@ and coverage. Strict custody still uses the pre-grant path above.
 
 ## Verify and contribute
 
-- [Linux wheel check](https://github.com/thisistuhinsen/workerOS/blob/main/scripts/check-linux.sh) builds the wheel, installs it
+- [Linux wheel check](https://github.com/thisistuhinsen/workerOS/blob/v0.5.0/scripts/check-linux.sh) builds the wheel, installs it
   offline into a fresh venv, and runs the Python tests and bundled examples.
   Run `bash scripts/check-linux.sh` from the checkout.
-- [Node package](https://github.com/thisistuhinsen/workerOS/blob/main/node/package.json) has its own tests. From the checkout, run
+- [Node package](https://github.com/thisistuhinsen/workerOS/blob/v0.5.0/node/package.json) has its own tests. From the checkout, run
   `npm --prefix node test` with Node.js 22+ and Python 3.11+ on Linux.
-- [Strict custody fixture](https://github.com/thisistuhinsen/workerOS/blob/main/scripts/check-strict-custody-linux.py) exercises a
+- [Strict custody fixture](https://github.com/thisistuhinsen/workerOS/blob/v0.5.0/scripts/check-strict-custody-linux.py) exercises a
   read-only grant over a sealed file and refusal paths using separate Linux
   accounts in a disposable VM. See the prerequisites in the
   [support and verification notes](docs/support.md).

@@ -147,13 +147,10 @@ class CgroupScopeMeterTest(unittest.TestCase):
                             else EvidenceState.INDETERMINATE)
         return states
 
-    def assert_memory_fields(self, fields, expected, *, serialized=False):
+    def assert_memory_fields(self, fields, expected):
         for leaf, (value_key, state_key) in _MEMORY_GAUGES.items():
             state = expected[leaf]
-            if serialized:
-                self.assertEqual(fields[state_key], state.value, leaf)
-            else:
-                self.assertIs(fields[state_key], state, leaf)
+            self.assertIs(fields[state_key], state, leaf)
             value = fields[value_key]
             if state is EvidenceState.OBSERVED:
                 self.assertIs(type(value), int, leaf)
@@ -161,8 +158,7 @@ class CgroupScopeMeterTest(unittest.TestCase):
             else:
                 self.assertIsNone(value, leaf)
 
-    def observed_sample(self, meter, phase, clock_id):
-        sample = meter.sample(phase)
+    def check_observed_sample(self, sample, phase, clock_id):
         if sample.cpu_state is EvidenceState.UNAVAILABLE:
             self.skipTest(f"own cgroup v2 CPU counter unavailable at {phase.value}")
         self.assertIs(sample.cpu_state, EvidenceState.OBSERVED)
@@ -175,6 +171,49 @@ class CgroupScopeMeterTest(unittest.TestCase):
             self.assertIs(sample.report.observation.state, EvidenceState.OBSERVED)
         if sample.populated is not None:
             self.assertIs(sample.populated, True)  # The test parent is still in this cgroup.
+
+    @staticmethod
+    def stop_meter_cli(process):
+        if process.poll() is None:
+            process.kill()  # This subprocess belongs exclusively to the fixture.
+        process.wait(timeout=5)
+
+    def send_meter_request(self, process, request):
+        line = json.dumps(request).encode("utf-8") + b"\n"
+        self.assertEqual(process.stdin.write(line), len(line))
+
+    def start_meter_cli(self, stack, scope, fd):
+        python = [sys.executable, "-I"] if sys.flags.isolated else [sys.executable]
+        process = subprocess.Popen(
+            [*python, "-m", "worker_handoff.scope_meter"],
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, bufsize=0, pass_fds=(fd,),
+        )
+        stack.callback(process.stdin.close)
+        stack.callback(process.stdout.close)
+        stack.callback(self.stop_meter_cli, process)
+        self.send_meter_request(process, {"scope": asdict(scope), "directory_fd": fd, "provider_id": "meter"})
+        return process
+
+    def cli_sample(self, process, scope, phase, clock_id):
+        self.send_meter_request(process, phase.value)
+        deadline = monotonic_ns() + 5_000_000_000
+        line = bytearray()
+        while not line.endswith(b"\n"):
+            timeout = max(0, deadline - monotonic_ns()) / 1e9
+            self.assertTrue(timeout and select.select([process.stdout], [], [], timeout)[0],
+                            f"scope meter did not report {phase.value}")
+            data = os.read(process.stdout.fileno(), 4096)
+            self.assertTrue(data, f"scope meter exited before reporting {phase.value}")
+            line.extend(data)
+            self.assertLessEqual(len(line), 65536, "scope meter response too large")
+        envelope = json.loads(line)
+        self.assertEqual(set(envelope), {"sample", "scope_report"})
+        sample = CgroupSample.from_dict(envelope["sample"])
+        self.assertEqual((sample.scope, sample.provider_id, sample.phase), (scope, "meter", phase))
+        self.assertEqual((sample.meter_pid, sample.meter_uid), (process.pid, os.geteuid()))
+        expected_report = asdict(sample.report) if sample.report else None
+        self.assertEqual(envelope["scope_report"], expected_report)
+        self.check_observed_sample(sample, phase, clock_id)
         return sample
 
     def held_slot_report(self, stack, scope, worker, original_fd, clock_id):
@@ -183,7 +222,7 @@ class CgroupScopeMeterTest(unittest.TestCase):
         identity = observe(original_fd).identity
         observer = stack.enter_context(RegularFileObserver(
             scope=scope.scope_id, due_ns=scope.finished_ns, original_fd=original_fd,
-            identity=identity, pidfd=pin, worker=worker, slot=original_fd,
+            identity=identity, pidfd=pin, worker=worker, slot=original_fd, evidence_scope=scope,
         ))
         if clock_id is None:
             sample, report = observer.sample(), None
@@ -213,12 +252,15 @@ class CgroupScopeMeterTest(unittest.TestCase):
             path.write_bytes(_PAYLOAD)
             original_fd = stack.enter_context(path.open("rb")).fileno()
             try:
-                meter = stack.enter_context(CgroupScopeMeter(scope=scope, provider_id="meter", directory_fd=fd))
+                diagnostic_meter = stack.enter_context(CgroupScopeMeter(
+                    scope=scope, provider_id="fixture-diagnostic", directory_fd=fd,
+                ))
             except ScopeMeterUnavailable as exc:
                 self.skipTest(f"cgroup v2 meter unavailable: {exc}")
+            cli = self.start_meter_cli(stack, scope, fd)
             lower = self.kernel_usage(fd)
             memory_states = self.kernel_memory_states(fd)
-            begin = self.observed_sample(meter, ScopePhase.METER_BEGIN, clock_id)
+            begin = self.cli_sample(cli, scope, ScopePhase.METER_BEGIN, clock_id)
             self.assertLessEqual(lower, begin.usage_usec)
             self.assertLessEqual(begin.usage_usec, self.kernel_usage(fd))
             self.assert_memory_fields(asdict(begin), memory_states)
@@ -255,7 +297,9 @@ class CgroupScopeMeterTest(unittest.TestCase):
 
             lower = self.kernel_usage(fd)
             memory_states = self.kernel_memory_states(fd)
-            end = self.observed_sample(meter, ScopePhase.METER_END, clock_id)
+            end = self.cli_sample(cli, scope, ScopePhase.METER_END, clock_id)
+            cli.stdin.close()
+            self.assertEqual(cli.wait(timeout=5), 0)
             self.assertLessEqual(lower, end.usage_usec)
             self.assertLessEqual(end.usage_usec, self.kernel_usage(fd))
             self.assert_memory_fields(asdict(end), memory_states)
@@ -266,12 +310,14 @@ class CgroupScopeMeterTest(unittest.TestCase):
             real_open = os.open
 
             def missing_fields(path, *args, **kwargs):
-                if path in ("cgroup.events", "memory.current") and kwargs.get("dir_fd") == meter._directory:
+                if (path in ("cgroup.events", "memory.current")
+                        and kwargs.get("dir_fd") == diagnostic_meter._directory):
                     raise FileNotFoundError(errno.ENOENT, "fixture metric file absent")
                 return real_open(path, *args, **kwargs)
 
             with patch("worker_handoff.scope_meter.os.open", side_effect=missing_fields):
-                cpu_only = self.observed_sample(meter, ScopePhase.METER_END, clock_id)
+                cpu_only = diagnostic_meter.sample(ScopePhase.METER_END)
+            self.check_observed_sample(cpu_only, ScopePhase.METER_END, clock_id)
             self.assertIs(cpu_only.population_state, EvidenceState.UNAVAILABLE)
             self.assertIsNone(cpu_only.populated)
             self.assertIn(f"cgroup.events_errno:{errno.ENOENT}", cpu_only.reasons)
@@ -281,6 +327,7 @@ class CgroupScopeMeterTest(unittest.TestCase):
 
             self.assertIsNotNone(begin.identity)
             self.assertEqual(begin.identity, end.identity)
+            self.assertEqual(begin.session, end.session)
             pinned = os.fstat(fd)
             self.assertEqual((begin.identity.device, begin.identity.inode), (pinned.st_dev, pinned.st_ino))
             # This is an aggregate cgroup counter, shared with the test parent.
@@ -299,53 +346,6 @@ class CgroupScopeMeterTest(unittest.TestCase):
                 self.assertEqual(cpu_delta_usec(begin, end, require_meter_for=interval),
                                  end.usage_usec - begin.usage_usec)
                 print("SCOPE-METER clock-bound composition: OBSERVED (cgroup, held slot, direct-child reap)")
-            os.fstat(fd)  # The meter borrowed the caller's directory descriptor.
-
-    def test_two_phase_cli_reports_the_pinned_directory_and_scope(self):
-        clock_id = monotonic_clock_id()
-        scope = self.scope(clock_id)
-        with ExitStack() as stack:
-            fd, _ = self.open_self_cgroup(stack)
-            lower = self.kernel_usage(fd)
-            memory_states = self.kernel_memory_states(fd)
-            plan = {"scope": asdict(scope), "directory_fd": fd, "provider_id": "meter"}
-            phases = (ScopePhase.METER_BEGIN, ScopePhase.METER_END)
-            requests = "".join(json.dumps(item) + "\n" for item in (plan, *(p.value for p in phases)))
-            python = [sys.executable, "-I"] if sys.flags.isolated else [sys.executable]
-            result = subprocess.run(
-                [*python, "-m", "worker_handoff.scope_meter"], input=requests, text=True,
-                capture_output=True, pass_fds=(fd,), timeout=5, check=True,
-            )
-            upper = self.kernel_usage(fd)
-            pinned = os.fstat(fd)
-            lines = result.stdout.splitlines()
-            self.assertEqual(len(lines), 2)
-            samples = []
-            for phase, line in zip(phases, lines):
-                envelope = json.loads(line)
-                sample, report = envelope["sample"], envelope["scope_report"]
-                self.assertEqual((sample["scope"], sample["provider_id"], sample["phase"]),
-                                 (plan["scope"], "meter", phase.value))
-                self.assertEqual(sample["cpu_state"], EvidenceState.OBSERVED.value)
-                self.assert_memory_fields(sample, memory_states, serialized=True)
-                self.assertEqual(sample["clock_id"], clock_id)
-                if clock_id is None:
-                    self.assertIsNone(report)
-                else:
-                    self.assertEqual((report["scope"], report["provider_id"], report["phase"]),
-                                     (plan["scope"], "meter", phase.value))
-                    self.assertEqual(report["observation"]["state"], EvidenceState.OBSERVED.value)
-                self.assertNotEqual(sample["meter_pid"], os.getpid())
-                self.assertEqual(sample["meter_uid"], os.geteuid())
-                self.assertEqual((sample["identity"]["device"], sample["identity"]["inode"]),
-                                 (pinned.st_dev, pinned.st_ino))
-                self.assertLessEqual(lower, sample["usage_usec"])
-                self.assertLessEqual(sample["usage_usec"], upper)
-                samples.append(sample)
-            begin, end = samples
-            self.assertEqual((begin["session"], begin["identity"]), (end["session"], end["identity"]))
-            if clock_id is not None:
-                self.assertLessEqual(begin["finished_ns"], end["started_ns"])
             self.assertFalse(os.get_inheritable(fd))
 
     def test_synthetic_delta_rejects_unpaired_and_regressed_samples(self):
@@ -371,6 +371,10 @@ class CgroupScopeMeterTest(unittest.TestCase):
         ):
             with self.subTest(message=message), self.assertRaisesRegex(ValueError, message):
                 cpu_delta_usec(begin, altered, require_meter_for=interval)
+        with self.assertRaisesRegex(ValueError, "meter sample object"):
+            CgroupSample.from_dict(list(asdict(end).items()))
+        with self.assertRaisesRegex(ValueError, "invalid unobserved reading"):
+            CgroupSample.from_dict(asdict(end) | {"usage_usec": None, "cpu_state": "confirmed_absent"})
 
     def test_plain_directory_cannot_supply_cgroup_kernel_evidence(self):
         scope = self.scope(monotonic_clock_id())

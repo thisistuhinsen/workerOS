@@ -137,9 +137,13 @@ class RegularFileObserver:
     """
 
     def __init__(self, *, scope, due_ns, original_fd, identity, pidfd, worker,
-                 slot, directory_fd=None, leaf=None):
+                 slot, directory_fd=None, leaf=None, evidence_scope: EvidenceScope | None = None):
         if type(scope) is not str or not re.fullmatch("[0-9a-f]{64}", scope):
             raise ValueError("expected the trusted plan's SHA-256 scope")
+        if evidence_scope is not None and (
+            type(evidence_scope) is not EvidenceScope or evidence_scope.scope_id != scope
+        ):
+            raise ValueError("evidence scope must match the trusted plan's scope")
         if type(due_ns) is not int or not monotonic_ns() < due_ns < 1 << 63:
             raise ValueError("expected a future absolute monotonic deadline")
         if type(identity) is not Identity or type(worker) is not Worker or worker.uid is None:
@@ -171,6 +175,7 @@ class RegularFileObserver:
             if self._directory is not None and not stat.S_ISDIR(os.fstat(self._directory).st_mode):
                 raise ValueError("expected a directory descriptor")
             self._scope, self._due, self._identity = scope, due_ns, identity
+            self._evidence_scope = evidence_scope
             self._pid, self._uid, self._slot = worker.pid, worker.uid, slot
             self._leaf = leaf
             self._owner = os.getpid()
@@ -264,12 +269,13 @@ class RegularFileObserver:
     ) -> tuple[Sample, ScopeReport]:
         """Return the raw sample and a bound report about slot, name, or process.
 
-        Refuse an unmatched scope, an unavailable or mismatched clock, or an
-        observation interval outside the declared window. Reports about a
-        slot or name describe the prebound original, with a different object
-        reported as indeterminate. Process reports describe pidfd liveness.
+        The complete EvidenceScope must have been supplied at construction.
+        Refuse a different scope, an unavailable or mismatched clock, or an
+        interval outside the declared window. Slot and name reports describe
+        the prebound original, with a different object reported as
+        indeterminate. Process reports describe pidfd liveness.
         """
-        if type(scope) is not EvidenceScope or scope.scope_id != self._scope:
+        if type(scope) is not EvidenceScope or scope != self._evidence_scope:
             raise ValueError("expected the observer's predeclared evidence scope")
         if type(provider_id) is not str or not provider_id.strip():
             raise ValueError("provider_id must be a nonempty string")

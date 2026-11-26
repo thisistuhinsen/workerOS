@@ -61,6 +61,47 @@ class CgroupSample:
     memory_peak_bytes: int | None = None
     memory_peak_state: EvidenceState = EvidenceState.UNAVAILABLE
 
+    @classmethod
+    def from_dict(cls, data: dict) -> "CgroupSample":
+        """Decode a meter CLI response's ``sample`` object into typed data.
+
+        The caller establishes which worker produced the response. Decode the
+        raw sample and use its ``report`` property for the scope projection.
+        """
+        if type(data) is not dict:
+            raise ValueError("expected a meter sample object")
+        values = dict(data)
+        values["scope"] = _scope_from_dict(values["scope"])
+        values["identity"] = CgroupIdentity(**values["identity"])
+        values["phase"] = ScopePhase(values["phase"])
+        if values["phase"] is ScopePhase.OBSERVATION:
+            raise ValueError("expected a begin or end meter phase")
+        for field, state_field, value_type in (
+            ("usage_usec", "cpu_state", int),
+            ("populated", "population_state", bool),
+            ("memory_current_bytes", "memory_current_state", int),
+            ("memory_peak_bytes", "memory_peak_state", int),
+        ):
+            state = values[state_field] = EvidenceState(values[state_field])
+            value = values[field]
+            if state is EvidenceState.OBSERVED:
+                if type(value) is not value_type or not 0 <= value <= _MAX_COUNTER:
+                    raise ValueError(f"invalid observed value for {field}")
+            elif state not in (EvidenceState.UNAVAILABLE, EvidenceState.INDETERMINATE) or value is not None:
+                raise ValueError(f"invalid unobserved reading for {field}")
+        reasons = values["reasons"]
+        if not isinstance(reasons, (list, tuple)) or any(type(reason) is not str for reason in reasons):
+            raise ValueError("expected meter diagnostic strings")
+        values["reasons"] = tuple(reasons)
+        sample = cls(**values)
+        _provenance(sample)
+        if ((sample.clock_id is not None and
+             (type(sample.clock_id) is not str or not sample.clock_id.strip())) or
+                any(type(tick) is not int or not 0 <= tick < 1 << 63
+                    for tick in (sample.started_ns, sample.finished_ns))):
+            raise ValueError("invalid meter clock or timestamps")
+        return sample
+
     @property
     def report(self) -> ScopeReport | None:
         """Project the CPU reading into the declared scope when its time is attributable."""
@@ -81,6 +122,7 @@ def _provenance(sample):
             or type(sample.session) is not str or not sample.session.strip()
             or type(sample.meter_pid) is not int or sample.meter_pid <= 0
             or type(sample.meter_uid) is not int or sample.meter_uid < 0
+            or type(sample.provider_id) is not str or not sample.provider_id.strip()
             or type(sample.scope) is not EvidenceScope):
         raise ValueError("invalid cgroup meter provenance")
     return sample.scope, sample.provider_id, identity, sample.session, sample.meter_pid, sample.meter_uid
@@ -111,6 +153,10 @@ def cpu_delta_usec(begin: CgroupSample, end: CgroupSample, *, require_meter_for:
     if end.usage_usec < begin.usage_usec:
         raise ValueError("CPU counter regressed")
     return end.usage_usec - begin.usage_usec
+
+
+def _scope_from_dict(data):
+    return EvidenceScope(**{**data, "run": RunBinding(**data["run"])})
 
 
 def _mount_id(fd):
@@ -247,8 +293,7 @@ class CgroupScopeMeter:
 def main():
     """Serve two explicit phases over stdin on a separately launched worker."""
     plan = json.loads(sys.stdin.readline())
-    scope_data = plan["scope"]
-    scope = EvidenceScope(**{**scope_data, "run": RunBinding(**scope_data["run"])})
+    scope = _scope_from_dict(plan["scope"])
     fd = plan["directory_fd"]
     if type(fd) is not int or fd < 3:
         raise ValueError("expected an explicitly inherited non-standard directory FD")
