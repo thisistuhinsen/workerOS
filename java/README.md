@@ -1,18 +1,18 @@
 # workerOS for Java
 
-Use `io.github.thisistuhinsen:worker-handoff:0.4.0` to read a file descriptor inherited from a
+Use `io.github.thisistuhinsen:worker-handoff:0.5.0` to read a file descriptor inherited from a
 workerOS ABI v1 launcher. The JAR has no runtime dependencies. It requires Linux x64 or ARM64 with
 procfs, a JDK 22+ runtime, and native access for the Java Foreign Function & Memory API.
 
 ## Install the release
 
-Once v0.4.0 is published, download the JAR, POM and checksums from the public GitHub Release.
+Once v0.5.0 is published, download the JAR, POM and checksums from the public GitHub Release.
 The downloads use public GitHub URLs.
 
 ```sh
-release=https://github.com/thisistuhinsen/workerOS/releases/download/v0.4.0
-jar=worker-handoff-0.4.0.jar
-pom=worker-handoff-0.4.0.pom
+release=https://github.com/thisistuhinsen/workerOS/releases/download/v0.5.0
+jar=worker-handoff-0.5.0.jar
+pom=worker-handoff-0.5.0.pom
 for file in "$jar" "$pom" SHA256SUMS; do
   curl --fail --silent --show-error --location "$release/$file" --output "$file" || exit 1
 done
@@ -30,7 +30,7 @@ Then add the dependency to your application's POM.
 <dependency>
   <groupId>io.github.thisistuhinsen</groupId>
   <artifactId>worker-handoff</artifactId>
-  <version>0.4.0</version>
+  <version>0.5.0</version>
 </dependency>
 ```
 
@@ -66,9 +66,9 @@ wheel on PATH, run the following. Maven needs access to its build plugins on fir
 ```sh
 mvn -B -ntp -f java/pom.xml clean package
 mkdir -p dist
-cp java/target/worker-handoff-0.4.0.jar dist/
-cp java/pom.xml dist/worker-handoff-0.4.0.pom
-bash java/test-package.sh dist/worker-handoff-0.4.0.jar dist/worker-handoff-0.4.0.pom
+cp java/target/worker-handoff-0.5.0.jar dist/
+cp java/pom.xml dist/worker-handoff-0.5.0.pom
+bash java/test-package.sh dist/worker-handoff-0.5.0.jar dist/worker-handoff-0.5.0.pom
 ```
 
 The test installs those two files into a fresh local Maven repository, builds a separate

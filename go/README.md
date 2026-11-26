@@ -2,13 +2,15 @@
 
 Go 1.22 or later on Linux `amd64` or `arm64`.
 
+After the `v0.5.0` tag is published, install the reader in your Go module.
+
 ```sh
-go get github.com/thisistuhinsen/workerOS/go/workerhandoff@v0.4.0
+go get github.com/thisistuhinsen/workerOS/go/workerhandoff@v0.5.0
 ```
 
-### If the v0.4.0 checksum lookup returns 404
+### Published v0.4.0 checksum fallback
 
-If Go reports that the checksum service could not fetch v0.4.0, confirm the
+The pinned checksums in this section apply only to v0.4.0. If Go reports that the checksum service could not fetch v0.4.0, confirm the
 public tag points to `cd3d621c28247a66b1c6978396335cc97d8c0fa9`.
 
 ```sh

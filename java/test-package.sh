@@ -12,7 +12,7 @@ cd "$work"
 mvn -B -ntp -Dmaven.repo.local="$repo" org.apache.maven.plugins:maven-install-plugin:3.1.4:install-file \
     -Dfile="$jar" -DpomFile="$pom"
 mvn -B -ntp -Dmaven.repo.local="$repo" -f consumer/pom.xml clean compile
-installed="$repo/io/github/thisistuhinsen/worker-handoff/0.4.0/worker-handoff-0.4.0"
+installed="$repo/io/github/thisistuhinsen/worker-handoff/0.5.0/worker-handoff-0.5.0"
 cmp "$jar" "$installed.jar"
 cmp "$pom" "$installed.pom"
 python3 -I consumer/test_handoff.py "$work/consumer/target/classes:$installed.jar"

@@ -20,7 +20,8 @@ if not re.fullmatch(r"(?:0|[1-9][0-9]*)(?:\.(?:0|[1-9][0-9]*)){2}", VERSION):
     raise ValueError("a three-part numeric release version is required")
 SOURCE_NAME = f"worker_handoff-{VERSION}"
 PUBLIC_DOCS = {
-    "CONTRIBUTING.md", "SECURITY.md", "docs/releasing.md", "docs/support.md",
+    "CONTRIBUTING.md", "SECURITY.md", "docs/api.md", "docs/regular-file-observer.md",
+    "docs/releasing.md", "docs/support.md",
     "docs/media/README.md", "docs/media/custody-lanyard.gif", "docs/media/fd-7.gif", "docs/media/one-small-ticket.gif",
 }
 NODE_FILES = {

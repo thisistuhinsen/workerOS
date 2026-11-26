@@ -16,6 +16,9 @@ from .evidence import (
 from .lifecycle import _clock_context, _duplicate, _fields, monotonic_clock_id as _clock_id
 
 
+_MAX_COUNTER = (1 << 64) - 1
+
+
 class ScopeMeterUnavailable(RuntimeError):
     """The requested read-only cgroup kernel interface cannot be established."""
 
@@ -36,7 +39,7 @@ class CgroupIdentity:
 
 @dataclass(frozen=True, slots=True)
 class CgroupSample:
-    """CPU microseconds and a separate population observation, with provenance."""
+    """CPU microseconds, memory bytes and a population point, with provenance."""
 
     scope: EvidenceScope
     provider_id: str
@@ -53,6 +56,10 @@ class CgroupSample:
     populated: bool | None
     population_state: EvidenceState
     reasons: tuple[str, ...]
+    memory_current_bytes: int | None = None
+    memory_current_state: EvidenceState = EvidenceState.UNAVAILABLE
+    memory_peak_bytes: int | None = None
+    memory_peak_state: EvidenceState = EvidenceState.UNAVAILABLE
 
     @property
     def report(self) -> ScopeReport | None:
@@ -66,6 +73,19 @@ class CgroupSample:
         )
 
 
+def _provenance(sample):
+    identity = sample.identity
+    if (type(identity) is not CgroupIdentity or type(identity.device) is not int or identity.device < 0
+            or type(identity.inode) is not int or identity.inode <= 0
+            or type(identity.mount_id) is not int or identity.mount_id <= 0
+            or type(sample.session) is not str or not sample.session.strip()
+            or type(sample.meter_pid) is not int or sample.meter_pid <= 0
+            or type(sample.meter_uid) is not int or sample.meter_uid < 0
+            or type(sample.scope) is not EvidenceScope):
+        raise ValueError("invalid cgroup meter provenance")
+    return sample.scope, sample.provider_id, identity, sample.session, sample.meter_pid, sample.meter_uid
+
+
 def cpu_delta_usec(begin: CgroupSample, end: CgroupSample, *, require_meter_for: tuple[int, int]) -> int:
     """Return the bracketed aggregate delta for one pinned meter session.
 
@@ -76,9 +96,7 @@ def cpu_delta_usec(begin: CgroupSample, end: CgroupSample, *, require_meter_for:
     if (type(begin) is not CgroupSample or type(end) is not CgroupSample
             or begin.phase is not ScopePhase.METER_BEGIN or end.phase is not ScopePhase.METER_END):
         raise ValueError("expected cgroup begin and end samples")
-    if (begin.scope, begin.provider_id, begin.identity, begin.session, begin.meter_pid, begin.meter_uid) != (
-        end.scope, end.provider_id, end.identity, end.session, end.meter_pid, end.meter_uid,
-    ):
+    if _provenance(begin) != _provenance(end):
         raise ValueError("cgroup scope or meter session does not match")
     if require_meter_for is None:
         raise ValueError("expected an interval to bracket")
@@ -87,7 +105,8 @@ def cpu_delta_usec(begin: CgroupSample, end: CgroupSample, *, require_meter_for:
         raise ValueError("meter samples lack a common bound clock or scope window")
     validate_scope_evidence(begin.scope, reports, observer_id=begin.provider_id,
                             meter_id=begin.provider_id, require_meter_for=require_meter_for)
-    if type(begin.usage_usec) is not int or type(end.usage_usec) is not int or begin.usage_usec < 0:
+    if any(type(value) is not int or not 0 <= value <= _MAX_COUNTER
+           for value in (begin.usage_usec, end.usage_usec)):
         raise ValueError("missing or invalid CPU counters")
     if end.usage_usec < begin.usage_usec:
         raise ValueError("CPU counter regressed")
@@ -107,23 +126,30 @@ def _cgroup_mount(mount_id):
     return False
 
 
+def _unsigned(value, maximum):
+    if not 0 < len(value) <= 20 or not value.isdigit() or int(value) > maximum:
+        raise ValueError("invalid unsigned kernel value")
+    return int(value)
+
+
 def _counter(data, key, maximum):
+    if key is None:
+        return _unsigned(data.strip(), maximum)
     rows = [row.split() for row in data.splitlines()]
     matches = [row for row in rows if row and row[0] == key]
     if len(matches) == 1 and len(matches[0]) == 2:
-        value = matches[0][1]
-        if 0 < len(value) <= 20 and value.isdigit() and int(value) <= maximum:
-            return int(value)
+        return _unsigned(matches[0][1], maximum)
     raise ValueError("counter missing, duplicated, or invalid")
 
 
 class CgroupScopeMeter:
-    """Borrow a directory FD, sampling only its CPU and population files.
+    """Borrow a directory FD and read fixed CPU, memory and population files.
 
     Use one serial meter instance for both readings. The caller provisions and
     verifies workload membership and who controls the scope. CPU usage is
-    aggregate. Population is a separate point observation, possibly unavailable
-    at the hierarchy root. Neither reading supplies a cleanup receipt.
+    aggregate. Memory and population are separate readings, possibly unavailable
+    at the hierarchy root. The meter only reads the historic memory peak. None
+    of these results supplies a cleanup receipt.
     """
 
     def __init__(self, *, scope, provider_id, directory_fd):
@@ -164,7 +190,7 @@ class CgroupScopeMeter:
     def __exit__(self, *_):
         self.close()
 
-    def _read(self, leaf, key, maximum):
+    def _read(self, leaf, key=None, maximum=_MAX_COUNTER):
         try:
             flags = os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW | os.O_NONBLOCK
             fd = os.open(leaf, flags, dir_fd=self._directory)
@@ -187,12 +213,15 @@ class CgroupScopeMeter:
             raise ValueError("expected a begin or end meter phase")
         clock = monotonic_clock_id()
         start = monotonic_ns()
-        usage, population, reasons = None, None, ()
-        cpu_state = population_state = EvidenceState.INDETERMINATE
+        usage = population = memory_current = memory_peak = None
+        cpu_state = population_state = current_state = peak_state = EvidenceState.INDETERMINATE
+        reasons = ()
         if clock == self._clock and self._scope.started_ns <= start <= self._scope.finished_ns:
-            usage, cpu_state, cpu_reasons = self._read("cpu.stat", b"usage_usec", (1 << 64) - 1)
+            usage, cpu_state, cpu_reasons = self._read("cpu.stat", b"usage_usec")
             population, population_state, population_reasons = self._read("cgroup.events", b"populated", 1)
-            reasons = cpu_reasons + population_reasons
+            memory_current, current_state, current_reasons = self._read("memory.current")
+            memory_peak, peak_state, peak_reasons = self._read("memory.peak")
+            reasons = cpu_reasons + population_reasons + current_reasons + peak_reasons
         clock_changed = clock != self._clock or monotonic_clock_id() != self._clock
         finish = monotonic_ns()
         if clock_changed:
@@ -204,12 +233,14 @@ class CgroupScopeMeter:
         if not bounded:
             reasons += ("sample_outside_scope_window",)
         if clock_changed or not bounded:
-            usage, population = None, None
-            cpu_state = population_state = EvidenceState.INDETERMINATE
+            usage = population = memory_current = memory_peak = None
+            cpu_state = population_state = current_state = peak_state = EvidenceState.INDETERMINATE
         return CgroupSample(
             self._scope, self._provider_id, phase, self._identity, self._session,
             self._pid, self._uids[1], clock, start, finish, usage, cpu_state,
             None if population is None else bool(population), population_state, reasons,
+            memory_current_bytes=memory_current, memory_current_state=current_state,
+            memory_peak_bytes=memory_peak, memory_peak_state=peak_state,
         )
 
 

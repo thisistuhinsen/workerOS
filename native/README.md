@@ -1,25 +1,26 @@
 # worker-handoff for Conan
 
-`worker-handoff/0.4.0` is a header-only Conan 2 package for Linux. Its C and
+`worker-handoff/0.5.0` is a header-only Conan 2 package for Linux. Its C and
 C++ API reads a regular file already inherited from a workerOS launcher.
 Launch a child with `WorkerRoster.start_executable(..., fds={"INPUT": fd})`
 to supply the FD and ABI metadata.
 
-Extract the GitHub release archive and create the package in your local
-Conan cache. Use an existing Linux Conan profile, or run
+After v0.5.0 is published, extract the GitHub Release archive and create the
+package in your local Conan cache. Use an existing Linux Conan profile, or run
 `conan profile detect` for a new cache.
 
 ```sh
-release=https://github.com/thisistuhinsen/workerOS/releases/download/v0.4.0
-archive=worker-handoff-conan-0.4.0.tar.gz
+release=https://github.com/thisistuhinsen/workerOS/releases/download/v0.5.0
+archive=worker-handoff-conan-0.5.0.tar.gz
 curl -fL "$release/$archive" -o "$archive" &&
     curl -fL "$release/SHA256SUMS" -o SHA256SUMS &&
-    sha256sum --check --ignore-missing SHA256SUMS &&
+    awk -v f="$archive" '$2 == f { print; n++ } END { if (n != 1) exit 1 }' SHA256SUMS > "$archive.sha256" &&
+    sha256sum --strict --check "$archive.sha256" &&
     tar -xzf "$archive" &&
-    conan create ./worker-handoff-conan-0.4.0 --no-remote
+    conan create ./worker-handoff-conan-0.5.0 --no-remote
 ```
 
-Add `worker-handoff/0.4.0` to your consumer's `[requires]` in
+Add `worker-handoff/0.5.0` to your consumer's `[requires]` in
 `conanfile.txt`. With Conan's `CMakeDeps` and `CMakeToolchain`, use
 `find_package(worker-handoff CONFIG REQUIRED)` and link your target to
 `worker-handoff::worker-handoff`. A source checkout uses
@@ -74,5 +75,5 @@ executable to the script. Conan 2, CMake, Make and C/C++ compilers must be
 on PATH.
 
 ```sh
-PYTHON=/path/to/venv/bin/python bash ./worker-handoff-conan-0.4.0/check-conan.sh
+PYTHON=/path/to/venv/bin/python bash ./worker-handoff-conan-0.5.0/check-conan.sh
 ```

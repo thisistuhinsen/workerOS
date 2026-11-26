@@ -17,8 +17,8 @@ worker, or run several without wiring up a queue first.
 - **Run a calculation or invoke a tool.** Give the worker a name and join it
   for an exit status. Use the direct-child supervisor when you need a
   deadline, cancellation, or bounded cleanup.
-- **Register a process you already run.** Record its name, role, and PID. Registration doesn't check
-  liveness or take over the process.
+- **Register a process you already run.** Record its name, role, and PID.
+  The process keeps its existing owner.
 - **Hand a worker the file you actually opened.** Inherit its descriptor at
   launch or send a read-only descriptor over a connected Unix socket. Use
   the optional release and custody checks when the handoff needs stricter
@@ -32,23 +32,21 @@ supervise workers with or without file inputs. The other language packages
 are readers for the inherited file-descriptor interface. An executable can
 run without a reader package if it doesn't need that interface.
 
-These links go straight to the v0.4.0 GitHub release assets.
+These instructions target [v0.5.0](https://github.com/thisistuhinsen/workerOS/releases/tag/v0.5.0).
+Until it is available, use the [tagged v0.4.0 install guide](https://github.com/thisistuhinsen/workerOS/blob/v0.4.0/README.md)
+and [published assets](https://github.com/thisistuhinsen/workerOS/releases/tag/v0.4.0). To try v0.5.0 features
+before publication, install the Python package with `python -m pip install .`
+from this checkout in a virtual environment.
 
-- [Python wheel](https://github.com/thisistuhinsen/workerOS/releases/download/v0.4.0/worker_handoff-0.4.0-py3-none-any.whl)
-- [Python source distribution](https://github.com/thisistuhinsen/workerOS/releases/download/v0.4.0/worker_handoff-0.4.0.tar.gz)
-- [npm tarball](https://github.com/thisistuhinsen/workerOS/releases/download/v0.4.0/worker-handoff-0.4.0.tgz)
-- [C and C++ Conan recipe](https://github.com/thisistuhinsen/workerOS/releases/download/v0.4.0/worker-handoff-conan-0.4.0.tar.gz)
-- [Java Maven JAR](https://github.com/thisistuhinsen/workerOS/releases/download/v0.4.0/worker-handoff-0.4.0.jar) and [POM](https://github.com/thisistuhinsen/workerOS/releases/download/v0.4.0/worker-handoff-0.4.0.pom)
-- [SHA256SUMS](https://github.com/thisistuhinsen/workerOS/releases/download/v0.4.0/SHA256SUMS)
-
-With the checksum file and its listed assets in the same directory, run
+Each GitHub release has a wheel, Python source distribution, npm tarball,
+Conan recipe archive, Maven JAR and POM, and `SHA256SUMS`. Put the checksum file
+and its listed assets in the same directory to verify them with
 `sha256sum -c SHA256SUMS`.
 
-Set the base URL once for the install commands below.
-
 ```sh
-release=https://github.com/thisistuhinsen/workerOS/releases/download/v0.4.0
-wheel="$release/worker_handoff-0.4.0-py3-none-any.whl"
+version=0.5.0
+release="https://github.com/thisistuhinsen/workerOS/releases/download/v$version"
+wheel="$release/worker_handoff-$version-py3-none-any.whl"
 ```
 
 **pip** in a fresh environment
@@ -81,11 +79,11 @@ If you manage Node.js with [nvm](https://github.com/nvm-sh/nvm), select a
 supported Node version first, for example `nvm install 22` and `nvm use 22`.
 
 ```sh
-npm install "$release/worker-handoff-0.4.0.tgz"
+npm install "$release/worker-handoff-$version.tgz"
 ```
 
-On npm 12, opt into that direct URL with `--allow-remote=all` or download the
-tarball and install it from disk.
+If npm restricts remote tarballs, download the asset, check its digest, and
+install the local file with `npm install "./worker-handoff-$version.tgz"`.
 
 ## Run three workers without a file
 
@@ -95,7 +93,7 @@ tiny commands stand in for tools your app already uses. It starts all three
 before waiting for any of them, keeps every started handle, and reports
 each result and cleanup separately. No file bindings, shell, or queue.
 
-From a workerOS checkout with the released Python package installed:
+From a workerOS checkout with the Python package installed, run the example.
 
 ```sh
 python examples/run_local_workers.py
@@ -103,9 +101,9 @@ python examples/run_local_workers.py
 
 Expected: each worker reports exit `0` and `cleanup reaped`. Their own output
 can arrive in any order. The supervisor manages direct children it launches
-or is explicitly given control of. To run a synchronous, importable Python callable
-instead, use `WorkerRoster.start`. Do not pass an async handler directly. Roles are application labels, not OS
-permissions. workerOS doesn't provide a sandbox or a distributed queue.
+or is explicitly given control of. Use `WorkerRoster.start` to run a synchronous,
+importable Python callable. Wrap async code in a synchronous entry point.
+Roles are application labels and programs run with their existing OS permissions.
 A roster or supervisor keeps used names for its lifetime; use a fresh
 instance for a new finite workload if names need to be reused. See
 [Support and recovery](docs/support.md) for ownership and timeout behavior.
@@ -113,24 +111,34 @@ instance for a new finite workload if names need to be reused. See
 ## Packages
 
 The Python and npm commands above install directly from GitHub. Go and Cargo
-read the `v0.4.0` source tag. The Maven and Conan examples install GitHub
-assets into the local package-manager cache. Each directory has a clean
-consumer example and a Linux FD smoke test.
+read a versioned Git tag. Maven and Conan use GitHub assets to populate their
+local caches. The C, C++, Go, Java, Node.js and Rust libraries read inherited
+FDs. They leave launching, writes, supervision and custody to the application.
 
 | Worker | Package manager | Package or source |
 | --- | --- | --- |
 | Python | pip or uv | `worker-handoff` from the wheel above |
 | Node.js | npm | `worker-handoff` from the tarball above. Linux x64 or ARM64 with procfs and Node.js 22+ |
-| Go | Go modules | `GOPROXY=direct go get github.com/thisistuhinsen/workerOS/go/workerhandoff@v0.4.0` · [Go reader and checksum fallback](https://github.com/thisistuhinsen/workerOS/blob/main/go/README.md) |
-| Rust | Cargo | `worker-handoff = { git = "https://github.com/thisistuhinsen/workerOS", tag = "v0.4.0" }` · [Rust reader](https://github.com/thisistuhinsen/workerOS/tree/main/rust/) |
-| C | Conan 2 | `worker-handoff/0.4.0` · [C consumer](https://github.com/thisistuhinsen/workerOS/tree/main/native/tests/c/) |
-| C++ | Conan 2 | `worker-handoff/0.4.0` · [C++ consumer](https://github.com/thisistuhinsen/workerOS/tree/main/native/tests/cpp/) |
-| Java | Maven | `io.github.thisistuhinsen:worker-handoff:0.4.0` · [Install and run a Java consumer](https://github.com/thisistuhinsen/workerOS/tree/main/java/) |
+| Go | Go modules | `go get "github.com/thisistuhinsen/workerOS/go/workerhandoff@v$version"` · [Go reader and v0.4.0 checksum fallback](https://github.com/thisistuhinsen/workerOS/blob/main/go/README.md) |
+| Rust | Cargo | `worker-handoff = { git = "https://github.com/thisistuhinsen/workerOS", tag = "v0.5.0" }` in `Cargo.toml` · [Rust reader](https://github.com/thisistuhinsen/workerOS/blob/main/rust/README.md) |
+| C | Conan 2 | `worker-handoff/0.5.0` · [C consumer](https://github.com/thisistuhinsen/workerOS/tree/main/native/tests/c/) |
+| C++ | Conan 2 | `worker-handoff/0.5.0` · [C++ consumer](https://github.com/thisistuhinsen/workerOS/tree/main/native/tests/cpp/) |
+| Java | Maven | `io.github.thisistuhinsen:worker-handoff:0.5.0` · [Java reader and Maven install](https://github.com/thisistuhinsen/workerOS/blob/main/java/README.md). Linux x64 or ARM64 with procfs and JDK 22+ |
 
-These are GitHub-hosted packages. Maven users install the released JAR with
-its matching POM before resolving the normal Maven coordinates. Conan users
-create the released recipe in a local cache before installing that package
-into their project. [Conan install instructions](https://github.com/thisistuhinsen/workerOS/blob/main/native/README.md)
+For Maven, download and verify the JAR and matching POM. Install both into
+your local Maven repository, then add the matching coordinates to your application's POM.
+
+```sh
+mvn -B org.apache.maven.plugins:maven-install-plugin:3.1.4:install-file \
+  -Dfile="worker-handoff-$version.jar" -DpomFile="worker-handoff-$version.pom"
+```
+
+For C or C++, follow the [Conan download and checksum instructions](https://github.com/thisistuhinsen/workerOS/blob/main/native/README.md).
+In the directory with the extracted recipe, run
+`conan create "./worker-handoff-conan-$version" --no-remote` with a Linux profile.
+In your consumer, add `worker-handoff/<version>` under `[requires]` and run
+`conan install . --no-remote`. Use the chosen version in your dependency
+manifest for Maven, Conan, or Cargo.
 
 ## Run an inherited FD example
 
@@ -218,10 +226,11 @@ supervision and custody use the Python APIs below.
   status or a timeout. A join timeout leaves the worker alone. The roster
   keeps used names for its lifetime. Application roles are labels, and even
   an `observe` worker can read contents if it receives a readable FD.
-- **Work on an open file.** `Writer` writes through a caller-owned writable
-  descriptor. `Original` adopts and reads an existing read-only descriptor
-  with positional reads. `observe(fd)` samples identity, access mode, owner
-  and size without reading file contents.
+- **Work on an open file.** `Writer` takes ownership of an already-open writable
+  descriptor for a file the caller owns. `Original` takes ownership of an
+  existing read-only descriptor and reads by offset. `observe(fd)` borrows a
+  local descriptor and samples identity, access mode, owner and size without
+  reading file contents.
 - **Deliver over a Unix socket.** `send_original` and `receive_original` use
   one connected Unix stream with a pinned peer PID and UID. They transfer one
   read-only descriptor via `SCM_RIGHTS`, with the caller-pinned token and EOF
@@ -233,7 +242,7 @@ supervision and custody use the Python APIs below.
   reads preserve the shared offset. File contents can still change if a
   writer holds access. Keep the parent's source descriptors stable during launch.
 
-[Python source and public exports](src/worker_handoff/__init__.py).
+[Python API guide](docs/api.md) · [Public exports](src/worker_handoff/__init__.py).
 The v0.2 Python APIs, Unix-stream framing and inherited FD ABI remain compatible.
 
 ### Authorize a managed release
@@ -275,6 +284,17 @@ pre-grant custody. Dispatch records child creation, and `lifecycle.cleanup`
 records the outcome of requested process cleanup. Reconcile a completed or
 uncertain write before deciding what to do about a failed or uncertain dispatch.
 
+### Observe a worker and measure its scope
+
+The v0.5.0 [regular-file observer](https://github.com/thisistuhinsen/workerOS/blob/main/docs/regular-file-observer.md)
+can sample a designated descriptor slot, a pinned name or a pidfd with handles
+your application already authorizes. The [provider examples](docs/support.md#producing-observation-and-meter-reports)
+show how to bind a point observation and start/end readings from an existing
+cgroup v2 to one run. The meter reports aggregate CPU, available memory
+readings and a separate population point. The kernel memory peak can predate
+the run. Your application establishes provider authority, workload membership
+and coverage. Strict custody still uses the pre-grant path above.
+
 ## Verify and contribute
 
 - [Linux wheel check](https://github.com/thisistuhinsen/workerOS/blob/main/scripts/check-linux.sh) builds the wheel, installs it
@@ -286,9 +306,10 @@ uncertain write before deciding what to do about a failed or uncertain dispatch.
   read-only grant over a sealed file and refusal paths using separate Linux
   accounts in a disposable VM. See the prerequisites in the
   [support and verification notes](docs/support.md).
-- [Linux CI](https://github.com/thisistuhinsen/workerOS/blob/main/.github/workflows/linux.yml) records the tested platforms and
-  separates runner-kernel tests from container userspace checks. See the
-  [support boundaries](docs/support.md) for native Windows and WSL2.
+- [Support and verification](docs/support.md) lists tested Linux kernels and
+  container userspaces. Hosted WSL2 runs the Python suite and the C and Python
+  examples in an Ubuntu guest. Native Windows checks wheel installation and
+  the Linux-only import boundary.
 - [Release process](docs/releasing.md) describes the candidate checks,
   checksums and protected GitHub release.
 - [Contributing](CONTRIBUTING.md) and [security reporting](SECURITY.md) cover

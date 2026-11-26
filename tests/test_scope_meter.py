@@ -29,6 +29,10 @@ from worker_handoff.scope_meter import (
 
 
 _PAYLOAD = b"scope input"
+_MEMORY_GAUGES = {
+    "memory.current": ("memory_current_bytes", "memory_current_state"),
+    "memory.peak": ("memory_peak_bytes", "memory_peak_state"),
+}
 _CHILD = """
 import os, select, sys, time
 from pathlib import Path
@@ -127,6 +131,36 @@ class CgroupScopeMeterTest(unittest.TestCase):
             self.skipTest("own cgroup v2 cpu.stat has no usable usage_usec counter")
         return int(rows[0][0])
 
+    @staticmethod
+    def kernel_memory_states(directory_fd):
+        states = {}
+        for leaf in _MEMORY_GAUGES:
+            try:
+                fd = os.open(leaf, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW, dir_fd=directory_fd)
+                with os.fdopen(fd, "rb") as source:
+                    data = source.read(128).strip()
+            except OSError:
+                states[leaf] = EvidenceState.UNAVAILABLE
+                continue
+            states[leaf] = (EvidenceState.OBSERVED
+                            if 0 < len(data) <= 20 and data.isdigit() and int(data) < 1 << 64
+                            else EvidenceState.INDETERMINATE)
+        return states
+
+    def assert_memory_fields(self, fields, expected, *, serialized=False):
+        for leaf, (value_key, state_key) in _MEMORY_GAUGES.items():
+            state = expected[leaf]
+            if serialized:
+                self.assertEqual(fields[state_key], state.value, leaf)
+            else:
+                self.assertIs(fields[state_key], state, leaf)
+            value = fields[value_key]
+            if state is EvidenceState.OBSERVED:
+                self.assertIs(type(value), int, leaf)
+                self.assertTrue(0 <= value < 1 << 64, leaf)
+            else:
+                self.assertIsNone(value, leaf)
+
     def observed_sample(self, meter, phase, clock_id):
         sample = meter.sample(phase)
         if sample.cpu_state is EvidenceState.UNAVAILABLE:
@@ -183,9 +217,11 @@ class CgroupScopeMeterTest(unittest.TestCase):
             except ScopeMeterUnavailable as exc:
                 self.skipTest(f"cgroup v2 meter unavailable: {exc}")
             lower = self.kernel_usage(fd)
+            memory_states = self.kernel_memory_states(fd)
             begin = self.observed_sample(meter, ScopePhase.METER_BEGIN, clock_id)
             self.assertLessEqual(lower, begin.usage_usec)
             self.assertLessEqual(begin.usage_usec, self.kernel_usage(fd))
+            self.assert_memory_fields(asdict(begin), memory_states)
 
             launched = monotonic_ns()
             child = subprocess.Popen(
@@ -218,22 +254,29 @@ class CgroupScopeMeterTest(unittest.TestCase):
             reaped = monotonic_ns()
 
             lower = self.kernel_usage(fd)
+            memory_states = self.kernel_memory_states(fd)
             end = self.observed_sample(meter, ScopePhase.METER_END, clock_id)
             self.assertLessEqual(lower, end.usage_usec)
             self.assertLessEqual(end.usage_usec, self.kernel_usage(fd))
+            self.assert_memory_fields(asdict(end), memory_states)
+            # These are shared cgroup gauges. Attribute neither value to the child.
+            for leaf, state in memory_states.items():
+                print(f"SCOPE-METER {leaf}: {state.name}")
 
             real_open = os.open
 
-            def missing_events(path, *args, **kwargs):
-                if path == "cgroup.events" and kwargs.get("dir_fd") == meter._directory:
-                    raise FileNotFoundError(errno.ENOENT, "fixture population file absent")
+            def missing_fields(path, *args, **kwargs):
+                if path in ("cgroup.events", "memory.current") and kwargs.get("dir_fd") == meter._directory:
+                    raise FileNotFoundError(errno.ENOENT, "fixture metric file absent")
                 return real_open(path, *args, **kwargs)
 
-            with patch("worker_handoff.scope_meter.os.open", side_effect=missing_events):
+            with patch("worker_handoff.scope_meter.os.open", side_effect=missing_fields):
                 cpu_only = self.observed_sample(meter, ScopePhase.METER_END, clock_id)
             self.assertIs(cpu_only.population_state, EvidenceState.UNAVAILABLE)
             self.assertIsNone(cpu_only.populated)
             self.assertIn(f"cgroup.events_errno:{errno.ENOENT}", cpu_only.reasons)
+            self.assertIn(f"memory.current_errno:{errno.ENOENT}", cpu_only.reasons)
+            self.assert_memory_fields(asdict(cpu_only), memory_states | {"memory.current": EvidenceState.UNAVAILABLE})
             self.assertLessEqual(end.usage_usec, cpu_only.usage_usec)
 
             self.assertIsNotNone(begin.identity)
@@ -264,6 +307,7 @@ class CgroupScopeMeterTest(unittest.TestCase):
         with ExitStack() as stack:
             fd, _ = self.open_self_cgroup(stack)
             lower = self.kernel_usage(fd)
+            memory_states = self.kernel_memory_states(fd)
             plan = {"scope": asdict(scope), "directory_fd": fd, "provider_id": "meter"}
             phases = (ScopePhase.METER_BEGIN, ScopePhase.METER_END)
             requests = "".join(json.dumps(item) + "\n" for item in (plan, *(p.value for p in phases)))
@@ -283,6 +327,7 @@ class CgroupScopeMeterTest(unittest.TestCase):
                 self.assertEqual((sample["scope"], sample["provider_id"], sample["phase"]),
                                  (plan["scope"], "meter", phase.value))
                 self.assertEqual(sample["cpu_state"], EvidenceState.OBSERVED.value)
+                self.assert_memory_fields(sample, memory_states, serialized=True)
                 self.assertEqual(sample["clock_id"], clock_id)
                 if clock_id is None:
                     self.assertIsNone(report)
@@ -319,7 +364,10 @@ class CgroupScopeMeterTest(unittest.TestCase):
         self.assertEqual(cpu_delta_usec(begin, end, require_meter_for=interval), 15)
         for altered, message in (
             (replace(end, session="different-session"), "session does not match"),
+            (replace(end, meter_uid=None), "invalid cgroup meter provenance"),
+            (replace(end, identity=None), "invalid cgroup meter provenance"),
             (replace(end, usage_usec=59), "counter regressed"),
+            (replace(end, usage_usec=1 << 64), "invalid CPU counters"),
         ):
             with self.subTest(message=message), self.assertRaisesRegex(ValueError, message):
                 cpu_delta_usec(begin, altered, require_meter_for=interval)

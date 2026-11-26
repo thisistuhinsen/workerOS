@@ -2,9 +2,11 @@
 
 Read a regular file descriptor inherited from a trusted workerOS launcher on Linux x86-64 or AArch64. Requires Rust 1.85 or newer and has no Cargo dependencies.
 
+After the `v0.5.0` tag is published, add it to your dependencies.
+
 ```toml
 [dependencies]
-worker-handoff = { git = "https://github.com/thisistuhinsen/workerOS", tag = "v0.4.0" }
+worker-handoff = { git = "https://github.com/thisistuhinsen/workerOS", tag = "v0.5.0" }
 ```
 
 ```rust

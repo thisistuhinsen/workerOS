@@ -4,13 +4,13 @@ Your supervisor already opened the file. `worker-handoff` lets a Node.js worker 
 
 ## Install
 
-Use Node.js 22 or newer on Linux x64 or ARM64 with procfs mounted at `/proc`. Install the GitHub Release tarball in your Node project.
+Use Node.js 22 or newer on Linux x64 or ARM64 with procfs mounted at `/proc`. After v0.5.0 is published, install its GitHub Release tarball in your Node project.
 
 ```sh
-npm install --no-audit --no-fund https://github.com/thisistuhinsen/workerOS/releases/download/v0.4.0/worker-handoff-0.4.0.tgz
+npm install --no-audit --no-fund https://github.com/thisistuhinsen/workerOS/releases/download/v0.5.0/worker-handoff-0.5.0.tgz
 ```
 
-For an offline install, save the tarball locally and run `npm install --offline --no-audit --no-fund ./worker-handoff-0.4.0.tgz`.
+For an offline install, save the tarball locally and run `npm install --offline --no-audit --no-fund ./worker-handoff-0.5.0.tgz`.
 With npm 12's default remote URL policy, pass `--allow-remote=all` for that direct URL install or use the local tarball.
 
 ## Read one inherited file

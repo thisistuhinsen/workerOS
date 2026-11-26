@@ -127,13 +127,16 @@ supplies the already-authorized handles, trusted plan and procfs access.
 
 `CgroupScopeMeter` in `worker_handoff.scope_meter` borrows a non-inheritable
 directory FD from one already accessible cgroup v2. Each `sample()` reads
-`cpu.stat` and, if present, `cgroup.events` from that directory. It retains the
+`cpu.stat`, `cgroup.events`, `memory.current`, and `memory.peak` where available. It retains the
 pinned device, inode, mount ID, meter session, local PID and effective UID,
 clock context, and reading interval. `usage_usec` is cumulative CPU time in
-microseconds for the cgroup and its descendants. `populated` is a separate
-point reading of live-process presence. The reads are sequential. The
-population field can be unavailable at the hierarchy root while CPU remains
-available. [Linux cgroup v2 interface](https://docs.kernel.org/admin-guide/cgroup-v2.html)
+microseconds for the cgroup and its descendants. `memory_current_bytes` is
+current memory usage, and `memory_peak_bytes` is the kernel's historic high
+water mark, which can predate the run. The meter opens both files read-only
+and never resets the peak. `populated` is a separate point reading of
+live-process presence. The reads are sequential and each field has its own
+state. CPU can be available when memory or population files are absent, for
+example at the hierarchy root. [Linux cgroup v2 interface](https://docs.kernel.org/admin-guide/cgroup-v2.html)
 
 Keep one meter instance for both phases. Build the `EvidenceScope` using
 `worker_handoff.scope_meter.monotonic_clock_id()` from a verified common
@@ -162,6 +165,8 @@ counter. Keep both raw samples with the result. A caller needs workload
 membership and an exclusive scope to attribute the full delta to its run.
 An empty population point and an owned-child reap each describe a different
 fact. Whole-scope cleanup and continuous custody need separate evidence.
+Retained storage, wire traffic, and resources outside the cgroup require
+separate measurements from the systems responsible for them.
 
 For a separately launched meter, use `python -I -m worker_handoff.scope_meter`
 with the already-open directory inherited. Send one JSON plan line with
@@ -172,9 +177,10 @@ null. The caller owns the worker's I/O and termination deadlines.
 
 After installing the wheel, run the disposable owned-child example from the
 checkout with `python -I -m unittest discover -v -s tests -p test_scope_meter.py`.
-It compares real aggregate kernel counters around launch and reap in the
-fixture's existing cgroup. It reports when the clock cannot bind those
-readings to the observer. The fixture's shared scope measures compatibility.
+It compares real aggregate CPU readings around launch and reap in the
+fixture's existing cgroup and reports memory availability per field. It
+reports when the clock cannot bind those readings to the observer. The
+fixture's shared scope measures compatibility.
 
 ## Choosing an inherited reader
 
