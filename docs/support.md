@@ -16,3 +16,31 @@ The connected Unix stream framing and Python controller APIs remain at their exi
 An inherited FD and its environment fields describe an application grant. The application must establish authorization and descriptor lifetime. A readable file descriptor permits reading the file, including when the roster labels a worker `observe`. Holding an inode across a rename preserves what the descriptor refers to. It does not freeze bytes another writer can change.
 
 The project supports the latest published release. Report failures against that release and include the exact platform and package-manager path. [Contribution policy](../CONTRIBUTING.md)
+
+## When a worker doesn't finish
+
+- A `WorkerRoster.join` deadline can return `None` while the worker is
+  still alive. Registration does not give you wait or signal authority.
+- The direct-child supervisor runs one control loop at a time. Use a
+  separate supervisor for independent wait loops. A roster starts Python
+  callables using `spawn` by default; use an importable target and protect
+  startup with `if __name__ == "__main__"`. Built-in executable starts
+  use inherited standard streams. For custom streams, create your own
+  waitable `Popen` child and explicitly transfer supervision with `adopt`.
+- In a supervised call, cleanup after timeout or cancellation is opt-in.
+  Inspect `result.cleanup` for the result of that attempt. A
+  `SupervisionStartError.process` means the child may already be running.
+- For managed file release, dispatch, write effect, exit and cleanup are
+  separate. A successful or partial write can precede failed delivery.
+  Reconcile what took effect before retrying.
+
+## Choosing an inherited reader
+
+The reader packages never launch workers. All use positional reads; none
+makes a snapshot of the file. C, C++ and Node can borrow or take ownership
+of the inherited descriptor. Go, Java and Rust own a private duplicate and
+leave the inherited slot open. Rust accepts read-only inputs only; the
+other readers can also read from a read-write binding that matches the
+declared access. Go checks the supplied monotonic deadline before starting
+a read; it can't cancel an already-started read. Follow each package's
+example for byte counts, EOF and cleanup.

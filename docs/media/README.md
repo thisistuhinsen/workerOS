@@ -1,5 +1,19 @@
 # Terminal animation transcripts
 
+## One small ticket
+
+A joke about making infrastructure for a single job. The terminal lines are
+a cartoon, not literal workerOS output.
+
+```text
+ticket   Run one thumbnail worker.
+meeting  Obviously, Redis.
+meeting  And a dashboard for Redis.
+meeting  The dashboard needs a worker.
+worker   thumbnail: exit 0
+ticket   Can we put the thumbnail in charge?
+```
+
 ## Report handoff
 
 The shell renames an open file. A reader with an inherited descriptor still

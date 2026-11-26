@@ -1,30 +1,37 @@
 # workerOS
 
-Your worker needs the file you opened, even if someone has already renamed it
-to `report-final-FINAL.txt`. workerOS hands a trusted local worker an open Linux
-file descriptor (FD) for the same file. The worker can get on with reading it.
+Starting a subprocess is easy. Keeping track of ten tools that can hang,
+exit halfway through a job, or read the wrong input is where your app starts
+growing its own process manager.
 
-- **Send a generated report to a worker you already run.** Pass the open
-  read-only file over a connected Unix socket.
-- **Run a native reader from Python.** Launch it with an inherited FD, whether
-  the reader is written in C, Go, Java, or another language with FD access.
-- **Put a gate in front of a release.** Approve the specific file and command,
-  then opt into direct-child cleanup or independent custody checks as needed.
+workerOS gives Python apps a small, local worker layer on Linux. Run a
+callable, a renderer, or someone else's executable. Track the actual child
+and find out how it ended. Pass an open file only when the job needs one.
+You don't need to deploy a queue to make a thumbnail.
 
-![Terminal cartoon. After a rename, the pathname asks why the reader saved it as a number. The reader gets W at offset zero from FD 7 and says, It's how we met.](docs/media/fd-7.gif)
+![Terminal cartoon: a request for one thumbnail worker turns into a meeting about Redis and a dashboard. The worker finishes, so the ticket asks whether the thumbnail can take charge.](docs/media/one-small-ticket.gif)
 
-[Read the report handoff as text](docs/media/README.md#report-handoff).
+[Read the cartoon as text](docs/media/README.md#one-small-ticket).
+
+- **Run a calculation or invoke a tool.** Give the worker a name and join it
+  for an exit status. Use the direct-child supervisor when you need a
+  deadline, cancellation, or bounded cleanup.
+- **Register a process you already run.** Record its name, role, and PID. Registration doesn't check
+  liveness or take over the process.
+- **Hand a worker the file you actually opened.** Inherit its descriptor at
+  launch or send a read-only descriptor over a connected Unix socket. Use
+  the optional release and custody checks when the handoff needs stricter
+  evidence.
 
 ## Install
 
-The Python package is `worker-handoff` and imports as `worker_handoff`.
-It requires Linux and Python 3.11 or later. The other packages give existing
-workers a small reader for the same inherited FD ABI. The Python API also
-launches workers, handles Unix-socket delivery and supplies the optional
-release and custody controls.
+Install `worker-handoff` on Linux with Python 3.11+. Import it as
+`worker_handoff`. The Python package is the controller: it can launch and
+supervise workers with or without file inputs. The other language packages
+are readers for the inherited file-descriptor interface. An executable can
+run without a reader package if it doesn't need that interface.
 
-The following URLs are for the v0.4.0 GitHub release assets and resolve once
-the release is published.
+These links go straight to the v0.4.0 GitHub release assets.
 
 - [Python wheel](https://github.com/thisistuhinsen/workerOS/releases/download/v0.4.0/worker_handoff-0.4.0-py3-none-any.whl)
 - [Python source distribution](https://github.com/thisistuhinsen/workerOS/releases/download/v0.4.0/worker_handoff-0.4.0.tar.gz)
@@ -79,6 +86,41 @@ npm install "$release/worker-handoff-0.4.0.tgz"
 On npm 12, opt into that direct URL with `--allow-remote=all` or download the
 tarball and install it from disk.
 
+## Run a worker without a file
+
+Run this with the package installed on Linux or WSL2 with pidfd support.
+The controller runs a normal local executable and waits for its exit. It
+passes no file bindings and starts no shell.
+
+```python
+import sys
+from time import monotonic_ns
+
+from worker_handoff import DirectChildSupervisor
+
+supervisor = DirectChildSupervisor()
+deadline = monotonic_ns() + 5_000_000_000
+worker = supervisor.start_executable(
+    "quick-math", "compute",
+    [sys.executable, "-c", "print(sum(range(10)))"],
+    due_ns=deadline, env={},
+)
+result = supervisor.wait(
+    worker.name, due_ns=deadline, cleanup_due_ns=deadline + 2_000_000_000,
+)
+assert result.returncode == 0, result
+```
+
+Expected output: `45`. The cleanup deadline applies after timeout or
+cancellation. The supervisor manages direct children it launches or is
+explicitly given control of. To run an importable Python callable instead,
+use `WorkerRoster.start`. Worker names and roles are application labels.
+Programs still run with their existing OS permissions; workerOS doesn't
+provide a sandbox or a distributed queue. A roster keeps used names for its
+lifetime; use one roster per workload or batch if names need to be reused.
+For ownership differences and timeout behavior, see
+[Support and recovery](docs/support.md).
+
 ## Packages
 
 The Python and npm commands above install directly from GitHub. Go and Cargo
@@ -90,7 +132,7 @@ consumer example and a Linux FD smoke test.
 | --- | --- | --- |
 | Python | pip or uv | `worker-handoff` from the wheel above |
 | Node.js | npm | `worker-handoff` from the tarball above. Linux x64 or ARM64 with procfs and Node.js 22+ |
-| Go | Go modules | `GOPROXY=direct go get github.com/thisistuhinsen/workerOS/go/workerhandoff@v0.4.0` · [Go reader](go/) |
+| Go | Go modules | `GOPROXY=direct go get github.com/thisistuhinsen/workerOS/go/workerhandoff@v0.4.0` · [Go reader and checksum fallback](go/README.md) |
 | Rust | Cargo | `worker-handoff = { git = "https://github.com/thisistuhinsen/workerOS", tag = "v0.4.0" }` · [Rust reader](rust/) |
 | C | Conan 2 | `worker-handoff/0.4.0` · [C consumer](native/tests/c/) |
 | C++ | Conan 2 | `worker-handoff/0.4.0` · [C++ consumer](native/tests/cpp/) |
@@ -102,6 +144,14 @@ create the released recipe in a local cache before installing that package
 into their project. [Conan install instructions](native/README.md)
 
 ## Run an inherited FD example
+
+Your worker needs the file you opened, even if someone has already renamed it
+to `report-final-FINAL.txt`. The filename can change; the open descriptor
+still refers to the same file. The worker can get on with its day.
+
+![Terminal cartoon. After a rename, the pathname asks why the reader saved it as a number. The reader gets W at offset zero from FD 7 and says, It's how we met.](docs/media/fd-7.gif)
+
+[Read the report handoff as text](docs/media/README.md#report-handoff).
 
 With the wheel's Python environment active, run its bundled launcher. It
 creates one disposable input file, gives each worker an inherited read-only
