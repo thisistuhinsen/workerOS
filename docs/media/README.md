@@ -1,7 +1,7 @@
 # Terminal animation transcripts
 
-Each animation plays once and settles on its full exchange. The transcripts
-below give the same dialogue in text.
+The first comic repeats twice after the initial play, then stops. The other
+animations play once. The transcripts below give the same dialogue in text.
 
 ## Everything is green
 
