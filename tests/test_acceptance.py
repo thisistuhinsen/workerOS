@@ -28,7 +28,8 @@ from worker_handoff import (
     observe, receive_original, release_executable, send_original,
 )
 from worker_handoff.evidence import (
-    EvidenceObservation, EvidenceState, RunBinding, RunEvent, validate_run_evidence,
+    EvidenceObservation, EvidenceScope, EvidenceState, RunBinding, RunEvent,
+    ScopePhase, ScopeReport, validate_run_evidence, validate_scope_evidence,
 )
 from worker_handoff.lifecycle import Match, ProcessState, RegularFileObserver
 
@@ -414,9 +415,11 @@ wait_for("exit")
         endpoint.listen(1)
         endpoint.settimeout(5)
         common = tuple(map(str, (self.due, identity.device, identity.inode)))
+        meter_begin = (monotonic_ns(), monotonic_ns())
         writer = self.start("writer", self.command(
             writer_code, str(writer_gate), *common, payload.hex(),
         ), fds={"OUTPUT": alias})
+        reader_started = monotonic_ns()
         reader = self.start("reader", self.command(
             reader_code, str(reader_gate), *common, str(socket_path),
             str(os.getpid()), reader_run.run_id, str(len(payload)),
@@ -527,6 +530,70 @@ wait_for("exit")
                               require_terminal_from="supervisor")
         if hold_writer_during_delivery:
             self._check_qualification_limits(reader_run, writer_run, reader_events, handoff)
+            self._check_provider_composition(reader_run, holding, meter_begin, reader_started, reader_reap)
+
+    def _check_provider_composition(self, binding, holding, meter_begin, reader_started, reap):
+        # The observer sample is real. The meter readings are synthetic and
+        # use the fixture's actual launch and reap boundaries as test inputs.
+        meter_end = (monotonic_ns(), monotonic_ns())
+        interval = (reader_started, reap.finished_ns)
+        scope = EvidenceScope(binding, self.scope(binding), meter_begin[0], meter_end[1])
+        self.assertEqual(holding.scope, scope.scope_id)
+        point = ScopeReport(scope, "point-observer", ScopePhase.OBSERVATION,
+                            holding.started_ns, holding.finished_ns,
+                            EvidenceObservation("reader-slot-held", EvidenceState.OBSERVED))
+        reading = EvidenceObservation("fixture-reading", EvidenceState.OBSERVED)
+        begin = ScopeReport(scope, "fixture-meter", ScopePhase.METER_BEGIN, *meter_begin, reading)
+        end = ScopeReport(scope, "fixture-meter", ScopePhase.METER_END, *meter_end, reading)
+
+        def validate(reports, *, required=None, expected_scope=scope):
+            return validate_scope_evidence(expected_scope, reports, observer_id="point-observer",
+                                           meter_id="fixture-meter", require_meter_for=required)
+
+        full = (end, point, begin)
+        self.assertIs(validate(full, required=interval), full)
+
+        # The outer report window can also extend outside a bounded child
+        # window. This separate case contains only synthetic meter reports.
+        narrow_run = RunBinding("fixture-narrow-run", "fixture-artifact", binding.clock_id, *interval)
+        outer = EvidenceScope(narrow_run, "fixture-outer", meter_begin[0], meter_end[1])
+        self.assertLess(begin.finished_ns, narrow_run.started_ns)
+        self.assertLess(narrow_run.finished_ns, end.started_ns)
+        outer_pair = (replace(begin, scope=outer), replace(end, scope=outer))
+        self.assertIs(validate(outer_pair, required=interval, expected_scope=outer), outer_pair)
+
+        # Separate sources can report overlapping intervals. This earlier
+        # end reading is valid input but cannot cover the later reap.
+        early_end = replace(end, started_ns=point.started_ns, finished_ns=point.finished_ns)
+        early = (begin, point, early_end)
+        self.assertIs(validate(early), early)
+        with self.assertRaisesRegex(ValueError, "do not bracket"):
+            validate(early, required=interval)
+
+        unknown = replace(point, observation=replace(point.observation, state=EvidenceState.INDETERMINATE))
+        partial = (begin, unknown)
+        self.assertIs(validate(partial), partial)
+        incomplete = [partial]
+        for state in (EvidenceState.UNAVAILABLE, EvidenceState.INDETERMINATE):
+            interrupted = (begin, unknown, replace(end, observation=replace(reading, state=state)))
+            self.assertIs(validate(interrupted), interrupted)
+            incomplete.append(interrupted)
+        for reports in incomplete:
+            with self.assertRaisesRegex(ValueError, "requires observed begin and end"):
+                validate(reports, required=interval)
+
+        for wrong_end, reason in (
+            (replace(end, scope=replace(scope, scope_id="another-scope")), "scope or run"),
+            (replace(end, scope=replace(scope, run=replace(binding, clock_id="another-clock"))),
+             "scope or run"),
+            (replace(end, provider_id=point.provider_id), "provider does not match"),
+            (replace(end, phase=ScopePhase.METER_BEGIN), "duplicate meter phase"),
+        ):
+            with self.subTest(reason=reason), self.assertRaisesRegex(ValueError, reason):
+                validate((begin, point, wrong_end), required=interval)
+        late_begin = replace(begin, started_ns=end.started_ns, finished_ns=end.finished_ns)
+        with self.assertRaisesRegex(ValueError, "samples overlap or are out of order"):
+            validate((late_begin, point, early_end))
 
     def _check_qualification_limits(self, binding, other_run, events, handoff):
         # The added qualification reports are synthetic validator inputs.

@@ -77,6 +77,40 @@ authenticates a separate Linux principal for one sealed, read-only grant.
 Separate administrative control and combined whole-scope qualification remain
 unmeasured.
 
+## Combining provider reports
+
+The optional `worker_handoff.evidence` API accepts point observations and
+start and end readings from providers your application already authorizes.
+Declare an `EvidenceScope` with a fresh scope ID, a `RunBinding` for the
+child, and the outer report window. Use the run's clock domain for every
+timestamp. The report window can start before launch and finish after cleanup.
+Preserve each provider's `EvidenceState` when adapting its result to a
+`ScopeReport`. Omit a report if the provider supplied none.
+
+```python
+from worker_handoff.evidence import validate_scope_evidence
+
+reports = validate_scope_evidence(
+    scope, (meter_begin, observation, meter_end),
+    observer_id="configured-observer", meter_id="configured-meter",
+    require_meter_for=(launch_started_ns, cleanup_finished_ns),
+)
+```
+
+The requested interval passes when the selected meter reports observed
+endpoints that bracket it. Separate providers can report overlapping samples.
+Omit `require_meter_for` to inspect a partial set, including unavailable or
+indeterminate reports. Inspect the returned observation states and keep the
+provider's raw readings for any decision about the scope. A reading marked
+`OBSERVED` says the provider obtained a measurement. Your application decides
+whether that measurement establishes cleanup or any other outcome.
+
+Provider IDs are caller-supplied labels. Your application authenticates the
+sources, checks their authority, clock context and measurement coverage, and
+handles duplicate submissions across calls. Strict custody decisions still
+use the pre-grant custody path. The acceptance fixture exercises this API with
+a real owned-child point sample and synthetic meter readings.
+
 ## Choosing an inherited reader
 
 The reader packages never launch workers. All use positional reads; none

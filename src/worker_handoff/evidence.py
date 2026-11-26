@@ -22,6 +22,14 @@ class EvidenceState(str, Enum):
     NOT_REQUESTED = "not_requested"
 
 
+class ScopePhase(str, Enum):
+    """Role of a provider report in a declared execution scope."""
+
+    OBSERVATION = "observation"
+    METER_BEGIN = "meter_begin"
+    METER_END = "meter_end"
+
+
 def _identifier(value, field):
     if type(value) is not str or not value.strip():
         raise ValueError(f"{field} must be a nonempty string")
@@ -73,6 +81,107 @@ class EvidenceObservation:
             raise ValueError("expected an EvidenceState")
         if self.detail is not None and type(self.detail) is not str:
             raise ValueError("observation detail must be a string or None")
+
+
+@dataclass(frozen=True, slots=True)
+class EvidenceScope:
+    """Caller-declared report window in the bound run's clock domain.
+
+    The report window can extend before and after the child's run window.
+    The caller assigns a fresh scope identity and declares what it covers.
+    """
+
+    run: RunBinding
+    scope_id: str
+    started_ns: int
+    finished_ns: int
+
+    def __post_init__(self):
+        if type(self.run) is not RunBinding:
+            raise ValueError("expected a RunBinding")
+        _identifier(self.scope_id, "scope_id")
+        _interval(self.started_ns, self.finished_ns)
+
+
+@dataclass(frozen=True, slots=True)
+class ScopeReport:
+    """One point or meter endpoint supplied by a caller-selected provider."""
+
+    scope: EvidenceScope
+    provider_id: str
+    phase: ScopePhase
+    started_ns: int
+    finished_ns: int
+    observation: EvidenceObservation
+
+    def __post_init__(self):
+        if type(self.scope) is not EvidenceScope:
+            raise ValueError("expected an EvidenceScope")
+        _identifier(self.provider_id, "provider_id")
+        if type(self.phase) is not ScopePhase:
+            raise ValueError("expected a ScopePhase")
+        _interval(self.started_ns, self.finished_ns)
+        if not self.scope.started_ns <= self.started_ns <= self.finished_ns <= self.scope.finished_ns:
+            raise ValueError("report interval is outside the scope window")
+        if type(self.observation) is not EvidenceObservation:
+            raise ValueError("expected an EvidenceObservation")
+
+
+def validate_scope_evidence(
+    scope: EvidenceScope,
+    reports: tuple[ScopeReport, ...],
+    *,
+    observer_id: str,
+    meter_id: str,
+    require_meter_for: tuple[int, int] | None = None,
+) -> tuple[ScopeReport, ...]:
+    """Check provider bindings and optionally require a bracketing meter pair.
+
+    The original tuple is returned, including unavailable or indeterminate
+    reports. An omitted report stays missing. Tuple order is immaterial and
+    point observations can overlap meter samples. Each meter phase can appear
+    once, and the begin sample must finish by the start of the end sample.
+
+    ``require_meter_for`` is the exact interval to bracket, including cleanup
+    if required by the caller. Both endpoints must be OBSERVED, with the begin
+    sample finished by the interval start and the end sample started at or
+    after its finish. This checks reported timing and coverage only. Caller
+    authentication, provider qualification, meter semantics, and decisions
+    about cleanup or custody remain external.
+    """
+    if type(scope) is not EvidenceScope or type(reports) is not tuple:
+        raise ValueError("expected an EvidenceScope and tuple of scope reports")
+    _identifier(observer_id, "observer_id")
+    _identifier(meter_id, "meter_id")
+    endpoints = {}
+    for report in reports:
+        if type(report) is not ScopeReport or report.scope != scope:
+            raise ValueError("report scope or run does not match")
+        is_point = report.phase is ScopePhase.OBSERVATION
+        if report.provider_id != (observer_id if is_point else meter_id):
+            raise ValueError("report provider does not match its phase")
+        if not is_point:
+            if report.phase in endpoints:
+                raise ValueError("duplicate meter phase")
+            endpoints[report.phase] = report
+
+    begin = endpoints.get(ScopePhase.METER_BEGIN)
+    end = endpoints.get(ScopePhase.METER_END)
+    if begin is not None and end is not None and begin.finished_ns > end.started_ns:
+        raise ValueError("meter samples overlap or are out of order")
+    if require_meter_for is not None:
+        if type(require_meter_for) is not tuple or len(require_meter_for) != 2:
+            raise ValueError("expected a required meter interval")
+        started, finished = require_meter_for
+        _interval(started, finished)
+        if not scope.started_ns <= started <= finished <= scope.finished_ns:
+            raise ValueError("required meter interval is outside the scope window")
+        if (begin is None or end is None or begin.observation.state is not EvidenceState.OBSERVED
+                or end.observation.state is not EvidenceState.OBSERVED):
+            raise ValueError("meter coverage requires observed begin and end reports")
+        if not begin.finished_ns <= started <= finished <= end.started_ns:
+            raise ValueError("meter reports do not bracket the required interval")
+    return reports
 
 
 @dataclass(frozen=True, slots=True)
