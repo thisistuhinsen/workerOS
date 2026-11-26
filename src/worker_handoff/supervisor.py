@@ -236,7 +236,8 @@ class DirectChildSupervisor:
             self._workers[name] = worker
             return worker
 
-    def start_executable(self, name, role, argv, *, due_ns, fds=None, env=None, uid=None):
+    def start_executable(self, name, role, argv, *, due_ns, fds=None, env=None, uid=None,
+                         cwd=None, stdin=None, stdout=None, stderr=None):
         """Launch a trusted argv with the existing inherited-FD ABI and pin it."""
         with self._scope():
             self._check_available(name, role)
@@ -246,7 +247,7 @@ class DirectChildSupervisor:
             handles, context = _exec_context(name, role, argv, fds, due_ns, env)
             self._attempted.add(name)
             process = subprocess.Popen(tuple(argv), shell=False, close_fds=True,
-                                       pass_fds=handles, env=context)
+                                       pass_fds=handles, env=context, cwd=cwd, stdin=stdin, stdout=stdout, stderr=stderr)
             try:
                 child = _pin_child(process)
             except OSError as exc:

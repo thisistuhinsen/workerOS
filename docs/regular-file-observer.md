@@ -88,6 +88,13 @@ Fields are `scope`, `due_ns`, `original_fd`, `device`, `inode`, `pidfd`, `pid`, 
 `slot`, and optionally `directory_fd` plus `leaf`. It does not discover actors or
 fetch handles. Exit zero means a **sample was returned**, possibly unknown.
 This executable does not authenticate its JSON or create independent control.
+For a scoped report, pass a `scope_report` object in the same plan with the
+full `scope` (including its run), `provider_id` and optional `subject`
+(`slot`, `name`, or `process`). The reply contains both `sample` and
+`scope_report`. The native provider requires the same full `EvidenceScope`
+at construction and at `sample_for_scope`. The plain `sample()` interface
+remains available without a reporting scope.
+[Observer arguments and clock requirements](api.md#observe-a-designated-process-and-file-slot)
 For repeated observations of the same run, keep one provider open rather than
 joining independent invocations by filename or PID.
 

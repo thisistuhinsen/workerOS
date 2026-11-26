@@ -1,9 +1,175 @@
 # workerOS for Go
 
-Go 1.22 or later on Linux `amd64` or `arm64`.
+Use Go 1.22 or later on Linux amd64 or arm64. This example builds a reader in
+a fresh Go module, then starts it with an already-open file.
+
+## Try the public tag
+
+After the matching v0.7.0 tag and Python wheel are published, [install the
+Python controller](../docs/install.md#python) and activate its environment.
+Run this from any directory. Set `WORKEROS_PYTHON` if you want to point to
+that environment's Python directly.
 
 ```sh
-go get github.com/thisistuhinsen/workerOS/go/workerhandoff@v0.4.0
+(
+    set -eu
+    python=$(command -v "${WORKEROS_PYTHON:-python3}")
+    work=$(mktemp -d)
+    trap 'rm -rf -- "$work"' EXIT
+    cd "$work"
+    go mod init example.invalid/workeros-reader
+    GOTOOLCHAIN=local go get github.com/thisistuhinsen/workerOS/go/workerhandoff@v0.7.0
+    go mod verify
+    cat > main.go <<'GO'
+package main
+
+import (
+    "fmt"
+    "io"
+    "log"
+
+    "github.com/thisistuhinsen/workerOS/go/workerhandoff"
+)
+
+func main() {
+    input, err := workerhandoff.Open("INPUT")
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    var data [64]byte
+    n, err := input.ReadAt(data[:], 0)
+    if closeErr := input.Close(); closeErr != nil {
+        log.Fatal(closeErr)
+    }
+    if err != nil && err != io.EOF {
+        log.Fatal(err)
+    }
+    fmt.Print(string(data[:n]))
+}
+GO
+    GOTOOLCHAIN=local GOPROXY=off go build -buildvcs=false -o "$work/reader" .
+    "$python" -I - "$work/reader" <<'PY'
+from pathlib import Path
+from tempfile import TemporaryDirectory
+from time import monotonic_ns
+import sys
+
+from worker_handoff import WorkerRoster
+
+with TemporaryDirectory() as directory:
+    path = Path(directory) / "input.txt"
+    path.write_bytes(b"Hello from workerOS\n")
+    with path.open("rb", buffering=0) as source:
+        source.seek(2)
+        roster = WorkerRoster()
+        deadline = monotonic_ns() + 10_000_000_000
+        worker = roster.start_executable("go", "read", [sys.argv[1]],
+                                         fds={"INPUT": source.fileno()}, due_ns=deadline)
+        try:
+            if roster.join(worker.name, due_ns=deadline) != 0 or source.tell() != 2:
+                raise SystemExit("Go reader failed or moved the shared offset")
+        finally:
+            if worker.process.poll() is None:
+                worker.process.kill()
+                worker.process.wait(timeout=5)
+PY
+)
+```
+
+Expect `Hello from workerOS`. The Go checksum service must be able to
+verify the public tag. Use your usual Go checksum settings.
+
+## Try the private offline bundle
+
+[Install the Python controller](../docs/install.md#python) and set
+`WORKEROS_OFFLINE` to the absolute path of the verified
+private `workerOS-0.7.0-offline` directory. The block uses the pip environment.
+For uv, set `WORKEROS_PYTHON="$WORKEROS_OFFLINE/.venv-0.7.0-uv/bin/python"`
+first.
+
+```sh
+(
+    set -eu
+    offline=${WORKEROS_OFFLINE:?set WORKEROS_OFFLINE to the extracted bundle directory}
+    python=${WORKEROS_PYTHON:-"$offline/.venv-0.7.0/bin/python"}
+    work=$(mktemp -d)
+    trap 'rm -rf -- "$work"' EXIT
+    git clone --quiet --no-checkout "$offline/source/workeros-0.7.0.bundle" "$work/source"
+    git -C "$work/source" checkout --quiet --detach refs/tags/v0.7.0
+    cd "$work"
+    go mod init example.invalid/workeros-reader
+    go mod edit -require=github.com/thisistuhinsen/workerOS@v0.7.0 \
+        "-replace=github.com/thisistuhinsen/workerOS=$work/source"
+    cat > main.go <<'GO'
+package main
+
+import (
+    "fmt"
+    "io"
+    "log"
+
+    "github.com/thisistuhinsen/workerOS/go/workerhandoff"
+)
+
+func main() {
+    input, err := workerhandoff.Open("INPUT")
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    var data [64]byte
+    n, err := input.ReadAt(data[:], 0)
+    if closeErr := input.Close(); closeErr != nil {
+        log.Fatal(closeErr)
+    }
+    if err != nil && err != io.EOF {
+        log.Fatal(err)
+    }
+    fmt.Print(string(data[:n]))
+}
+GO
+    GOTOOLCHAIN=local GOPROXY=off go build -buildvcs=false -o "$work/reader" .
+    "$python" -I - "$work/reader" <<'PY'
+from pathlib import Path
+from tempfile import TemporaryDirectory
+from time import monotonic_ns
+import sys
+
+from worker_handoff import WorkerRoster
+
+with TemporaryDirectory() as directory:
+    path = Path(directory) / "input.txt"
+    path.write_bytes(b"Hello from workerOS\n")
+    with path.open("rb", buffering=0) as source:
+        source.seek(2)
+        roster = WorkerRoster()
+        deadline = monotonic_ns() + 10_000_000_000
+        worker = roster.start_executable("go", "read", [sys.argv[1]],
+                                         fds={"INPUT": source.fileno()}, due_ns=deadline)
+        try:
+            if roster.join(worker.name, due_ns=deadline) != 0 or source.tell() != 2:
+                raise SystemExit("Go reader failed or moved the shared offset")
+        finally:
+            if worker.process.poll() is None:
+                worker.process.kill()
+                worker.process.wait(timeout=5)
+PY
+)
+```
+
+Expect `Hello from workerOS`. The checkout and replacement are scoped to
+this disposable module. The bundle's `checks/go.sum` records checksums from
+the private verification of the exact local tag.
+
+## Use the historical v0.4.0 release
+
+To use the [published v0.4.0 tag](https://github.com/thisistuhinsen/workerOS/releases/tag/v0.4.0),
+resolve it from your own module with:
+
+```sh
+go get github.com/thisistuhinsen/workerOS/go/workerhandoff@v0.4.0 &&
+go mod verify
 ```
 
 ### If the v0.4.0 checksum lookup returns 404
@@ -31,30 +197,13 @@ go mod verify
 Go checks both the downloaded module and its `go.mod` against the pinned hashes.
 Keep your checksum settings in place.
 
-### Read from the inherited descriptor
+## Reader behavior
 
-Launch the worker with the workerOS inherited-FD ABI v1 and bind the original
-under `INPUT`. From the Go worker, open that binding and read at a file offset.
+`Open` checks the launcher metadata against the live descriptor, including
+the device, inode and readable access mode. It owns a close-on-exec
+duplicate. Keep the inherited slot stable during `Open` and close it or mark
+it non-inheritable before starting further children unless they need it.
 
-```go
-import "github.com/thisistuhinsen/workerOS/go/workerhandoff"
-
-func readByte() (byte, error) {
-    reader, err := workerhandoff.Open("INPUT")
-    if err != nil {
-        return 0, err
-    }
-    defer reader.Close()
-
-    var data [1]byte
-    _, err = reader.ReadAt(data[:], 0)
-    return data[0], err
-}
-```
-
-`Open` checks the launcher metadata against the live descriptor, including the
-device, inode and readable access mode. The caller retains its inherited FD and
-keeps it stable during `Open`. The `Reader` owns a close-on-exec duplicate.
 `ReadAt` preserves the shared file position and checks the Linux monotonic
 deadline before reading. An in-progress syscall can outlast that deadline.
 Authorization and worker lifecycle remain with the launching application.

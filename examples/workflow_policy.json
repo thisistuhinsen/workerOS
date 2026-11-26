@@ -1,0 +1,44 @@
+{
+  "version": 1,
+  "roles": {
+    "job-role": {
+      "operations": ["launch", "readback", "recover_receipt", "verify_durable"]
+    }
+  },
+  "workflows": {
+    "fileless": {
+      "role": "job-role",
+      "operations": ["launch", "readback", "recover_receipt", "verify_durable"],
+      "bindings": {
+        "executable": "sample",
+        "supervisor": "direct-child"
+      },
+      "timeout_ms": 5000,
+      "cleanup_ms": 1000,
+      "require_supervision": true,
+      "recorder": "jobs",
+      "capture": {
+        "launch": {
+          "profile": "launch-terminal",
+          "type": "job-result"
+        }
+      }
+    }
+  },
+  "recorders": {
+    "jobs": {
+      "version": 1,
+      "destinations": {
+        "archive": {}
+      },
+      "routes": [
+        {
+          "name": "job-result",
+          "media_type": "application/json",
+          "required": ["archive"],
+          "optional": []
+        }
+      ]
+    }
+  }
+}

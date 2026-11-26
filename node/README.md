@@ -1,24 +1,136 @@
-# worker-handoff for Node.js
+# workerOS for Node.js
 
-Your supervisor already opened the file. `worker-handoff` lets a Node.js worker read the inherited Linux descriptor at a specific byte offset. The supervisor keeps its own descriptor and its place in the file.
+Read a file that your launcher already opened. The workerOS reader for Node.js
+uses positional reads on the inherited Linux descriptor, preserving the
+launcher's file offset. Its npm install ID is `workeros`.
 
-## Install
+Use Node.js 22 or newer on Linux x64 or ARM64 with `/proc` mounted. The tarball
+declares Linux in its npm metadata. On Windows, run the example from a Linux
+guest under WSL2.
 
-Use Node.js 22 or newer on Linux x64 or ARM64 with procfs mounted at `/proc`. Install the GitHub Release tarball in your Node project.
+## Download from GitHub Releases
+
+Once v0.7.0 is published, download the npm tarball, the matching Python wheel
+for the launcher example, and their release checksums. This prepares a fresh
+npm project with a local `vendor/` directory. Use curl and GNU coreutils
+(`sha256sum`). The verified local tarball works with stock npm 12, whose
+[remote URL policy](https://docs.npmjs.com/cli/v12/using-npm/config/#allow-remote)
+denies direct third-party tarball URLs by default.
 
 ```sh
-npm install --no-audit --no-fund https://github.com/thisistuhinsen/workerOS/releases/download/v0.4.0/worker-handoff-0.4.0.tgz
+release=https://github.com/thisistuhinsen/workerOS/releases/download/v0.7.0
+project_dir="$(mktemp -d)/node-worker" &&
+mkdir -p "$project_dir/vendor" &&
+(
+    cd "$project_dir/vendor" || exit 1
+    curl -fsSL "$release/SHA256SUMS" -o SHA256SUMS || exit 1
+    for asset in workeros-0.7.0.tgz workeros-0.7.0-py3-none-any.whl; do
+        curl -fsSL "$release/$asset" -o "$asset" || exit 1
+        checksum=$(awk -v asset="$asset" '$2 == asset { print; n++ } END { if (n != 1) exit 1 }' SHA256SUMS) || exit 1
+        printf '%s\n' "$checksum" | sha256sum --strict -c - || exit 1
+    done
+) &&
+cd "$project_dir" &&
+npm init -y >/dev/null
 ```
 
-For an offline install, save the tarball locally and run `npm install --offline --no-audit --no-fund ./worker-handoff-0.4.0.tgz`.
-With npm 12's default remote URL policy, pass `--allow-remote=all` for that direct URL install or use the local tarball.
+## Or prepare from the offline bundle
+
+Start in the extracted private `workerOS-0.7.0-offline` directory. Verify the bundle,
+then copy the npm tarball and matching Python wheel from `assets/` into a
+fresh project so npm can record a relative tarball dependency.
+
+```sh
+bundle_dir=$(pwd -P) &&
+(cd assets && sha256sum --strict -c SHA256SUMS) &&
+project_dir="$(mktemp -d)/node-worker" &&
+mkdir -p "$project_dir/vendor" &&
+cp "$bundle_dir/assets/workeros-0.7.0.tgz" "$bundle_dir/assets/workeros-0.7.0-py3-none-any.whl" "$project_dir/vendor/" &&
+cd "$project_dir" &&
+npm init -y >/dev/null
+```
+
+## Install in the npm project
+
+Once either preparation command succeeds, install the tarball from that project
+directory.
+
+```sh
+npm install --offline --ignore-scripts --no-audit --no-fund ./vendor/workeros-0.7.0.tgz
+```
+
+To keep an existing `require("worker-handoff")` or
+`import ... from "worker-handoff"`, use an explicit npm alias instead of the
+install above. Run the project preparation first, then run this from that
+fresh project directory.
+
+```sh
+npm install --offline --ignore-scripts --no-audit --no-fund "worker-handoff@file:vendor/workeros-0.7.0.tgz"
+```
+
+Keep `package.json`, `package-lock.json`, and `vendor/workeros-0.7.0.tgz`
+together. From a fresh copy of your npm project, restore either installation
+with `npm ci --offline --ignore-scripts --no-audit --no-fund`.
 
 ## Read one inherited file
 
-Save this as `worker.cjs`. The launching supervisor supplies the `INPUT` binding.
+From the project directory above, install the matching Python controller from
+the local wheel. Use Python 3.11 or later.
+
+```sh
+python3 -m venv .venv &&
+.venv/bin/python -I -m pip install --no-index --no-deps ./vendor/workeros-0.7.0-py3-none-any.whl
+```
+
+The launcher opens a temporary file, renames it, and creates different
+contents at its old path. The Node worker reads through the granted descriptor
+and prints `Hello from workerOS`. For an alias install, use
+`node_modules/worker-handoff/examples/read-input.cjs` as the example path.
+
+```sh
+.venv/bin/python -I - <<'PY'
+import os
+from pathlib import Path
+from shutil import which
+from tempfile import TemporaryDirectory
+from time import monotonic_ns
+from worker_handoff import WorkerRoster
+
+node = which("node")
+if node is None:
+    raise SystemExit("Install Node.js 22+")
+example = Path("node_modules/workeros/examples/read-input.cjs").resolve(strict=True)
+roster = WorkerRoster()
+with TemporaryDirectory() as directory:
+    source = Path(directory) / "input"
+    source.write_bytes(b"Hello from workerOS\n")
+    with source.open("rb", buffering=0) as file:
+        source.rename(Path(directory) / "renamed-input")
+        source.write_bytes(b"Replacement at the old path\n")
+        fd = file.fileno()
+        os.lseek(fd, 2, os.SEEK_SET)
+        deadline = monotonic_ns() + 10_000_000_000
+        worker = roster.start_executable(
+            "node-reader", "read", [node, str(example)], fds={"INPUT": fd}, due_ns=deadline,
+        )
+        try:
+            status = roster.join(worker.name, due_ns=deadline)
+        finally:
+            if worker.process.poll() is None:
+                worker.process.kill()
+                worker.process.wait(timeout=5)
+        if status != 0:
+            raise SystemExit(f"reader failed with status {status}")
+        assert os.lseek(fd, 0, os.SEEK_CUR) == 2
+PY
+```
+
+## Write your own reader
+
+To write your own reader, use the same `INPUT` name in the launcher and the worker.
 
 ```js
-const { openInherited } = require("worker-handoff");
+const { openInherited } = require("workeros");
 
 const input = openInherited("INPUT", { ownership: "owned" });
 try {
@@ -30,42 +142,7 @@ try {
 }
 ```
 
-For ES modules, import the same function with `import { openInherited } from "worker-handoff"`.
-
-Here is a Python launcher for the example that ships in the tarball. Install the Python `worker-handoff` wheel in the interpreter you use below, and run the command from your Node project.
-
-```sh
-printf 'Hello from the supervisor\n' > input.txt
-python - <<'PY'
-import os
-from pathlib import Path
-from shutil import which
-from time import monotonic_ns
-from worker_handoff import WorkerRoster
-
-node = which("node")
-if node is None:
-    raise SystemExit("Install Node.js 22+")
-example = Path("node_modules/worker-handoff/examples/read-input.cjs").resolve()
-roster = WorkerRoster()
-with Path("input.txt").open("rb", buffering=0) as file:
-    fd = file.fileno()
-    os.lseek(fd, 2, os.SEEK_SET)
-    deadline = monotonic_ns() + 10_000_000_000
-    worker = roster.start_executable(
-        "node-reader", "read", [node, str(example)], fds={"INPUT": fd}, due_ns=deadline,
-    )
-    try:
-        status = roster.join(worker.name, due_ns=deadline)
-    finally:
-        if worker.process.poll() is None:
-            worker.process.kill()
-            worker.process.wait(timeout=5)
-    if status != 0:
-        raise SystemExit(f"reader failed with status {status}")
-    assert os.lseek(fd, 0, os.SEEK_CUR) == 2
-PY
-```
+For ES modules, import the same function with `import { openInherited } from "workeros"`.
 
 ## API and descriptor lifetime
 
@@ -78,4 +155,7 @@ The environment fields are declarations. Use this API inside a trusted worker la
 
 `HandoffError` is exported by both entry points. Errors from metadata checks carry an `ERR_WORKER_HANDOFF_` code. Node filesystem errors from `readAt` or `close` can be handled with their usual error codes.
 
-The main [workerOS repository](https://github.com/thisistuhinsen/workerOS) documents the Python launcher, process supervision, and the Unix socket APIs.
+The [workerOS project guide](https://github.com/thisistuhinsen/workerOS#readme)
+covers the Python launcher, process supervision, and Unix socket APIs. For the
+original package name and artifacts, see the [historical v0.4.0 release](https://github.com/thisistuhinsen/workerOS/releases/tag/v0.4.0).
+The earlier private v0.6.0 bundle has its own artifacts and lockfiles.

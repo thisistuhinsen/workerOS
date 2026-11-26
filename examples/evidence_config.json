@@ -1,0 +1,28 @@
+{
+  "version": 1,
+  "workflow": "example",
+  "role": "recorder",
+  "operation": "record",
+  "options": {
+    "run_id": "demo-run",
+    "record_id": "receipt",
+    "type": "fixture-receipt",
+    "data": "eyJvdXRjb21lIjoibm90LXJ1biJ9",
+    "effect": "not-attempted"
+  },
+  "recorder": {
+    "version": 1,
+    "destinations": {
+      "archive": {"group_id": null, "max_age_seconds": 604800},
+      "review": {"group_id": null, "max_age_seconds": null}
+    },
+    "routes": [
+      {
+        "name": "fixture-receipt",
+        "media_type": "application/json",
+        "required": ["archive"],
+        "optional": ["review"]
+      }
+    ]
+  }
+}

@@ -6,7 +6,7 @@ const fs = require("node:fs");
 const { tmpdir } = require("node:os");
 const { join, resolve } = require("node:path");
 const { test } = require("node:test");
-const { HandoffError, openInherited } = require("worker-handoff");
+const { HandoffError, openInherited } = require("workeros");
 
 function setEnvironment(t, values) {
     const entries = Object.entries(values);
@@ -55,7 +55,7 @@ function expectCode(action, code) {
 }
 
 test("CommonJS and ESM use one public implementation", async () => {
-    const esm = await import("worker-handoff");
+    const esm = await import("workeros");
     assert.equal(esm.openInherited, openInherited);
     assert.equal(esm.HandoffError, HandoffError);
 });

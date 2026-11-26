@@ -1,43 +1,100 @@
 # workerOS for Java
 
-Use `io.github.thisistuhinsen:worker-handoff:0.4.0` to read a file descriptor inherited from a
-workerOS ABI v1 launcher. The JAR has no runtime dependencies. It requires Linux x64 or ARM64 with
-procfs, a JDK 22+ runtime, and native access for the Java Foreign Function & Memory API.
+Use JDK 22 or later on 64-bit Linux with procfs and Maven 3.9 or newer. The
+JAR has no runtime dependencies. It reads a file descriptor inherited
+from a workerOS launcher using Java's Foreign Function & Memory API.
+The release download uses curl and GNU coreutils (`sha256sum`).
 
-## Install the release
+## Try the public release
 
-Once v0.4.0 is published, download the JAR, POM and checksums from the public GitHub Release.
-The downloads use public GitHub URLs.
+After the matching v0.7.0 tag, JAR, POM, and Python wheel are published,
+[install the Python controller](../docs/install.md#python) and activate its
+environment. Run this from any directory. Set `WORKEROS_PYTHON` to use a
+particular Python interpreter.
 
 ```sh
-release=https://github.com/thisistuhinsen/workerOS/releases/download/v0.4.0
-jar=worker-handoff-0.4.0.jar
-pom=worker-handoff-0.4.0.pom
-for file in "$jar" "$pom" SHA256SUMS; do
-  curl --fail --silent --show-error --location "$release/$file" --output "$file" || exit 1
-done
-for file in "$jar" "$pom"; do
-  awk -v f="$file" '$2 == f { print; n++ } END { if (n != 1) exit 1 }' SHA256SUMS > "$file.sha256" &&
-    sha256sum --check "$file.sha256" || exit 1
-done
-mvn -B -ntp org.apache.maven.plugins:maven-install-plugin:3.1.4:install-file \
-  -Dfile="$jar" -DpomFile="$pom"
+(
+    set -eu
+    python=$(command -v "${WORKEROS_PYTHON:-python3}")
+    work=$(mktemp -d)
+    trap 'rm -rf -- "$work"' EXIT
+    cd "$work"
+    release=https://github.com/thisistuhinsen/workerOS/releases/download/v0.7.0
+    jar=workeros-0.7.0.jar
+    pom=workeros-0.7.0.pom
+    for file in "$jar" "$pom" SHA256SUMS; do
+        curl --fail --silent --show-error --location "$release/$file" --output "$file"
+    done
+    for file in "$jar" "$pom"; do
+        awk -v name="$file" '$2 == name { print; count++ } END { if (count != 1) exit 1 }' \
+            SHA256SUMS > "$file.sha256"
+        sha256sum --strict --check "$file.sha256"
+    done
+    git clone --quiet --no-checkout https://github.com/thisistuhinsen/workerOS "$work/source"
+    git -C "$work/source" checkout --quiet --detach refs/tags/v0.7.0
+    PATH="${python%/*}:$PATH" bash "$work/source/java/test-package.sh" "$work/$jar" "$work/$pom"
+)
 ```
 
-Then add the dependency to your application's POM.
+Expect `PASS Maven consumer`. The test installs the checked pair in a fresh
+Maven repository, compiles a separate consumer, and launches it with an open
+file. Maven may need to fetch its build plugins.
+
+## Try the private offline bundle
+
+[Install the Python controller](../docs/install.md#python) and set
+`WORKEROS_OFFLINE` to the absolute path of the verified
+private `workerOS-0.7.0-offline` directory. The block uses the pip environment.
+For uv, set `WORKEROS_PYTHON="$WORKEROS_OFFLINE/.venv-0.7.0-uv/bin/python"`
+first.
+
+```sh
+(
+    set -eu
+    offline=${WORKEROS_OFFLINE:?set WORKEROS_OFFLINE to the extracted bundle directory}
+    python=${WORKEROS_PYTHON:-"$offline/.venv-0.7.0/bin/python"}
+    work=$(mktemp -d)
+    trap 'rm -rf -- "$work"' EXIT
+    git clone --quiet --no-checkout "$offline/source/workeros-0.7.0.bundle" "$work/source"
+    git -C "$work/source" checkout --quiet --detach refs/tags/v0.7.0
+    PATH="${python%/*}:$PATH" bash "$work/source/java/test-package.sh" \
+        "$offline/assets/workeros-0.7.0.jar" "$offline/assets/workeros-0.7.0.pom"
+)
+```
+
+The verifier installs the supplied JAR and POM in a fresh Maven repository,
+then builds a separate consumer and gives it a real inherited file. Expect a
+Maven consumer pass. Maven needs access to its own build plugins on first
+use; the workerOS artifacts come from the bundle.
+
+## Use the JAR and POM in your own project
+
+Use the verified pair from the matching release or private bundle. In the
+directory containing those two files, install them into your Maven cache.
+Maven may need to fetch the install plugin on first use.
+
+```sh
+mvn -B -ntp org.apache.maven.plugins:maven-install-plugin:3.1.4:install-file \
+    -Dfile=workeros-0.7.0.jar -DpomFile=workeros-0.7.0.pom
+```
+
+Use the installed coordinates in your own Maven project.
 
 ```xml
 <dependency>
   <groupId>io.github.thisistuhinsen</groupId>
   <artifactId>worker-handoff</artifactId>
-  <version>0.4.0</version>
+  <version>0.7.0</version>
 </dependency>
 ```
 
+The [historical v0.4.0 release](https://github.com/thisistuhinsen/workerOS/releases/tag/v0.4.0)
+has its own JAR, POM, and checksums.
+
 ## Read an inherited binding
 
-Start your Java process through a launcher that explicitly transfers a regular file as `INPUT`.
-When running on the classpath, include `--enable-native-access=ALL-UNNAMED` in your Java command.
+Pass `--enable-native-access=ALL-UNNAMED` when starting a Java worker on
+the classpath. The launcher supplies the regular file under the name `INPUT`.
 
 ```java
 import io.github.thisistuhinsen.workerhandoff.InheritedReader;
@@ -50,27 +107,9 @@ try (var input = InheritedReader.open("INPUT")) {
 }
 ```
 
-The launcher supplies `WORKER_HANDOFF_ABI=1` and the `FD_`, `DEV_`, `INO_` and `ACCESS_` fields
-under the `WORKER_HANDOFF_` prefix for the exact binding. Binding names match `[A-Z][A-Z0-9_]*`.
-The reader checks canonical unsigned decimal fields, the kernel device and inode, the regular-file
-type and the declared readable access mode. Keep the original descriptor stable until `open`
-returns. Each reader owns a close-on-exec duplicate and preserves the shared file offset using
-`pread`. Close each reader with try-with-resources. The launcher's original remains caller-owned.
-The package provides only the worker-side read interface.
-
-## Build and test the release files
-
-From the checkout root, with Maven 3.9+, JDK 22+ and a Python environment containing the workerOS
-wheel on PATH, run the following. Maven needs access to its build plugins on first use.
-
-```sh
-mvn -B -ntp -f java/pom.xml clean package
-mkdir -p dist
-cp java/target/worker-handoff-0.4.0.jar dist/
-cp java/pom.xml dist/worker-handoff-0.4.0.pom
-bash java/test-package.sh dist/worker-handoff-0.4.0.jar dist/worker-handoff-0.4.0.pom
-```
-
-The test installs those two files into a fresh local Maven repository, builds a separate
-consumer against its coordinates, and transfers real descriptors using Python's `WorkerRoster`.
-It checks positional reads, EOF, handle closure, shared offsets, and rejection of invalid metadata.
+Binding names match `[A-Z][A-Z0-9_]*`. The reader checks the launcher
+metadata against the live regular file, including device, inode and access
+mode. Each reader owns a close-on-exec duplicate and preserves the shared
+file offset using `pread`. Use try-with-resources to close the duplicate.
+Keep the inherited slot stable until `open` returns. Close that slot or
+mark it non-inheritable before starting further children unless they need it.

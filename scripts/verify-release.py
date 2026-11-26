@@ -18,16 +18,26 @@ with (Path(__file__).resolve().parents[1] / "pyproject.toml").open("rb") as stre
     VERSION = tomllib.load(stream)["project"]["version"]
 if not re.fullmatch(r"(?:0|[1-9][0-9]*)(?:\.(?:0|[1-9][0-9]*)){2}", VERSION):
     raise ValueError("a three-part numeric release version is required")
-SOURCE_NAME = f"worker_handoff-{VERSION}"
+SOURCE_NAME = f"workeros-{VERSION}"
 PUBLIC_DOCS = {
     "CONTRIBUTING.md", "SECURITY.md", "docs/releasing.md", "docs/support.md",
     "docs/media/README.md", "docs/media/custody-lanyard.gif", "docs/media/fd-7.gif", "docs/media/one-small-ticket.gif",
+    "docs/install.md", "docs/package-python.md", "docs/workers.md",
+    "docs/api.md", "docs/configuration.md", "docs/host-preflight.md",
+    "docs/regular-file-observer.md", "skills/workeros/SKILL.md",
+    "go/README.md", "java/README.md", "native/README.md", "node/README.md", "rust/README.md",
+    "native/tests/c/CMakeLists.txt", "native/tests/c/conanfile.txt", "native/tests/c/read_input.c",
+    "native/tests/cpp/CMakeLists.txt", "native/tests/cpp/conanfile.txt", "native/tests/cpp/read_input.cpp",
+    "scripts/check-strict-custody-linux.py",
+    "docs/brand/README.md", "docs/brand/workeros-banner.png", "docs/brand/workeros-mark.png", "docs/brand/workeros-social.png",
+    *(f"docs/brand/language-{language}.png" for language in ("python", "node", "c", "cpp", "go", "rust", "java")),
+    *(f"docs/brand/manager-{manager}.png" for manager in ("pip", "uv", "npm", "conan", "go", "cargo", "maven")),
 }
 NODE_FILES = {
     "LICENSE", "README.md", "examples/read-input.cjs", "index.cjs",
     "index.mjs", "package.json",
 }
-NATIVE_NAME = f"worker-handoff-conan-{VERSION}"
+NATIVE_NAME = f"workeros-conan-{VERSION}"
 NATIVE_FILES = {
     "LICENSE", "README.md", "conanfile.py", "check-conan.sh",
     "include/worker_handoff/input.h", "tests/run_inherited.py",
@@ -87,7 +97,7 @@ def normalize_tar(path):
 
 def check_metadata(contents):
     metadata = BytesParser().parsebytes(contents)
-    check(metadata["Name"] == "worker-handoff", "unexpected Python package name")
+    check(metadata["Name"] == "workeros", "unexpected Python package name")
     check(metadata["Version"] == VERSION, "unexpected Python package version")
     check(not metadata.get_all("Requires-Dist"), "unexpected runtime dependencies")
 
@@ -99,10 +109,11 @@ def check_sdist(path, destination):
                   for m in members), "unexpected sdist root")
         files = {m.name.removeprefix(f"{SOURCE_NAME}/") for m in members if m.isfile()}
         core = {"LICENSE", "MANIFEST.in", "PKG-INFO", "README.md", "pyproject.toml", "setup.cfg"}
-        core |= PUBLIC_DOCS
+        core |= PUBLIC_DOCS | {"examples/evidence_config.json", "examples/workflow_policy.json",
+                               "src/worker_handoff/configuration.schema.json"}
         check(core <= files, f"missing sdist files: {sorted(core - files)}")
         fixtures = {"examples/report_worker.c", "examples/run_local_report.py",
-                    "examples/run_local_workers.py"}
+                    "examples/run_local_workers.py", "examples/run_host_preflight.py"}
         check(fixtures <= files, f"sdist omits documented examples: {sorted(fixtures - files)}")
         check(any(name.startswith("tests/test_") for name in files), "sdist omits tests")
         check(all(
@@ -110,8 +121,8 @@ def check_sdist(path, destination):
                 r"(?:examples/[^/]+\.(?:c|cpp|cjs|go|java|py|rs)"
                 r"|tests/(?:[\w-]+/)*[\w-]+\.py"
                 r"|src/worker_handoff/(?:[\w-]+/)*[\w-]+\.py"
-                r"|src/worker_handoff\.egg-info/[\w.-]+\.txt"
-                r"|src/worker_handoff\.egg-info/PKG-INFO)",
+                r"|src/workeros\.egg-info/[\w.-]+\.txt"
+                r"|src/workeros\.egg-info/PKG-INFO)",
                 name,
             )
             for name in files
@@ -127,19 +138,26 @@ def check_wheel(path, source):
     data_prefix = f"{SOURCE_NAME}.data/data/share/worker-handoff/examples/"
     data_files = {data_prefix + Path(name).name for name in examples}
     info = f"{SOURCE_NAME}.dist-info/"
-    metadata_files = {info + name for name in ("METADATA", "WHEEL", "RECORD", "top_level.txt")}
+    metadata_files = {info + name for name in ("METADATA", "WHEEL", "RECORD", "top_level.txt", "entry_points.txt")}
     license_files = {info + "LICENSE", info + "licenses/LICENSE"}
+    schema = "worker_handoff/configuration.schema.json"
     with zipfile.ZipFile(path) as archive:
         names = archive.namelist()
         validate_paths(names)
         files = set(names)
-        check(data_files | metadata_files <= files, "wheel omits metadata or declared examples")
+        check(data_files | metadata_files | {schema} <= files, "wheel omits metadata, schema or declared examples")
         check(len(files & license_files) == 1, "wheel must include the MIT license")
         check("worker_handoff/__init__.py" in files, "wheel omits the Python package")
-        check(all(name in data_files | metadata_files | license_files or re.fullmatch(
+        check(all(name in data_files | metadata_files | license_files | {schema} or re.fullmatch(
             r"worker_handoff/(?:[\w-]+/)*[\w-]+\.py", name,
         ) for name in files), f"unexpected files in wheel: {sorted(files)}")
         check_metadata(archive.read(f"{info}METADATA"))
+        check(archive.read(schema) == (source / "src" / schema).read_bytes(), "installed schema differs from source")
+        check(archive.read(f"{info}entry_points.txt").splitlines() == [
+            b"[console_scripts]", b"worker-handoff-config = worker_handoff.configuration_cli:main",
+            b"workeros-config = worker_handoff.configuration_cli:main",
+            b"workeros-demo = worker_handoff.quickstart:main",
+        ], "unexpected Python entry points")
         wheel = BytesParser().parsebytes(archive.read(f"{info}WHEEL"))
         check(wheel.get_all("Tag") == ["py3-none-any"], "wheel is not architecture-independent")
 
@@ -151,7 +169,7 @@ def check_npm(path):
         check(files == expected,
               f"unexpected npm archive contents: {sorted(files ^ expected)}")
         package = json.load(archive.extractfile("package/package.json"))
-        check(package.get("name") == "worker-handoff", "unexpected npm package name")
+        check(package.get("name") == "workeros", "unexpected npm package name")
         check(package.get("version") == VERSION, "unexpected npm package version")
         check(package.get("license") == "MIT", "unexpected npm package license")
         check(package.get("private") is True, "npm package must be GitHub-only")

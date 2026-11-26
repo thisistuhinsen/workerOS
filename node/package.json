@@ -1,6 +1,6 @@
 {
-  "name": "worker-handoff",
-  "version": "0.4.0",
+  "name": "workeros",
+  "version": "0.7.0",
   "description": "Read Linux file descriptors inherited from a workerOS launcher",
   "license": "MIT",
   "private": true,

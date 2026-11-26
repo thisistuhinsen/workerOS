@@ -1,6 +1,6 @@
 "use strict";
 
-const { openInherited } = require("worker-handoff");
+const { openInherited } = require("workeros");
 
 const input = openInherited("INPUT", { ownership: "owned" });
 const bytes = Buffer.alloc(64);
