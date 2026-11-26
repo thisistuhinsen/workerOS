@@ -1,0 +1,29 @@
+{
+  "name": "worker-handoff",
+  "version": "0.4.0",
+  "description": "Read Linux file descriptors inherited from a workerOS launcher",
+  "license": "MIT",
+  "private": true,
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/thisistuhinsen/workerOS.git",
+    "directory": "node"
+  },
+  "os": ["linux"],
+  "cpu": ["x64", "arm64"],
+  "engines": {
+    "node": ">=22"
+  },
+  "exports": {
+    "import": "./index.mjs",
+    "require": "./index.cjs"
+  },
+  "files": [
+    "index.cjs",
+    "index.mjs",
+    "examples/read-input.cjs"
+  ],
+  "scripts": {
+    "test": "node --test"
+  }
+}
