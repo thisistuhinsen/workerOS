@@ -145,24 +145,60 @@ class RunEvidenceTest(unittest.TestCase):
                 event = self.event(observations=observations)
                 validate_run_evidence(self.binding, (event,))
 
-    def test_terminal_confirmation_needs_an_exit_code_and_explicit_reap(self):
+    def test_terminal_confirmation_needs_a_single_report_from_the_pinned_source(self):
         exited = self.event(
-            observations=(), lifecycle=LifecycleStatus.EXITED,
+            source_id="supervisor", observations=(), lifecycle=LifecycleStatus.EXITED,
             returncode=7, cleanup=CleanupStatus.NOT_REQUESTED,
         )
         reap = self.event(
-            sequence=2, started_ns=120, finished_ns=140,
+            source_id="supervisor", sequence=2, started_ns=120, finished_ns=140,
             observations=(), cleanup=CleanupStatus.REAPED,
         )
-        for events in ((exited,), (replace(reap, sequence=1),)):
-            with self.assertRaises(ValueError):
-                validate_run_evidence(self.binding, events, require_terminal=True)
-        events = (exited, reap)
-        self.assertIs(validate_run_evidence(self.binding, events, require_terminal=True), events)
+        complete = replace(reap, returncode=7)
+        foreign_reap = replace(reap, source_id="observer")
+        lone_exit = replace(exited, source_id="observer")
+        for events in (
+            (exited,),
+            (replace(reap, sequence=1),),
+            (exited, reap),
+            (lone_exit, reap),
+            (exited, foreign_reap),
+            (exited, replace(foreign_reap, returncode=7)),
+        ):
+            with self.subTest(events=events):
+                self.assertIs(validate_run_evidence(self.binding, events), events)
+                with self.assertRaises(ValueError):
+                    validate_run_evidence(self.binding, events, require_terminal_from="supervisor")
+        events = (exited, complete)
+        self.assertIs(validate_run_evidence(
+            self.binding, events, require_terminal_from="supervisor",
+        ), events)
         with self.assertRaises(ValueError):
             validate_run_evidence(
                 self.binding, (exited, replace(reap, returncode=8)),
             )
+
+    def test_terminal_source_requires_a_nonempty_identifier(self):
+        for source in ("", " ", True):
+            with self.subTest(source=source), self.assertRaises(ValueError):
+                validate_run_evidence(self.binding, (), require_terminal_from=source)
+
+    def test_external_observation_cannot_report_exit_code_or_reap(self):
+        for code, cleanup in (
+            (7, None), (None, CleanupStatus.REAPED), (7, CleanupStatus.REAPED),
+        ):
+            with self.subTest(code=code, cleanup=cleanup), self.assertRaises(ValueError):
+                self.event(
+                    observations=(), lifecycle=LifecycleStatus.OBSERVED,
+                    returncode=code, cleanup=cleanup,
+                )
+        external = RunEvent.from_result(
+            self.binding, "supervisor", 1, 100, 120,
+            SupervisionResult(LifecycleStatus.OBSERVED, CleanupResult(CleanupStatus.OUTSIDE_SCOPE)),
+        )
+        self.assertIs(validate_run_evidence(self.binding, (external,))[0], external)
+        with self.assertRaises(ValueError):
+            validate_run_evidence(self.binding, (external,), require_terminal_from="supervisor")
 
     def test_pending_cleanup_cannot_follow_a_reported_reap(self):
         pending = self.event(observations=(), cleanup=CleanupStatus.PENDING)
@@ -171,21 +207,25 @@ class RunEvidenceTest(unittest.TestCase):
             returncode=7, cleanup=CleanupStatus.REAPED,
         )
         events = (pending, reaped)
-        self.assertIs(validate_run_evidence(self.binding, events, require_terminal=True), events)
+        self.assertIs(validate_run_evidence(
+            self.binding, events, require_terminal_from="recipient",
+        ), events)
         later_pending = replace(pending, sequence=3, started_ns=140, finished_ns=160)
         with self.assertRaises(ValueError):
             validate_run_evidence(self.binding, events + (later_pending,))
 
     def test_from_supervisor_preserves_wait_outcome_and_uses_reap_code(self):
         cleanup = CleanupResult(CleanupStatus.REAPED, -15)
-        result = SupervisionResult(LifecycleStatus.TIMED_OUT, cleanup)
-        event = RunEvent.from_result(self.binding, "supervisor", 1, 100, 120, result)
-        self.assertIs(event.lifecycle, LifecycleStatus.TIMED_OUT)
-        self.assertEqual(event.returncode, -15)
-        self.assertIs(event.cleanup, CleanupStatus.REAPED)
-        self.assertEqual(
-            validate_run_evidence(self.binding, (event,), require_terminal=True), (event,),
-        )
+        for lifecycle in (LifecycleStatus.TIMED_OUT, LifecycleStatus.CANCELLED):
+            with self.subTest(lifecycle=lifecycle):
+                result = SupervisionResult(lifecycle, cleanup)
+                event = RunEvent.from_result(self.binding, "supervisor", 1, 100, 120, result)
+                self.assertIs(event.lifecycle, lifecycle)
+                self.assertEqual((event.returncode, event.cleanup), (-15, CleanupStatus.REAPED))
+                self.assertEqual(
+                    validate_run_evidence(self.binding, (event,), require_terminal_from="supervisor"),
+                    (event,),
+                )
         standalone = RunEvent.from_result(self.binding, "supervisor", 2, 120, 140, cleanup)
         self.assertIsNone(standalone.lifecycle)
         self.assertEqual((standalone.returncode, standalone.cleanup), (-15, CleanupStatus.REAPED))

@@ -1,3 +1,4 @@
+from dataclasses import replace
 import errno
 from hashlib import sha256
 from io import BytesIO
@@ -88,16 +89,20 @@ class RunEvidenceConsumerTest(unittest.TestCase):
                 start = monotonic_ns()
                 cleanup = supervisor.cleanup(worker.name, due_ns=deadline)
                 fourth = RunEvent.from_result(binding, "supervisor", 4, start, monotonic_ns(), cleanup)
-                self.assertEqual(fourth.cleanup, CleanupStatus.REAPED)
+                self.assertEqual((fourth.returncode, fourth.cleanup), (7, CleanupStatus.REAPED))
                 self.assertFalse(cleanup.terminate_sent or cleanup.kill_sent)
 
         coverage = (("launcher", "held-original"),)
         events = (first, second, third, fourth)
         self.assertEqual(validate_run_evidence(
-            binding, events, require_observed=coverage, require_terminal=True,
+            binding, events, require_observed=coverage, require_terminal_from="supervisor",
         ), events)
-        with self.assertRaises(ValueError):
-            validate_run_evidence(binding, events[:-1], require_terminal=True)
+        for incomplete in (
+            events[:-1],
+            events[:-1] + (replace(fourth, source_id="optional-observer"),),
+        ):
+            with self.subTest(incomplete=incomplete), self.assertRaises(ValueError):
+                validate_run_evidence(binding, incomplete, require_terminal_from="supervisor")
 
     def assert_fd_closed(self, fd):
         with self.assertRaises(OSError) as raised:

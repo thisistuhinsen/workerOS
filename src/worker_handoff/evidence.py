@@ -40,8 +40,9 @@ def _returncode(value):
 
 @dataclass(frozen=True, slots=True)
 class RunBinding:
-    """Opaque identities and caller-supplied clock window for one execution.
+    """Opaque identities and caller-supplied clock window for one bound child.
 
+    Use a separate binding for each child execution.
     Assign a clock ID only when timestamps in that domain are comparable.
     """
 
@@ -111,6 +112,10 @@ class RunEvent:
         _returncode(self.returncode)
         if self.cleanup is not None and type(self.cleanup) is not CleanupStatus:
             raise ValueError("expected a CleanupStatus or None")
+        if self.lifecycle is LifecycleStatus.OBSERVED and (
+            self.returncode is not None or self.cleanup is CleanupStatus.REAPED
+        ):
+            raise ValueError("an external observation cannot report an exit code or reap")
         if (not self.observations and self.lifecycle is None
                 and self.returncode is None and self.cleanup is None):
             raise ValueError("an event must contain a reported fact")
@@ -145,21 +150,24 @@ def validate_run_evidence(
     events: tuple[RunEvent, ...],
     *,
     require_observed: tuple[tuple[str, str], ...] = (),
-    require_terminal: bool = False,
+    require_terminal_from: str | None = None,
 ) -> tuple[RunEvent, ...]:
     """Return the original valid event tuple or raise ValueError.
 
     Sequence numbers start at one. Intervals must be ordered and may touch.
     Each required pair needs an OBSERVED report from that source for that
-    subject. This is historical coverage. Terminal coverage requires a
-    consistent exit code and an explicit REAPED report for this execution.
-    A nonzero exit can satisfy that coverage. The caller keeps the raw
-    receipts for any source-specific details beyond this projection.
+    subject. This is historical coverage. Set `require_terminal_from` to a
+    source ID to require one event from that source reporting both an exit
+    code and REAPED for this execution. A nonzero exit can satisfy that
+    coverage. The application decides how to act on the process outcome.
+    Keep raw receipts for source-specific details beyond this projection.
     """
     if type(binding) is not RunBinding or type(events) is not tuple:
         raise ValueError("expected a RunBinding and tuple of run events")
-    if type(require_observed) is not tuple or type(require_terminal) is not bool:
-        raise ValueError("expected a tuple of required pairs and a bool terminal flag")
+    if type(require_observed) is not tuple:
+        raise ValueError("expected a tuple of required pairs")
+    if require_terminal_from is not None:
+        _identifier(require_terminal_from, "required terminal source_id")
     missing = set()
     for pair in require_observed:
         if type(pair) is not tuple or len(pair) != 2:
@@ -169,7 +177,7 @@ def validate_run_evidence(
         missing.add(pair)
 
     previous_finish = binding.started_ns
-    code, reaped = None, False
+    code, reaped, terminal_report = None, False, False
     for sequence, event in enumerate(events, 1):
         if type(event) is not RunEvent or event.binding != binding:
             raise ValueError("event run, artifact, clock, or window does not match")
@@ -184,12 +192,15 @@ def validate_run_evidence(
             code = event.returncode
         if reaped and event.cleanup is CleanupStatus.PENDING:
             raise ValueError("cleanup pending after a reported reap")
-        reaped = reaped or event.cleanup is CleanupStatus.REAPED
+        if event.cleanup is CleanupStatus.REAPED:
+            reaped = True
+            if event.source_id == require_terminal_from and event.returncode is not None:
+                terminal_report = True
         for point in event.observations:
             if point.state is EvidenceState.OBSERVED:
                 missing.discard((event.source_id, point.subject))
     if missing:
         raise ValueError(f"missing required observations: {sorted(missing)!r}")
-    if require_terminal and (code is None or not reaped):
-        raise ValueError("terminal coverage requires an exit code and explicit reap")
+    if require_terminal_from is not None and not terminal_report:
+        raise ValueError("terminal coverage requires one report with both an exit code and REAPED")
     return events
