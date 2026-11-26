@@ -1,0 +1,107 @@
+name: Windows Subsystem for Linux 2
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  wsl2:
+    name: WSL2 / Ubuntu 24.04 / Python 3.12.3
+    runs-on: windows-2025
+    timeout-minutes: 25
+    env:
+      WSL_UTF8: '1'
+      WSL_DISTRO: workerOS-${{ github.run_id }}-${{ github.run_attempt }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+
+      - name: Import pinned Ubuntu into WSL2
+        id: distro
+        shell: pwsh
+        run: |
+          wsl.exe --version
+          if ($LASTEXITCODE) { throw "WSL runtime unavailable (exit $LASTEXITCODE)" }
+          $image = 'ubuntu-base-24.04.4-base-amd64.tar.gz'
+          $archive = Join-Path $env:RUNNER_TEMP $image
+          Invoke-WebRequest "https://cdimage.ubuntu.com/ubuntu-base/releases/24.04/release/$image" -OutFile $archive
+          $expected = 'c1e67ef7b17a6300e136118bd1dc04725009cb376c1aad10abcf8cd453628d58'
+          if ((Get-FileHash $archive -Algorithm SHA256).Hash -ne $expected) { throw 'Ubuntu image checksum mismatch' }
+          $location = Join-Path $env:LOCALAPPDATA $env:WSL_DISTRO
+          wsl.exe --import $env:WSL_DISTRO $location $archive --version 2
+          if ($LASTEXITCODE) {
+            $code = $LASTEXITCODE
+            Get-WindowsOptionalFeature -Online -FeatureName VirtualMachinePlatform | Select-Object FeatureName,State
+            throw "WSL2 import failed on windows-2025 (exit $code; see WSL diagnostic above)"
+          }
+
+      - name: Boot guest and verify distro version and kernel
+        shell: pwsh
+        run: |
+          $kernel = wsl.exe --distribution $env:WSL_DISTRO --user root --exec uname -r
+          if ($LASTEXITCODE) { throw "WSL2 guest failed to boot on windows-2025 (exit $LASTEXITCODE)" }
+          $distros = (wsl.exe --list --verbose | Out-String).Replace("`0", '')
+          if ($LASTEXITCODE) { throw "WSL distro enumeration failed (exit $LASTEXITCODE)" }
+          Write-Host $distros
+          Write-Host "Guest kernel: $kernel"
+          if ($distros -notmatch "(?m)^\s*\*?\s*$([regex]::Escape($env:WSL_DISTRO))\s+\S+\s+2\s*$") {
+            throw 'Expected the imported distro to be listed as WSL version 2'
+          }
+          if ($kernel -notmatch 'microsoft.*WSL2') { throw "Unexpected WSL2 kernel: $kernel" }
+
+      - name: Build wheel and test its offline installation inside the guest
+        shell: pwsh
+        run: |
+          $source = Join-Path $env:RUNNER_TEMP workerOS-source.tar
+          git archive --format=tar --output=$source HEAD -- LICENSE README.md pyproject.toml src examples tests
+          if ($LASTEXITCODE) { throw "Could not archive tested revision (exit $LASTEXITCODE)" }
+          git rev-parse HEAD
+          $script = @'
+          set -euo pipefail
+          export PATH=/usr/sbin:/usr/bin:/sbin:/bin DEBIAN_FRONTEND=noninteractive
+          source /etc/os-release
+          test "$ID" = ubuntu && test "$VERSION_ID" = 24.04 || exit 1
+          apt-get update
+          apt-get install -y --no-install-recommends gcc libc6-dev python3.12-venv python3-pip python3-setuptools python3-wheel
+          python3.12 -c 'import sys; print(sys.version); assert sys.version_info[:3] == (3, 12, 3)'
+          guest=$(mktemp -d)
+          tar -xf workerOS-source.tar -C "$guest"
+          cd "$guest"
+          export PIP_NO_INDEX=1 PIP_DISABLE_PIP_VERSION_CHECK=1
+          python3.12 -m pip wheel --no-index --no-build-isolation --no-deps . -w dist
+          wheel=dist/worker_handoff-0.3.0-py3-none-any.whl
+          sha256sum "$wheel"
+          python3.12 -m venv venv
+          venv/bin/python -m pip install --no-index --no-deps "$wheel"
+          venv/bin/python -I - <<'PY'
+          from importlib.metadata import version
+          from pathlib import Path
+          import sys
+          import unittest
+          import worker_handoff
+
+          assert version("worker-handoff") == "0.3.0"
+          assert Path(worker_handoff.__file__).resolve().is_relative_to(Path(sys.prefix))
+          suite = unittest.defaultTestLoader.discover("tests")
+          result = unittest.TextTestRunner(verbosity=2).run(suite)
+          if result.testsRun < 39 or result.skipped or not result.wasSuccessful():
+              raise SystemExit("Expected at least 39 successful tests with no skips")
+          PY
+          venv/bin/python -I venv/share/worker-handoff/examples/run_inherited_fd.py --language c --language python
+          '@
+          $guestScript = Join-Path $env:RUNNER_TEMP workerOS-test.sh
+          [IO.File]::WriteAllText($guestScript, $script.Replace("`r", '') + "`n")
+          wsl.exe --distribution $env:WSL_DISTRO --user root --cd $env:RUNNER_TEMP --exec /bin/bash workerOS-test.sh
+          if ($LASTEXITCODE) { throw "WSL2 guest build or tests failed (exit $LASTEXITCODE)" }
+
+      - name: Remove this run's imported guest
+        if: always() && steps.distro.outcome == 'success'
+        shell: pwsh
+        run: |
+          wsl.exe --unregister $env:WSL_DISTRO
+          if ($LASTEXITCODE) { throw "WSL guest cleanup failed (exit $LASTEXITCODE)" }

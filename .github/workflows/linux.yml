@@ -8,6 +8,27 @@ on:
 permissions:
   contents: read
 
+env:
+  WORKEROS_CI_CHECK: |
+    set -euo pipefail
+    log=$(mktemp)
+    trap 'rm -f -- "$log"' EXIT
+    bash scripts/check-linux.sh 2>&1 | tee "$log"
+    grep -Eq '^Ran [1-9][0-9]* tests? in ' "$log"
+    grep -Fxq 'OK' "$log" || {
+      echo 'Expected the Linux test suite to finish with zero skips' >&2
+      exit 1
+    }
+    for language in C C++ Go Java Node.js Python Rust; do
+      if ! awk -v prefix="$language: PASSED (" '
+        index($0, prefix) == 1 { passed++ }
+        END { exit passed != 1 }
+      ' "$log"; then
+        printf '%s example did not pass exactly once\n' "$language" >&2
+        exit 1
+      fi
+    done
+
 jobs:
   linux-vm:
     strategy:
@@ -26,7 +47,12 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: ${{ matrix.python }}
-      - run: bash scripts/check-linux.sh
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '25'
+      - name: Test installed wheel and all seven examples
+        run: bash -c "$WORKEROS_CI_CHECK"
 
   distro-userspace:
     runs-on: ubuntu-24.04
@@ -42,18 +68,22 @@ jobs:
         env:
           IMAGE: ${{ matrix.image }}
         run: |
-          docker run --rm -v "$PWD:/src:ro" "$IMAGE" sh -ec '
+          docker run --rm -e WORKEROS_CI_CHECK -v "$PWD:/src:ro" "$IMAGE" sh -ec '
             if command -v apt-get >/dev/null; then
-              apt-get update && apt-get install -y --no-install-recommends python3 python3-venv gcc libc6-dev bash
+              apt-get update
+              apt-get install -y --no-install-recommends ca-certificates python3 python3-venv \
+                build-essential bash nodejs golang-go rustc openjdk-25-jdk-headless
             elif command -v dnf >/dev/null; then
-              dnf install -y python3 python3-pip gcc glibc-devel bash
+              dnf install -y --setopt=install_weak_deps=False ca-certificates python3 python3-pip \
+                gcc gcc-c++ glibc-devel bash nodejs golang rust java-25-openjdk-devel
             else
-              apk add --no-cache python3 py3-pip gcc musl-dev bash
+              apk add --no-cache ca-certificates python3 py3-pip build-base bash nodejs go rust openjdk25-jdk
+              export PATH="/usr/lib/jvm/java-25-openjdk/bin:$PATH"
             fi
             work=$(mktemp -d)
             cp -R /src/. "$work/"
             cd "$work"
-            bash scripts/check-linux.sh
+            bash -c "$WORKEROS_CI_CHECK"
           '
 
   windows-boundary:

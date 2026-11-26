@@ -1,0 +1,46 @@
+name: Strict custody on Linux
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  linux-strict-custody:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - name: Verify authenticated read-only custody across Linux principals
+        shell: bash
+        run: |
+          set -euo pipefail
+          uname -srm
+          python --version
+          python_path=$(command -v python)
+          built=$(mktemp -d)
+          stage=$(sudo -n mktemp -d /tmp/worker-handoff-strict.XXXXXXXX)
+          trap 'sudo -n rm -rf -- "$stage"; rm -rf -- "$built"' EXIT
+
+          "$python_path" -m pip wheel --no-deps . -w "$built"
+          wheels=("$built"/worker_handoff-0.3.0-*.whl)
+          [[ ${#wheels[@]} == 1 && -f ${wheels[0]} ]]
+          wheel=${wheels[0]##*/}
+          digest=$(sha256sum "${wheels[0]}" | cut -d ' ' -f 1)
+          sudo -n install -m 0644 "${wheels[0]}" "$stage/$wheel"
+          sudo -n install -m 0644 scripts/check-strict-custody-linux.py "$stage/fixture.py"
+          sudo -n chmod 0755 "$stage"
+          printf '%s  %s\n' "$digest" "$stage/$wheel" | sha256sum --check --status
+          printf 'wheel SHA-256 %s\n' "$digest"
+
+          sudo -n "$python_path" -m venv "$stage/venv"
+          sudo -n "$stage/venv/bin/python" -I -m pip install --no-index --no-deps "$stage/$wheel"
+          sudo -n "$stage/venv/bin/python" -I "$stage/fixture.py" check nobody
