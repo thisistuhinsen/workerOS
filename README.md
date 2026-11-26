@@ -2,11 +2,11 @@
 
 ![workerOS wordmark beside its split W mark](docs/brand/workeros-banner.png)
 
-**Did the job stop, or did you just stop waiting?**
+**Run a job. Know how it ended.**
 
-Use workerOS to run a build or generate a report on the machine your app
-already runs on. See what finished, what timed out, and what still needs
-checking before you try again.
+workerOS starts and supervises local commands on Linux and WSL2. See what
+exited, what timed out, and what still needs checking before you retry.
+When a worker needs a file, give it the open file rather than the pathname.
 
 [Install and run](#install-and-run) · [Language packages](#language-packages) ·
 [Troubleshooting](docs/support.md#troubleshooting) · [Agent skill](skills/workeros/SKILL.md)
@@ -16,56 +16,39 @@ checking before you try again.
 
 ## Install and run
 
-Run a disk-space report and a second job that deliberately waits too long.
-You'll see one finish and the other time out and stop. The free space
-will depend on your machine.
-
-```text
-Disk report: 42 GiB free
-report: exited 0
-slow job: timed out
-cleanup: reaped
-```
-
-Use a **Linux shell or Ubuntu in WSL2**, with Python 3.11+, venv, Linux
-pidfds, curl and GNU coreutils (`sha256sum`). Native Windows Python can
-install the wheel but cannot import its Linux runtime.
-[Windows and macOS help](docs/support.md#windows-and-macos)
-
-### Run a fileless worker
-
-Once the [v0.7.0 GitHub release](https://github.com/thisistuhinsen/workerOS/releases/tag/v0.7.0)
-is published, paste this in a fresh directory. It downloads the wheel and
-its checksums, verifies the wheel, then runs the demo. No checkout required.
-For a supplied offline handoff, use the [offline install](docs/install.md#offline-install).
+Open a **Linux or Ubuntu WSL2 terminal** with Python 3.11+ and `venv`.
+Paste this block in a folder where you can create a virtual environment.
+No clone, `sudo`, or separate download step. [Other platforms and setup help](docs/support.md#windows-and-macos)
 
 ```sh
-(
-  set -eu
-  release=https://github.com/thisistuhinsen/workerOS/releases/download/v0.7.0
-  wheel=workeros-0.7.0-py3-none-any.whl
-  test ! -e .venv-0.7.0
-  download=$(mktemp -d)
-  trap 'rm -rf -- "$download"' EXIT
-  curl -fsSL "$release/SHA256SUMS" -o "$download/SHA256SUMS"
-  curl -fsSL "$release/$wheel" -o "$download/$wheel"
-  (cd "$download" &&
-    awk -v f="$wheel" '$2 == f { print; n++ } END { if (n != 1) exit 1 }' SHA256SUMS > wheel.sha256 &&
-    sha256sum --strict -c wheel.sha256)
-  python3 -m venv .venv-0.7.0
-  .venv-0.7.0/bin/python -m pip install --no-index --no-deps "$download/$wheel"
-  .venv-0.7.0/bin/workeros-demo
-)
+python3 -m venv .venv-0.7.0 &&
+.venv-0.7.0/bin/python -m pip install --no-index --no-deps \
+  'https://github.com/thisistuhinsen/workerOS/releases/download/v0.7.0/workeros-0.7.0-py3-none-any.whl#sha256=1a418f20bffcfbed304855edb6663ce35c75c818b3f0af1ff51b6dc445e92c3b' &&
+.venv-0.7.0/bin/workeros-demo -- /usr/bin/printf 'hello\n'
 ```
+
+Expected output:
+
+```text
+hello
+job: exited 0
+```
+
+Replace the `printf` command
+with a command you trust. The GitHub wheel is pinned by its SHA-256.
+
+[Install with uv, verify downloads, or work offline](docs/install.md#python) ·
+[See the timeout and cleanup demo](#try-a-timeout)
 
 [![The dashboard shows every worker in green. Audit never started, so the lead says to promote Audit.](docs/media/one-small-ticket.gif)](docs/media/README.md#everything-is-green)
 
-From the same folder, swap in a command you trust. This one prints `hello`
-and reports `job: exited 0`.
+[Open the animation](docs/media/one-small-ticket.gif?raw=true) ·
+[Read the comic](docs/media/README.md#everything-is-green)
 
-```sh
-.venv-0.7.0/bin/workeros-demo -- /usr/bin/printf 'hello\n'
-```
+### Try a timeout
+
+Run `.venv-0.7.0/bin/workeros-demo` with no arguments. It runs a disk-space
+report and a second job that deliberately outlasts the wait.
 
 `timed out` means the wait ended without an exit observation. An `exited`
 result reports the exit status the wait collected, including when observed

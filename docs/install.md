@@ -5,7 +5,7 @@ Linux pidfds for the demo. Native Windows Python can install the wheel;
 loading the controller there fails on `fcntl`. On macOS use a supported
 Linux VM. [Windows and macOS help](support.md#windows-and-macos)
 
-The public instructions apply once [v0.7.0 is published on GitHub](https://github.com/thisistuhinsen/workerOS/releases/tag/v0.7.0).
+These instructions use the published [v0.7.0 GitHub release](https://github.com/thisistuhinsen/workerOS/releases/tag/v0.7.0).
 They use individual release assets. If you already received a directory named
 `workerOS-0.7.0-offline`, go straight to [Offline install](#offline-install).
 For the published historical v0.4.0 package, use its
@@ -19,8 +19,9 @@ The distribution is `workeros`, the Python import is `worker_handoff`, and
 `workeros-demo` runs two local jobs. Install the controller here if another
 language's reader guide needs a launcher.
 
-**Get the released wheel.** From a fresh working directory, download these
-two files when v0.7.0 is available:
+For the shortest path from install to a running command, use the
+[README quickstart](../README.md#install-and-run). To verify downloads
+separately or prepare an offline install, download these two files:
 
 ```sh
 release=https://github.com/thisistuhinsen/workerOS/releases/download/v0.7.0
