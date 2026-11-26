@@ -103,8 +103,8 @@ python examples/run_local_workers.py
 
 Expected: each worker reports exit `0` and `cleanup reaped`. Their own output
 can arrive in any order. The supervisor manages direct children it launches
-or is explicitly given control of. To run an importable Python callable
-instead, use `WorkerRoster.start`. Roles are application labels, not OS
+or is explicitly given control of. To run a synchronous, importable Python callable
+instead, use `WorkerRoster.start`. Do not pass an async handler directly. Roles are application labels, not OS
 permissions. workerOS doesn't provide a sandbox or a distributed queue.
 A roster or supervisor keeps used names for its lifetime; use a fresh
 instance for a new finite workload if names need to be reused. See
@@ -121,16 +121,16 @@ consumer example and a Linux FD smoke test.
 | --- | --- | --- |
 | Python | pip or uv | `worker-handoff` from the wheel above |
 | Node.js | npm | `worker-handoff` from the tarball above. Linux x64 or ARM64 with procfs and Node.js 22+ |
-| Go | Go modules | `GOPROXY=direct go get github.com/thisistuhinsen/workerOS/go/workerhandoff@v0.4.0` · [Go reader and checksum fallback](go/README.md) |
-| Rust | Cargo | `worker-handoff = { git = "https://github.com/thisistuhinsen/workerOS", tag = "v0.4.0" }` · [Rust reader](rust/) |
-| C | Conan 2 | `worker-handoff/0.4.0` · [C consumer](native/tests/c/) |
-| C++ | Conan 2 | `worker-handoff/0.4.0` · [C++ consumer](native/tests/cpp/) |
-| Java | Maven | `io.github.thisistuhinsen:worker-handoff:0.4.0` · [Install and run a Java consumer](java/) |
+| Go | Go modules | `GOPROXY=direct go get github.com/thisistuhinsen/workerOS/go/workerhandoff@v0.4.0` · [Go reader and checksum fallback](https://github.com/thisistuhinsen/workerOS/blob/main/go/README.md) |
+| Rust | Cargo | `worker-handoff = { git = "https://github.com/thisistuhinsen/workerOS", tag = "v0.4.0" }` · [Rust reader](https://github.com/thisistuhinsen/workerOS/tree/main/rust/) |
+| C | Conan 2 | `worker-handoff/0.4.0` · [C consumer](https://github.com/thisistuhinsen/workerOS/tree/main/native/tests/c/) |
+| C++ | Conan 2 | `worker-handoff/0.4.0` · [C++ consumer](https://github.com/thisistuhinsen/workerOS/tree/main/native/tests/cpp/) |
+| Java | Maven | `io.github.thisistuhinsen:worker-handoff:0.4.0` · [Install and run a Java consumer](https://github.com/thisistuhinsen/workerOS/tree/main/java/) |
 
 These are GitHub-hosted packages. Maven users install the released JAR with
 its matching POM before resolving the normal Maven coordinates. Conan users
 create the released recipe in a local cache before installing that package
-into their project. [Conan install instructions](native/README.md)
+into their project. [Conan install instructions](https://github.com/thisistuhinsen/workerOS/blob/main/native/README.md)
 
 ## Run an inherited FD example
 
@@ -153,7 +153,7 @@ python -I "$launcher" --language python
 ```
 
 For the npm-installed reader, follow the
-[runnable Node.js walkthrough](node/README.md#read-one-inherited-file).
+[runnable Node.js walkthrough](https://github.com/thisistuhinsen/workerOS/blob/main/node/README.md#read-one-inherited-file).
 It starts the example from `node_modules` through Python and checks that the
 parent's file offset stays put.
 
@@ -206,7 +206,7 @@ leaves the descriptor open when the wrapper closes. The helper checks the
 named ABI binding against the live file's device, inode and access mode. It
 reads from `read` and `read-write` bindings. Keep the descriptor slot stable
 while the handle is open. Validation failure leaves the slot with its caller.
-Start the [packaged reader](node/examples/read-input.cjs)
+Start the [packaged reader](https://github.com/thisistuhinsen/workerOS/blob/main/node/examples/read-input.cjs)
 through a launcher that supplies the actual FD. Launch, Unix-socket handoff,
 supervision and custody use the Python APIs below.
 
@@ -277,16 +277,16 @@ uncertain write before deciding what to do about a failed or uncertain dispatch.
 
 ## Verify and contribute
 
-- [Linux wheel check](scripts/check-linux.sh) builds the wheel, installs it
+- [Linux wheel check](https://github.com/thisistuhinsen/workerOS/blob/main/scripts/check-linux.sh) builds the wheel, installs it
   offline into a fresh venv, and runs the Python tests and bundled examples.
   Run `bash scripts/check-linux.sh` from the checkout.
-- [Node package](node/package.json) has its own tests. From the checkout, run
+- [Node package](https://github.com/thisistuhinsen/workerOS/blob/main/node/package.json) has its own tests. From the checkout, run
   `npm --prefix node test` with Node.js 22+ and Python 3.11+ on Linux.
-- [Strict custody fixture](scripts/check-strict-custody-linux.py) exercises a
+- [Strict custody fixture](https://github.com/thisistuhinsen/workerOS/blob/main/scripts/check-strict-custody-linux.py) exercises a
   read-only grant over a sealed file and refusal paths using separate Linux
   accounts in a disposable VM. See the prerequisites in the
   [support and verification notes](docs/support.md).
-- [Linux CI](.github/workflows/linux.yml) records the tested platforms and
+- [Linux CI](https://github.com/thisistuhinsen/workerOS/blob/main/.github/workflows/linux.yml) records the tested platforms and
   separates runner-kernel tests from container userspace checks. See the
   [support boundaries](docs/support.md) for native Windows and WSL2.
 - [Release process](docs/releasing.md) describes the candidate checks,

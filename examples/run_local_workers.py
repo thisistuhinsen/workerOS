@@ -43,7 +43,9 @@ def run_cohort(jobs, *, wait_ns=5 * SECOND):
 
         for worker in workers:
             deadline = monotonic_ns() + wait_ns
-            outcomes[worker.name] = supervisor.wait(worker.name, due_ns=deadline)
+            outcomes[worker.name] = supervisor.wait(
+                worker.name, due_ns=deadline, cleanup_due_ns=deadline + 2 * SECOND,
+            )
     finally:
         # Use a fresh bound for each direct child. Even if cleanup is pending,
         # keep or report that outcome rather than claim the child stopped.

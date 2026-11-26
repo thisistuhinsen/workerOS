@@ -21,7 +21,7 @@ if not re.fullmatch(r"(?:0|[1-9][0-9]*)(?:\.(?:0|[1-9][0-9]*)){2}", VERSION):
 SOURCE_NAME = f"worker_handoff-{VERSION}"
 PUBLIC_DOCS = {
     "CONTRIBUTING.md", "SECURITY.md", "docs/releasing.md", "docs/support.md",
-    "docs/media/README.md", "docs/media/custody-lanyard.gif", "docs/media/fd-7.gif",
+    "docs/media/README.md", "docs/media/custody-lanyard.gif", "docs/media/fd-7.gif", "docs/media/one-small-ticket.gif",
 }
 NODE_FILES = {
     "LICENSE", "README.md", "examples/read-input.cjs", "index.cjs",
@@ -101,8 +101,9 @@ def check_sdist(path, destination):
         core = {"LICENSE", "MANIFEST.in", "PKG-INFO", "README.md", "pyproject.toml", "setup.cfg"}
         core |= PUBLIC_DOCS
         check(core <= files, f"missing sdist files: {sorted(core - files)}")
-        fixtures = {"examples/report_worker.c", "examples/run_local_report.py"}
-        check(fixtures <= files, f"sdist omits C test fixtures: {sorted(fixtures - files)}")
+        fixtures = {"examples/report_worker.c", "examples/run_local_report.py",
+                    "examples/run_local_workers.py"}
+        check(fixtures <= files, f"sdist omits documented examples: {sorted(fixtures - files)}")
         check(any(name.startswith("tests/test_") for name in files), "sdist omits tests")
         check(all(
             name in core or re.fullmatch(
