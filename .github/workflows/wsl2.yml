@@ -79,20 +79,27 @@ jobs:
           sha256sum "$wheel"
           python3.12 -m venv venv
           venv/bin/python -m pip install --no-index --no-deps "$wheel"
-          venv/bin/python -I - "$version" <<'PY'
+          test_runner=$(mktemp --suffix=.py)
+          trap 'rm -f -- "$test_runner"' EXIT
+          cat > "$test_runner" <<'PY'
           from importlib.metadata import version
           from pathlib import Path
           import sys
           import unittest
           import worker_handoff
 
-          assert version("worker-handoff") == sys.argv[1]
-          assert Path(worker_handoff.__file__).resolve().is_relative_to(Path(sys.prefix))
-          suite = unittest.defaultTestLoader.discover("tests")
-          result = unittest.TextTestRunner(verbosity=2).run(suite)
-          if result.testsRun < 39 or result.skipped or not result.wasSuccessful():
-              raise SystemExit("Expected at least 39 successful tests with no skips")
+          def main():
+              assert version("worker-handoff") == sys.argv[1]
+              assert Path(worker_handoff.__file__).resolve().is_relative_to(Path(sys.prefix))
+              suite = unittest.defaultTestLoader.discover("tests")
+              result = unittest.TextTestRunner(verbosity=2).run(suite)
+              if result.testsRun < 39 or result.skipped or not result.wasSuccessful():
+                  raise SystemExit("Expected at least 39 successful tests with no skips")
+
+          if __name__ == "__main__":
+              main()
           PY
+          venv/bin/python -I "$test_runner" "$version"
           venv/bin/python -I venv/share/worker-handoff/examples/run_inherited_fd.py --language c --language python
           '@
           $guestScript = Join-Path $env:RUNNER_TEMP workerOS-test.sh
