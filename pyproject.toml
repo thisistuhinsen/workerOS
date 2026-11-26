@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "worker-handoff"
-version = "0.2.0"
+version = "0.3.0"
 description = "Explicit local workers and file descriptor handoff for existing supervisors"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -13,3 +13,15 @@ dependencies = []
 [tool.setuptools.packages.find]
 where = ["src"]
 
+
+[tool.setuptools.data-files]
+"share/worker-handoff/examples" = [
+    "examples/ReadWorker.java",
+    "examples/read_worker.c",
+    "examples/read_worker.cjs",
+    "examples/read_worker.cpp",
+    "examples/read_worker.go",
+    "examples/read_worker.py",
+    "examples/read_worker.rs",
+    "examples/run_inherited_fd.py",
+]
