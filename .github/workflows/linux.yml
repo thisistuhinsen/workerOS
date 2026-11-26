@@ -55,3 +55,34 @@ jobs:
             cd "$work"
             bash scripts/check-linux.sh
           '
+
+  windows-boundary:
+    name: Native Windows scope on ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [windows-2022, windows-2025]
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - name: Verify baseline builds and Linux-only APIs do not load
+        shell: pwsh
+        run: |
+          python -m pip wheel --no-deps . -w dist
+          $wheel = (Get-ChildItem dist/worker_handoff-*.whl).FullName
+          python -m pip install --no-index --no-deps $wheel
+          @'
+          try:
+              import worker_handoff
+          except ModuleNotFoundError as exc:
+              if exc.name != "fcntl":
+                  raise
+              print("Expected: native Windows has no Linux descriptor API")
+          else:
+              raise SystemExit("Unexpected native import: revisit platform support and update this check")
+          '@ | python -
