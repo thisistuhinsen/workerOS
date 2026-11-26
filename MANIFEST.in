@@ -1,5 +1,5 @@
 include CONTRIBUTING.md SECURITY.md
 include docs/releasing.md docs/support.md docs/media/README.md
-include docs/media/custody-lanyard.gif docs/media/fd-7.gif
-include examples/report_worker.c examples/run_local_report.py
+include docs/media/custody-lanyard.gif docs/media/fd-7.gif docs/media/one-small-ticket.gif
+include examples/report_worker.c examples/run_local_report.py examples/run_local_workers.py
 recursive-include tests *.py

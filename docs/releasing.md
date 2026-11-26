@@ -5,10 +5,10 @@ The release workflow builds packages with a read-only token. A separate job gets
 ## Validate a candidate
 
 1. Update the package versions together and review the public source. Copy the candidate's full commit SHA.
-2. On the canonical repository's default `main`, run [GitHub release](../.github/workflows/release.yml) with that SHA, the committed version without `v`, and `publish` unchecked. The workflow records the asset checksums and stores the candidate as a GitHub Actions artifact.
+2. On the canonical repository's default `main`, run [GitHub release](https://github.com/thisistuhinsen/workerOS/blob/main/.github/workflows/release.yml) with that SHA, the committed version without `v`, and `publish` unchecked. The workflow records the asset checksums and stores the candidate as a GitHub Actions artifact.
 3. Review the exact artifact, install its packages in fresh consumers, and review the workflow and public documentation again. For a local pass with the same build tools, run `bash scripts/build-release.sh` into an empty directory. The script compares two clean builds and checks packaged entry points. An exact byte comparison assumes the same toolchain versions and `SOURCE_DATE_EPOCH`.
 
-Each release includes the Python wheel and sdist, npm tarball, Maven JAR and POM, Conan recipe archive, and `SHA256SUMS`. Go and Cargo consume the same reviewed source tag. The [Git consumer check](../scripts/check-git-consumers.sh) verifies a disposable tag at the exact candidate commit and launches both external consumers with the built wheel. The GitHub release job publishes the exact tested artifact from its build job.
+Each release includes the Python wheel and sdist, npm tarball, Maven JAR and POM, Conan recipe archive, and `SHA256SUMS`. Go and Cargo consume the same reviewed source tag. The [Git consumer check](https://github.com/thisistuhinsen/workerOS/blob/main/scripts/check-git-consumers.sh) verifies a disposable tag at the exact candidate commit and launches both external consumers with the built wheel. The GitHub release job publishes the exact tested artifact from its build job.
 
 ## Authorize a public release
 

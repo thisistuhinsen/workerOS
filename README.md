@@ -1,30 +1,38 @@
 # workerOS
 
-Your worker needs the file you opened, even if someone has already renamed it
-to `report-final-FINAL.txt`. workerOS hands a trusted local worker an open Linux
-file descriptor (FD) for the same file. The worker can get on with reading it.
+Starting a subprocess is easy. Keeping track of a renderer, a sync job,
+and an auditor that all start and finish differently is where your app
+starts growing its own process manager. When one job times out, you need
+to know what actually happened before you retry it.
 
-- **Send a generated report to a worker you already run.** Pass the open
-  read-only file over a connected Unix socket.
-- **Run a native reader from Python.** Launch it with an inherited FD, whether
-  the reader is written in C, Go, Java, or another language with FD access.
-- **Put a gate in front of a release.** Approve the specific file and command,
-  then opt into direct-child cleanup or independent custody checks as needed.
+workerOS gives Python apps a small, local worker layer on Linux. Name the
+workers and their roles, run trusted callables or executables, and supervise
+direct children. Pass an open file only when a job needs one. Start with one
+worker, or run several without wiring up a queue first.
 
-![Terminal cartoon. After a rename, the pathname asks why the reader saved it as a number. The reader gets W at offset zero from FD 7 and says, It's how we met.](docs/media/fd-7.gif)
+![Terminal cartoon: The lead says all three workers are green. The dashboard says it colored the labels. The renderer finished, sync timed out, and the auditor was never started.](docs/media/one-small-ticket.gif)
 
-[Read the report handoff as text](docs/media/README.md#report-handoff).
+[Read the cartoon as text](docs/media/README.md#everything-is-green).
+
+- **Run a calculation or invoke a tool.** Give the worker a name and join it
+  for an exit status. Use the direct-child supervisor when you need a
+  deadline, cancellation, or bounded cleanup.
+- **Register a process you already run.** Record its name, role, and PID. Registration doesn't check
+  liveness or take over the process.
+- **Hand a worker the file you actually opened.** Inherit its descriptor at
+  launch or send a read-only descriptor over a connected Unix socket. Use
+  the optional release and custody checks when the handoff needs stricter
+  evidence.
 
 ## Install
 
-The Python package is `worker-handoff` and imports as `worker_handoff`.
-It requires Linux and Python 3.11 or later. The other packages give existing
-workers a small reader for the same inherited FD ABI. The Python API also
-launches workers, handles Unix-socket delivery and supplies the optional
-release and custody controls.
+Install `worker-handoff` on Linux with Python 3.11+. Import it as
+`worker_handoff`. The Python package is the controller: it can launch and
+supervise workers with or without file inputs. The other language packages
+are readers for the inherited file-descriptor interface. An executable can
+run without a reader package if it doesn't need that interface.
 
-The following URLs are for the v0.4.0 GitHub release assets and resolve once
-the release is published.
+These links go straight to the v0.4.0 GitHub release assets.
 
 - [Python wheel](https://github.com/thisistuhinsen/workerOS/releases/download/v0.4.0/worker_handoff-0.4.0-py3-none-any.whl)
 - [Python source distribution](https://github.com/thisistuhinsen/workerOS/releases/download/v0.4.0/worker_handoff-0.4.0.tar.gz)
@@ -79,6 +87,29 @@ npm install "$release/worker-handoff-0.4.0.tgz"
 On npm 12, opt into that direct URL with `--allow-remote=all` or download the
 tarball and install it from disk.
 
+## Run three workers without a file
+
+Run this with the package installed on Linux or WSL2 with pidfd support.
+Here's the [three-worker example](examples/run_local_workers.py). The three
+tiny commands stand in for tools your app already uses. It starts all three
+before waiting for any of them, keeps every started handle, and reports
+each result and cleanup separately. No file bindings, shell, or queue.
+
+From a workerOS checkout with the released Python package installed:
+
+```sh
+python examples/run_local_workers.py
+```
+
+Expected: each worker reports exit `0` and `cleanup reaped`. Their own output
+can arrive in any order. The supervisor manages direct children it launches
+or is explicitly given control of. To run a synchronous, importable Python callable
+instead, use `WorkerRoster.start`. Do not pass an async handler directly. Roles are application labels, not OS
+permissions. workerOS doesn't provide a sandbox or a distributed queue.
+A roster or supervisor keeps used names for its lifetime; use a fresh
+instance for a new finite workload if names need to be reused. See
+[Support and recovery](docs/support.md) for ownership and timeout behavior.
+
 ## Packages
 
 The Python and npm commands above install directly from GitHub. Go and Cargo
@@ -90,18 +121,26 @@ consumer example and a Linux FD smoke test.
 | --- | --- | --- |
 | Python | pip or uv | `worker-handoff` from the wheel above |
 | Node.js | npm | `worker-handoff` from the tarball above. Linux x64 or ARM64 with procfs and Node.js 22+ |
-| Go | Go modules | `GOPROXY=direct go get github.com/thisistuhinsen/workerOS/go/workerhandoff@v0.4.0` · [Go reader](go/) |
-| Rust | Cargo | `worker-handoff = { git = "https://github.com/thisistuhinsen/workerOS", tag = "v0.4.0" }` · [Rust reader](rust/) |
-| C | Conan 2 | `worker-handoff/0.4.0` · [C consumer](native/tests/c/) |
-| C++ | Conan 2 | `worker-handoff/0.4.0` · [C++ consumer](native/tests/cpp/) |
-| Java | Maven | `io.github.thisistuhinsen:worker-handoff:0.4.0` · [Install and run a Java consumer](java/) |
+| Go | Go modules | `GOPROXY=direct go get github.com/thisistuhinsen/workerOS/go/workerhandoff@v0.4.0` · [Go reader and checksum fallback](https://github.com/thisistuhinsen/workerOS/blob/main/go/README.md) |
+| Rust | Cargo | `worker-handoff = { git = "https://github.com/thisistuhinsen/workerOS", tag = "v0.4.0" }` · [Rust reader](https://github.com/thisistuhinsen/workerOS/tree/main/rust/) |
+| C | Conan 2 | `worker-handoff/0.4.0` · [C consumer](https://github.com/thisistuhinsen/workerOS/tree/main/native/tests/c/) |
+| C++ | Conan 2 | `worker-handoff/0.4.0` · [C++ consumer](https://github.com/thisistuhinsen/workerOS/tree/main/native/tests/cpp/) |
+| Java | Maven | `io.github.thisistuhinsen:worker-handoff:0.4.0` · [Install and run a Java consumer](https://github.com/thisistuhinsen/workerOS/tree/main/java/) |
 
 These are GitHub-hosted packages. Maven users install the released JAR with
 its matching POM before resolving the normal Maven coordinates. Conan users
 create the released recipe in a local cache before installing that package
-into their project. [Conan install instructions](native/README.md)
+into their project. [Conan install instructions](https://github.com/thisistuhinsen/workerOS/blob/main/native/README.md)
 
 ## Run an inherited FD example
+
+Your worker needs the file you opened, even if someone has already renamed it
+to `report-final-FINAL.txt`. The filename can change; the open descriptor
+still refers to the same file. The worker can get on with its day.
+
+![Terminal cartoon. After a rename, the pathname asks why the reader saved it as a number. The reader gets W at offset zero from FD 7 and says, It's how we met.](docs/media/fd-7.gif)
+
+[Read the report handoff as text](docs/media/README.md#report-handoff).
 
 With the wheel's Python environment active, run its bundled launcher. It
 creates one disposable input file, gives each worker an inherited read-only
@@ -114,7 +153,7 @@ python -I "$launcher" --language python
 ```
 
 For the npm-installed reader, follow the
-[runnable Node.js walkthrough](node/README.md#read-one-inherited-file).
+[runnable Node.js walkthrough](https://github.com/thisistuhinsen/workerOS/blob/main/node/README.md#read-one-inherited-file).
 It starts the example from `node_modules` through Python and checks that the
 parent's file offset stays put.
 
@@ -167,7 +206,7 @@ leaves the descriptor open when the wrapper closes. The helper checks the
 named ABI binding against the live file's device, inode and access mode. It
 reads from `read` and `read-write` bindings. Keep the descriptor slot stable
 while the handle is open. Validation failure leaves the slot with its caller.
-Start the [packaged reader](node/examples/read-input.cjs)
+Start the [packaged reader](https://github.com/thisistuhinsen/workerOS/blob/main/node/examples/read-input.cjs)
 through a launcher that supplies the actual FD. Launch, Unix-socket handoff,
 supervision and custody use the Python APIs below.
 
@@ -238,16 +277,16 @@ uncertain write before deciding what to do about a failed or uncertain dispatch.
 
 ## Verify and contribute
 
-- [Linux wheel check](scripts/check-linux.sh) builds the wheel, installs it
+- [Linux wheel check](https://github.com/thisistuhinsen/workerOS/blob/main/scripts/check-linux.sh) builds the wheel, installs it
   offline into a fresh venv, and runs the Python tests and bundled examples.
   Run `bash scripts/check-linux.sh` from the checkout.
-- [Node package](node/package.json) has its own tests. From the checkout, run
+- [Node package](https://github.com/thisistuhinsen/workerOS/blob/main/node/package.json) has its own tests. From the checkout, run
   `npm --prefix node test` with Node.js 22+ and Python 3.11+ on Linux.
-- [Strict custody fixture](scripts/check-strict-custody-linux.py) exercises a
+- [Strict custody fixture](https://github.com/thisistuhinsen/workerOS/blob/main/scripts/check-strict-custody-linux.py) exercises a
   read-only grant over a sealed file and refusal paths using separate Linux
   accounts in a disposable VM. See the prerequisites in the
   [support and verification notes](docs/support.md).
-- [Linux CI](.github/workflows/linux.yml) records the tested platforms and
+- [Linux CI](https://github.com/thisistuhinsen/workerOS/blob/main/.github/workflows/linux.yml) records the tested platforms and
   separates runner-kernel tests from container userspace checks. See the
   [support boundaries](docs/support.md) for native Windows and WSL2.
 - [Release process](docs/releasing.md) describes the candidate checks,

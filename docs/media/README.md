@@ -1,5 +1,19 @@
 # Terminal animation transcripts
 
+## Everything is green
+
+A cartoon about mistaking a status label for an outcome. This is not literal
+workerOS output.
+
+```text
+lead       All three workers are green.
+dashboard  I colored the labels.
+renderer   I finished.
+sync       I timed out.
+auditor    Nobody started me. Uptime: flawless.
+lead       Promote Audit.
+```
+
 ## Report handoff
 
 The shell renames an open file. A reader with an inherited descriptor still
