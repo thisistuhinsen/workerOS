@@ -12,11 +12,11 @@ from time import monotonic_ns
 from unittest import TestCase
 from unittest.mock import patch
 
-from worker_handoff.profile_setup import (
+from workeros.profile_setup import (
     ManagedProfileSetup, ManagerReadback, ManagerSelection, ProfileDefinition, ProviderBinding,
     ProfileRequirements, ProviderRequirement,
 )
-import worker_handoff.profile_setup as profile_setup
+import workeros.profile_setup as profile_setup
 
 PACKAGE_HASH = "a" * 64
 CLOCK = "fixture-clock"
@@ -79,7 +79,7 @@ class SyntheticManager:
 class ProfileSetupTest(TestCase):
     def setUp(self):
         self.package_version = self.enterContext(
-            patch("worker_handoff.profile_setup.version", return_value="0.8.0")
+            patch("workeros.profile_setup.version", return_value="0.8.0")
         )
         self.manager = SyntheticManager()
         self.setup = ManagedProfileSetup(self.manager, clock_id=CLOCK, package_sha256=PACKAGE_HASH)
@@ -466,7 +466,7 @@ import json, sys
 from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
-from worker_handoff.profile_setup import ManagedProfileSetup, ManagerReadback, ProfileDefinition, ProviderBinding
+from workeros.profile_setup import ManagedProfileSetup, ManagerReadback, ProfileDefinition, ProviderBinding
 from test_profile_setup import SyntheticManager, CLOCK, PACKAGE_HASH
 class Reopened(SyntheticManager):
     def readback(self, name, revision):
@@ -476,7 +476,7 @@ class Reopened(SyntheticManager):
     def create(self, selection):
         raise AssertionError("readback must never create")
 manager = Reopened()
-with patch("worker_handoff.profile_setup.version", return_value="0.8.0"):
+with patch("workeros.profile_setup.version", return_value="0.8.0"):
     result = ManagedProfileSetup(manager, clock_id=CLOCK, package_sha256=PACKAGE_HASH).reconcile(
         "profile", "revision-1", expected=manager.selection.definition)
 print(json.dumps({"status": result.status, "effect": result.effect,

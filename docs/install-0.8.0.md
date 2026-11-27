@@ -1,8 +1,7 @@
-# Install workerOS 0.8.0
+# Install WorkerOS 0.8.0
 
-Use this guide when the v0.8.0 GitHub release and tag are available or you
-have a verified v0.8.0 offline bundle. For an explicit v0.7.0 install or
-rollback, use the [tagged v0.7.0 guide](https://github.com/thisistuhinsen/workerOS/blob/v0.7.0/docs/install.md).
+Start with the [published v0.7.0 quickstart](../README.md#install-and-run) for a new public install.
+Use these v0.8.0 instructions only with a verified offline bundle or after that release is published.
 
 Use **Linux or Ubuntu in WSL2**, Python 3.11+ with venv support, and usable
 Linux pidfds for the demo. Native Windows Python can install the wheel;
@@ -37,7 +36,7 @@ first read.
 
 The checksum commands below use GNU coreutils (`sha256sum --strict`).
 
-The distribution is `workeros`, the Python import is `worker_handoff`, and
+The distribution is `workeros`, the Python import is `workeros`, and
 `workeros demo` runs two local jobs. Install the controller here if another
 language's reader guide needs a launcher.
 
@@ -70,16 +69,15 @@ python3 -m venv .venv-0.8.0 &&
 **Public wheel with uv**
 
 ```sh
-test ! -e .venv-0.8.0-uv &&
+test ! -e .venv-0.8.0 &&
 (cd workeros-download-0.8.0 &&
   awk '$2 == "workeros-0.8.0-py3-none-any.whl" { print; n++ } END { if (n != 1) exit 1 }' SHA256SUMS > wheel.sha256 &&
   sha256sum --strict -c wheel.sha256) &&
-uv venv --offline --python "$(command -v python3)" .venv-0.8.0-uv &&
-uv pip install --offline --no-index --no-deps --python .venv-0.8.0-uv/bin/python ./workeros-download-0.8.0/workeros-0.8.0-py3-none-any.whl
+uv venv --offline --python "$(command -v python3)" .venv-0.8.0 &&
+uv pip install --offline --no-index --no-deps --python .venv-0.8.0/bin/python ./workeros-download-0.8.0/workeros-0.8.0-py3-none-any.whl
 ```
 
-After installation you can run `.venv-0.8.0/bin/workeros demo` for pip or
-`.venv-0.8.0-uv/bin/workeros demo` for uv, without a checkout. For a uv
+Either installer creates the same environment. Run `.venv-0.8.0/bin/workeros demo` without a checkout. For a uv
 application that needs to lock the public URL, run the download block from
 its project root, then use this verified wheel digest:
 
@@ -116,33 +114,31 @@ python3 -m venv .venv-0.8.0 &&
 **uv**
 
 ```sh
-test ! -e .venv-0.8.0-uv &&
+test ! -e .venv-0.8.0 &&
 (cd assets && grep -Eq '^[0-9a-f]{64}  workeros-0\.8\.0-py3-none-any\.whl$' SHA256SUMS && sha256sum --strict -c SHA256SUMS) &&
-uv venv --offline --python "$(command -v python3)" .venv-0.8.0-uv &&
-uv pip install --offline --no-index --no-deps --python .venv-0.8.0-uv/bin/python ./assets/workeros-0.8.0-py3-none-any.whl
+uv venv --offline --python "$(command -v python3)" .venv-0.8.0 &&
+uv pip install --offline --no-index --no-deps --python .venv-0.8.0/bin/python ./assets/workeros-0.8.0-py3-none-any.whl
 ```
 
 For a language walkthrough that asks for `WORKEROS_OFFLINE`, set
 `export WORKEROS_OFFLINE="$PWD"` here before changing directories.
 
 **Try a job (optional).** In the bundle directory, run
-`.venv-0.8.0/bin/workeros demo` for pip or `.venv-0.8.0-uv/bin/workeros demo`
+`.venv-0.8.0/bin/workeros demo` for pip or `.venv-0.8.0/bin/workeros demo`
 for uv. The first child reports the free space on your disk and exits. The second
 outlasts its wait; the supervisor stops and collects that direct child. Look
 for `report: exited 0`, `slow job: timed out`, then `cleanup: reaped`.
 A successful demo exits zero. To run a command of your own, use
-`.venv-0.8.0/bin/workeros demo -- /usr/bin/printf 'hello\n'` (or use the binary
-under `.venv-0.8.0-uv`). The arguments after `--` go to that executable.
+`.venv-0.8.0/bin/workeros run -- /usr/bin/printf 'hello\n'`. The arguments after `--` go to that executable.
 
 To try the inherited-file example, run `.venv-0.8.0/bin/workeros help file`
-or `.venv-0.8.0-uv/bin/workeros help file`. The printed command uses the
+or `.venv-0.8.0/bin/workeros help file`. The printed command uses the
 interpreter and example from that installation.
 
 <a name="upgrade-and-roll-back"></a>
 
-**Upgrade and roll back.** Both distribution names install the
-`worker_handoff` import. A helper that still requires `worker-handoff` can
-bring the old distribution into the new environment. After installing your
+**Upgrade and roll back.** Keep the working installation intact and create a new application environment.
+After installing your
 application's dependencies, use the checksum from the trusted release
 manifest to compare the running import with the pinned wheel. From the
 offline bundle directory, check the pip environment:
@@ -153,22 +149,19 @@ offline bundle directory, check the pip environment:
   wheel=workeros-0.8.0-py3-none-any.whl
   digest=$(awk -v wheel="$wheel" '$2 == wheel { print $1; n++ } END { if (n != 1) exit 1 }' assets/SHA256SUMS)
   .venv-0.8.0/bin/python -m pip check
-  .venv-0.8.0/bin/python -I -m worker_handoff.verify_install "assets/$wheel" --sha256 "$digest"
+  .venv-0.8.0/bin/python -I -m workeros.verify_install "assets/$wheel" --sha256 "$digest"
 )
 ```
 
 Look for `"status": "matched"` and version `0.8.0`. With the public download
 steps above, use `workeros-download-0.8.0` in place of `assets` in both paths.
-For uv, use `uv pip check --python .venv-0.8.0-uv/bin/python` for the
-dependency check and `.venv-0.8.0-uv/bin/python` for verification.
+For uv, use `uv pip check --python .venv-0.8.0/bin/python` for the
+dependency check and `.venv-0.8.0/bin/python` for verification.
 A repeated path to the same install is allowed. Separate installs or another
-distribution owning `worker_handoff` refuse with `ambiguous_distribution`.
-If an editable install or transitive helper brings in the old distribution,
-update the project's pins or upgrade to a compatible helper, then resolve in
-another clean environment. Switch
-the application interpreter after the check and demo pass. To roll back, use
-the old environment's interpreter. If the helper cannot migrate yet, keep
-running the application in that intact environment.
+distribution owning `workeros` refuse with `ambiguous_distribution`.
+If verification refuses, resolve the conflicting install in a new environment.
+Switch only after verification and a successful run. Roll back by reselecting
+the previous environment.
 
 **Add the local wheel to a uv project.** From the offline bundle directory, this creates a disposable
 project, records the relative wheel dependency and checks the lock. Keep the
@@ -197,12 +190,13 @@ Install the resulting wheel in a fresh application environment. Record its
 own SHA-256 if you distribute that build.
 
 [Python first run](package-python.md) · [Python worker API and examples](workers.md#python-apis) ·
-[Give a worker an open file](../README.md#run-an-inherited-fd-example)
+[Give a worker an open file](start/code.md#give-a-worker-a-file-you-already-opened)
 
-The same wheel installs the `workeros` command; `workeros-config` and
-`worker-handoff-config` remain compatible entry points. To inspect the invocation schema, run
-`.venv-0.8.0/bin/workeros config --schema`. For a complete local run, use
-the [JSON workflow quickstart](configuration.md#run-a-fileless-worker).
+Run `.venv-0.8.0/bin/workeros config --schema` for the installed JSON schema.
+Run the same hello job with a [JSON policy](start/config.md#run-from-json-v080)
+or a [YAML policy](start/config.md#run-from-yaml). YAML needs optional
+PyYAML; requests and results stay JSON. Role profiles are separate: see
+[Preview a role](start/config.md#preview-with-yaml).
 
 ## Verify downloads
 
@@ -263,7 +257,7 @@ tar -xzf workeros-conan-0.8.0.tar.gz &&
 conan create ./workeros-conan-0.8.0 --no-remote
 ```
 
-Add `worker-handoff/0.8.0` to your consumer. The walkthrough builds and
+Add `workeros/0.8.0` to your consumer. The walkthrough builds and
 checks separate C and C++ consumers.
 
 ## Go
@@ -276,7 +270,7 @@ In your Go module, resolve the public tag with your normal checksum settings.
 `go.sum` records the verified dependency.
 
 ```sh
-go get github.com/thisistuhinsen/workerOS/go/workerhandoff@v0.8.0 &&
+go get github.com/thisistuhinsen/workerOS/go/workeros@v0.8.0 &&
 go mod verify
 ```
 
@@ -289,7 +283,7 @@ start its binary with a launcher that supplies the named input.
 In your Cargo project, add the Git dependency and keep the resulting lockfile.
 
 ```sh
-cargo add worker-handoff --git https://github.com/thisistuhinsen/workerOS --tag v0.8.0 --rename workeros &&
+cargo add workeros --git https://github.com/thisistuhinsen/workerOS --tag v0.8.0 &&
 cargo build --locked
 ```
 
@@ -316,6 +310,6 @@ mvn -B -ntp org.apache.maven.plugins:maven-install-plugin:3.1.4:install-file \
   -Dfile=workeros-0.8.0.jar -DpomFile=workeros-0.8.0.pom
 ```
 
-The dependency coordinates are `io.github.thisistuhinsen:worker-handoff:0.8.0`.
+The dependency coordinates are `io.github.thisistuhinsen:workeros:0.8.0`.
 Pass `--enable-native-access=ALL-UNNAMED` to a classpath worker using the FFM
 reader.

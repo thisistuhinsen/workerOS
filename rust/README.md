@@ -1,6 +1,7 @@
 # workerOS for Rust
 
-> These commands use v0.8.0. For the previous release, use the [v0.7.0 guide](https://github.com/thisistuhinsen/workerOS/blob/v0.7.0/rust/README.md).
+> These are v0.8.0 instructions. Use public downloads only after that release,
+> or use a verified offline bundle now. For the published v0.7.0 release, use the [v0.7.0 guide](https://github.com/thisistuhinsen/workerOS/blob/v0.7.0/rust/README.md).
 
 Use Rust 1.85 or later on Linux x86-64 or AArch64. The crate has no Cargo
 dependencies. This example builds a reader in a fresh Cargo project and runs
@@ -23,7 +24,7 @@ that environment's Python directly.
     cd "$work"
     cargo new --bin --vcs none worker-reader
     cd worker-reader
-    cargo add worker-handoff --git https://github.com/thisistuhinsen/workerOS --tag v0.8.0 --rename workeros
+    cargo add workeros --git https://github.com/thisistuhinsen/workerOS --tag v0.8.0
     cat > src/main.rs <<'RUST'
 use std::io;
 use workeros::open_read;
@@ -43,7 +44,7 @@ from tempfile import TemporaryDirectory
 from time import monotonic_ns
 import sys
 
-from worker_handoff import WorkerRoster
+from workeros import WorkerRoster
 
 with TemporaryDirectory() as directory:
     path = Path(directory) / "input.txt"
@@ -90,7 +91,7 @@ first.
     cd "$work"
     cargo new --bin --vcs none worker-reader
     cd worker-reader
-    cargo add worker-handoff --git "file://$work/source" --tag v0.8.0 --rename workeros
+    cargo add workeros --git "file://$work/source" --tag v0.8.0
     cat > src/main.rs <<'RUST'
 use std::io;
 use workeros::open_read;
@@ -110,7 +111,7 @@ from tempfile import TemporaryDirectory
 from time import monotonic_ns
 import sys
 
-from worker_handoff import WorkerRoster
+from workeros import WorkerRoster
 
 with TemporaryDirectory() as directory:
     path = Path(directory) / "input.txt"

@@ -7,9 +7,9 @@ import sys
 import tempfile
 import unittest
 
-from worker_handoff.managed_host import ManagedHostAdapter
-from worker_handoff.managed_journal import ManagedJournal
-from worker_handoff.profile_setup import SetupResult
+from workeros.managed_host import ManagedHostAdapter
+from workeros.managed_journal import ManagedJournal
+from workeros.profile_setup import SetupResult
 from test_aggregate_setup import make_scope
 
 
@@ -32,7 +32,7 @@ class JournalTest(unittest.TestCase):
         self.assertEqual(self.journal.claim(self.identity,self.key),'claimed')
         results=tuple((d.name,SetupResult('accepted','manager_readback_verified','unknown',d)) for d in self.defs)
         self.assertTrue(self.journal.finish(self.identity,self.key,results))
-        code='''import sys\nfrom pathlib import Path\nsys.path.insert(0,sys.argv[2])\nfrom test_aggregate_setup import make_scope\nfrom worker_handoff.managed_journal import ManagedJournal\nd=tuple(make_scope(n,"run-"+n).manager.selection.definition for n in ("one","two","three"))\nj=ManagedJournal(Path(sys.argv[1]),definitions=d)\nr=j.read("a"*64,"b"*64)\nprint(r.state, len(r.results), j.claim("a"*64,"b"*64))\n'''
+        code='''import sys\nfrom pathlib import Path\nsys.path.insert(0,sys.argv[2])\nfrom test_aggregate_setup import make_scope\nfrom workeros.managed_journal import ManagedJournal\nd=tuple(make_scope(n,"run-"+n).manager.selection.definition for n in ("one","two","three"))\nj=ManagedJournal(Path(sys.argv[1]),definitions=d)\nr=j.read("a"*64,"b"*64)\nprint(r.state, len(r.results), j.claim("a"*64,"b"*64))\n'''
         result=subprocess.run([sys.executable,'-I','-c',code,str(self.directory),str(Path(__file__).parent.resolve())],
                               capture_output=True,text=True,timeout=5)
         self.assertEqual(result.returncode,0,result.stderr)
@@ -66,8 +66,8 @@ from pathlib import Path
 import sys
 sys.path.insert(0, sys.argv[2])
 from test_aggregate_setup import make_scope
-from worker_handoff.managed_journal import ManagedJournal
-from worker_handoff.recording import Persistence
+from workeros.managed_journal import ManagedJournal
+from workeros.recording import Persistence
 
 definitions = tuple(make_scope(n, 'run-' + n).manager.selection.definition for n in ('one', 'two', 'three'))
 journal = ManagedJournal(Path(sys.argv[1]), definitions=definitions,

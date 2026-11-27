@@ -11,14 +11,14 @@ import unittest
 from unittest.mock import Mock, patch
 from base64 import b64encode
 
-from worker_handoff import DirectChildSupervisor, Worker, observe
-from worker_handoff.configuration import EvidenceInputs, Workflow, serve
-from worker_handoff.configuration_schema import configuration_schema
-from worker_handoff.evidence import (
+from workeros import DirectChildSupervisor, Worker, observe
+from workeros.configuration import EvidenceInputs, Workflow, serve
+from workeros.configuration_schema import configuration_schema
+from workeros.evidence import (
     EvidenceObservation, EvidenceScope, EvidenceState, RunBinding, ScopePhase, ScopeReport,
 )
-from worker_handoff.lifecycle import RegularFileObserver
-from worker_handoff.scope_meter import CgroupIdentity, CgroupSample, monotonic_clock_id
+from workeros.lifecycle import RegularFileObserver
+from workeros.scope_meter import CgroupIdentity, CgroupSample, monotonic_clock_id
 
 
 def document(operation, options):
@@ -36,7 +36,7 @@ class ConfigurationTests(unittest.TestCase):
         return code, json.loads(output.getvalue())
 
     def test_schema_matches_installed_contract_and_invalid_requests_have_no_effect(self):
-        self.assertEqual(json.loads(files("worker_handoff").joinpath("configuration.schema.json").read_text()),
+        self.assertEqual(json.loads(files("workeros").joinpath("configuration.schema.json").read_text()),
                          configuration_schema())
         guard = Mock(return_value=True)
         workflow = Workflow("worker", frozenset({"release", "launch"}), self.deadline, authorize=guard)
@@ -123,7 +123,7 @@ class ConfigurationTests(unittest.TestCase):
                 workflow = Workflow("worker", frozenset({"write", "wait"}), self.deadline,
                                     writer_fd=writer.fileno(), identity=observe(writer.fileno()).identity,
                                     authorize=guard)
-                with patch("worker_handoff.configuration.Writer", LostSync):
+                with patch("workeros.configuration.Writer", LostSync):
                     status, reply = self.run_request(workflow, document("write", {"data": "QQ==", "sync": True}))
                 self.assertEqual(status, 0)
                 self.assertEqual(reply["result"], {"bytes_written": "1", "effect": "complete",
@@ -134,7 +134,7 @@ class ConfigurationTests(unittest.TestCase):
                         super().write(payload[:1])
                         raise OSError("fixture write interrupted")
 
-                with patch("worker_handoff.configuration.Writer", PartialWrite):
+                with patch("workeros.configuration.Writer", PartialWrite):
                     status, reply = self.run_request(workflow, document("write", {"data": "QkM="}))
                 self.assertEqual((status, reply["status"], reply["effect"]), (1, "unavailable", "unknown"))
                 self.assertEqual(path.read_bytes(), b"AB")
@@ -232,8 +232,8 @@ class ConfigurationTests(unittest.TestCase):
         script = """
 import sys
 from time import monotonic_ns
-from worker_handoff import DirectChildSupervisor
-from worker_handoff.configuration import Workflow, serve_stdio
+from workeros import DirectChildSupervisor
+from workeros.configuration import Workflow, serve_stdio
 
 child = "import os; assert os.read(0, 200) == b''; print('worker stdout'); os.write(2, b'worker stderr')"
 owner = DirectChildSupervisor()
@@ -264,7 +264,7 @@ raise SystemExit(code)
                 "routes": [{"name": "audit", "media_type": "application/octet-stream",
                             "required": ["archive"], "optional": ["review"]}],
             }
-            command = [sys.executable, "-B", "-m", "worker_handoff.configuration_cli", "--example-root", temporary]
+            command = [sys.executable, "-B", "-m", "workeros.configuration_cli", "--example-root", temporary]
 
             def invoke(request):
                 result = subprocess.run(command, input=json.dumps(request), text=True, capture_output=True, timeout=10)

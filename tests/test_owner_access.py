@@ -72,7 +72,7 @@ class OwnerAccessTest(unittest.TestCase):
         self.assertEqual(stat.S_IMODE(self.file.stat().st_mode),0o200)
 
     def test_missing_proc_backend_refuses_before_journal(self):
-        code=('import sys,runpy,errno; import worker_handoff.owner_access as m; old=m.os.open; '
+        code=('import sys,runpy,errno; import workeros.owner_access as m; old=m.os.open; '
               'fake=lambda path,*a,**kw: (_ for _ in ()).throw(OSError(errno.ENOENT,"missing")) '
               'if str(path).startswith("/proc/self/fd/") else old(path,*a,**kw); '
               'm.os.open=fake; sys.argv=[sys.argv[1],"apply"]; runpy.run_path(sys.argv[0],run_name="__main__")')
@@ -117,7 +117,7 @@ class OwnerAccessTest(unittest.TestCase):
 
     def test_post_effect_journal_failure_is_unknown_and_not_replayed(self):
         _,preview=self.command('preview',self.request); plan=preview['plan']
-        code=('import sys,runpy; import worker_handoff.owner_access as m; old=m._write; '
+        code=('import sys,runpy; import workeros.owner_access as m; old=m._write; '
               'defect=lambda store,key,payload: (_ for _ in ()).throw(OSError("lost")) '
               'if key.record_id=="grant_result" else old(store,key,payload); '
               'm._write=defect; sys.argv=[sys.argv[1],"apply"]; runpy.run_path(sys.argv[0],run_name="__main__")')
@@ -131,7 +131,7 @@ class OwnerAccessTest(unittest.TestCase):
 
     def test_post_chmod_sync_failure_is_unknown_and_not_replayed(self):
         _,preview=self.command('preview',self.request); plan=preview['plan']
-        code=('import sys,runpy; import worker_handoff.owner_access as m; old=m.os.fsync; '
+        code=('import sys,runpy; import workeros.owner_access as m; old=m.os.fsync; '
               'inode=int(sys.argv[2]); '
               'fake=lambda fd: (_ for _ in ()).throw(OSError("sync lost")) '
               'if m.os.fstat(fd).st_ino==inode else old(fd); '

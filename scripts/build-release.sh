@@ -84,7 +84,7 @@ build_one() {
     mvn -B -ntp -Dmaven.repo.local="$work/maven-cache" \
         -Dproject.build.outputTimestamp="$SOURCE_DATE_EPOCH" \
         -f "$staging/java/pom.xml" clean package
-    cp -- "$staging/java/target/worker-handoff-$version.jar" "$destination/$jar"
+    cp -- "$staging/java/target/workeros-$version.jar" "$destination/$jar"
     cp -- "$staging/java/pom.xml" "$destination/$pom"
     inspect maven "$destination/$jar" "$destination/$pom"
 
@@ -123,12 +123,12 @@ import sys
 root = Path(sys.argv[1] or sys.prefix).resolve()
 if sys.argv[1]:
     sys.path.insert(0, str(root))
-import worker_handoff
+import workeros
 
 package = distribution("workeros")
 assert package.version == sys.argv[2]
 assert not package.requires
-assert Path(worker_handoff.__file__).resolve().is_relative_to(root)
+assert Path(workeros.__file__).resolve().is_relative_to(root)
 print("Installed workeros", package.version, "using", sys.executable)
 ' "$target" "$version")
 }
@@ -270,11 +270,11 @@ verify_release() {
     )
 
     "$pip_env/bin/workeros-config" --schema > "$work/schema.json"
-    "$pip_env/bin/worker-handoff-config" --schema > "$work/alias-schema.json"
-    cmp -- "$source/src/worker_handoff/configuration.schema.json" "$work/schema.json"
-    cmp -- "$work/schema.json" "$work/alias-schema.json"
+    "$pip_env/bin/workeros" config --schema > "$work/canonical-schema.json"
+    cmp -- "$source/src/workeros/configuration.schema.json" "$work/schema.json"
+    cmp -- "$work/schema.json" "$work/canonical-schema.json"
 
-    local profile="$pip_env/share/worker-handoff/examples/run_host_preflight.py"
+    local profile="$pip_env/share/workeros/examples/run_host_preflight.py"
     local refusal=0
     mkdir -- "$work/profile-temp"
     TMPDIR="$work/profile-temp" "$pip_env/bin/python" -I "$profile" --profile local-read > "$work/profile.json"
@@ -316,7 +316,7 @@ PY
         exit 1
     fi
 
-    local launcher="$pip_env/share/worker-handoff/examples/run_inherited_fd.py"
+    local launcher="$pip_env/share/workeros/examples/run_inherited_fd.py"
     (cd -- "$work" && "$pip_env/bin/python" -I "$launcher") 2>&1 | tee "$work/examples.log"
     for language in C C++ Go Java Node.js Python Rust; do
         if ! awk -v prefix="$language: PASSED (" \
@@ -364,8 +364,8 @@ verify_public() (
     pip_offline "$pip_env/bin/python" install --require-hashes "$wheel_url"
     installed_python "$pip_env/bin/python"
     "$pip_env/bin/workeros-config" --schema > "$work/public-schema.json"
-    cmp -- "$root/src/worker_handoff/configuration.schema.json" "$work/public-schema.json"
-    "$pip_env/bin/python" -I "$pip_env/share/worker-handoff/examples/run_inherited_fd.py" --language python
+    cmp -- "$root/src/workeros/configuration.schema.json" "$work/public-schema.json"
+    "$pip_env/bin/python" -I "$pip_env/share/workeros/examples/run_inherited_fd.py" --language python
     "$python" -I -m venv --without-pip "$uv_env"
     uv --no-config --no-cache pip install --no-index --no-deps --require-hashes \
         --python "$uv_env/bin/python" "$wheel_url"

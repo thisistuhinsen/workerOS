@@ -8,8 +8,9 @@ curl and GNU coreutils (`sha256sum`).
 Native Windows Python can install the wheel, but its runtime lacks `fcntl`.
 [Windows and macOS help](https://github.com/thisistuhinsen/workerOS/blob/v0.8.0/docs/support.md#windows-and-macos)
 
-Using the [v0.8.0 GitHub release](https://github.com/thisistuhinsen/workerOS/releases/tag/v0.8.0),
-start in a fresh directory. This installs the versioned wheel
+For the published v0.7.0 release, start with the
+[stable quickstart](https://github.com/thisistuhinsen/workerOS/blob/v0.7.0/README.md#install-and-run).
+These instructions apply after v0.8.0 is published. Start in a fresh directory. This installs the versioned wheel
 after checking its digest and runs a job without a checkout.
 
 ```sh
@@ -27,23 +28,33 @@ after checking its digest and runs a job without a checkout.
     sha256sum --strict -c wheel.sha256)
   python3 -m venv .venv-0.8.0
   .venv-0.8.0/bin/python -m pip install --no-index --no-deps "$download/$wheel"
-  .venv-0.8.0/bin/workeros demo
+  .venv-0.8.0/bin/workeros run -- /usr/bin/printf 'hello\n'
 )
 ```
 
-Look for `report: exited 0`, `slow job: timed out` and `cleanup: reaped`.
+Look for `hello` and `job: exited 0`.
 Run `.venv-0.8.0/bin/workeros help` for the available commands.
 See [uv, source and offline installs](https://github.com/thisistuhinsen/workerOS/blob/v0.8.0/docs/install-0.8.0.md),
 [upgrade and rollback](https://github.com/thisistuhinsen/workerOS/blob/v0.8.0/docs/install-0.8.0.md#upgrade-and-roll-back),
 and [failed or uncertain jobs](https://github.com/thisistuhinsen/workerOS/blob/v0.8.0/docs/support.md#troubleshooting).
-Keep using `import worker_handoff` in your code. Keep your previous environment
-until the new one passes its checks.
+Use `import workeros` in your code. [Start a job from Python](https://github.com/thisistuhinsen/workerOS/blob/v0.8.0/docs/start/code.md#run-hello-from-python-v080)
+or [hand a worker an open file](https://github.com/thisistuhinsen/workerOS/blob/v0.8.0/docs/start/code.md#give-a-worker-an-open-file-v080).
+Keep your previous environment until the new one passes its checks.
 
-JSON role profiles work without an additional package. To use YAML profiles,
-install PyYAML in the same environment (this command needs network access):
+JSON policies and role profiles work without an additional package. For
+YAML, install PyYAML in the same environment. Choose the command for your
+installer. Both need access to your configured Python package index.
+
+**pip**
 
 ```sh
 .venv-0.8.0/bin/python -m pip install 'PyYAML==6.0.3'
+```
+
+**uv**
+
+```sh
+uv pip install --python .venv-0.8.0/bin/python 'PyYAML==6.0.3'
 ```
 
 For offline use, provide a verified compatible PyYAML wheel in `./wheelhouse`
@@ -52,6 +63,6 @@ and add `--no-index --find-links ./wheelhouse` to that command. See
 
 Use `.venv-0.8.0/bin/workeros config --schema` for the invocation schema.
 The [JSON configuration guide](https://github.com/thisistuhinsen/workerOS/blob/v0.8.0/docs/configuration.md)
-includes the first runnable policy, evidence storage examples and operation
-reference. For the historical v0.4.0 package, follow its
+links to runnable [JSON](https://github.com/thisistuhinsen/workerOS/blob/v0.8.0/docs/start/config.md#run-from-json-v080)
+and [YAML](https://github.com/thisistuhinsen/workerOS/blob/v0.8.0/docs/start/config.md#run-from-yaml) examples. For the historical v0.4.0 package, follow its
 [tagged instructions](https://github.com/thisistuhinsen/workerOS/blob/v0.4.0/README.md#install).

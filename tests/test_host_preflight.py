@@ -15,12 +15,12 @@ from time import monotonic_ns
 import unittest
 from unittest.mock import patch
 
-from worker_handoff import Worker, Writer, observe
-from worker_handoff.configuration import ConfigurationError, parse_request
-from worker_handoff.enrollment import DescriptorBinding, HostBindings, compile_policy
-from worker_handoff.evidence import EvidenceScope, EvidenceState, RunBinding
-from worker_handoff.lifecycle import Match, ProcessState, RegularFileObserver
-from worker_handoff.scope_meter import monotonic_clock_id
+from workeros import Worker, Writer, observe
+from workeros.configuration import ConfigurationError, parse_request
+from workeros.enrollment import DescriptorBinding, HostBindings, compile_policy
+from workeros.evidence import EvidenceScope, EvidenceState, RunBinding
+from workeros.lifecycle import Match, ProcessState, RegularFileObserver
+from workeros.scope_meter import monotonic_clock_id
 
 
 def policy(operations, bindings, *, cleanup=False):
@@ -156,7 +156,7 @@ class HostPreflightTest(unittest.TestCase):
                 )
                 request = BytesIO(json.dumps(document("write", {"data": "Qg=="})).encode())
                 output = StringIO()
-                with patch("worker_handoff.configuration.Writer", LostClose):
+                with patch("workeros.configuration.Writer", LostClose):
                     code = compiled.serve(request, output)
                 self.assertEqual((code, json.loads(output.getvalue())), (1, {
                     "status": "unavailable", "code": "operation_result_unavailable", "effect": "unknown",

@@ -1,4 +1,5 @@
 """Installed unified entry points; YAML loader is optional and fixture-only."""
+from hashlib import sha256
 from importlib.metadata import version
 import json
 import os
@@ -28,7 +29,7 @@ class UnifiedCliTest(unittest.TestCase):
         return subprocess.run([str(self.bin/name),*args],input=data,text=True,capture_output=True,timeout=8,env=env)
 
     def patched(self,python,entry,args,data):
-        code=('import sys,runpy; import worker_handoff.roles_cli as r; '
+        code=('import sys,runpy; import workeros.roles_cli as r; '
               'r._PARENT=sys.argv[1]; r._UID=int(sys.argv[2]); '
               'sys.argv=[sys.argv[3]]+sys.argv[4:]; runpy.run_path(sys.argv[0],run_name="__main__")')
         return subprocess.run([str(python),'-I','-c',code,str(self.root),str(os.getuid()),str(entry),*args],
@@ -61,7 +62,9 @@ class UnifiedCliTest(unittest.TestCase):
         for args,expected in ((['help','install'],'--no-index'),(['help','run'],'workeros run --'),(['help','file'],'run_inherited_fd.py'),(['help','formats'],'duplicate keys'),
                               (['help','install'],'v0.7.0/docs/install.md'),(['help','install'],'use its release assets after publication'),
                               (['help','install'],'upgrade-and-roll-back'),(['help','install'],'support.md#troubleshooting'),
-                              (['roles','grant-apply','--help'],'grant-read-access-to-one-linux-file'),(['help','config'],'#run-a-fileless-worker'),
+                              (['roles','grant-apply','--help'],'grant-read-access-to-one-linux-file'),
+                              (['help','config'],'docs/start/config.md#run-from-json-v080'),
+                              (['help','config'],'docs/start/config.md#run-from-yaml'),
                               (['help','formats'],'yaml_dependency_missing'),
                               (['roles','--help'],'grant-check'),(['roles','apply','--help'],'creates no principal'),
                               (['managed','--help'],'reconcile')):
@@ -185,6 +188,68 @@ class UnifiedCliTest(unittest.TestCase):
         self.assertIn('PyYAML',receipt['next_action'])
         self.assertNotIn('\x1b',result.stdout)
         self.assertFalse((self.root/'workeros').exists())
+        policy=self.root/'policy.yaml'
+        policy.write_text('version: 1\n')
+        result=self.call('workeros',['config','--check-policy',str(policy),'--format','yaml'])
+        self.assertEqual((result.returncode,json.loads(result.stdout),result.stderr),
+                         (1,{'status':'refused','code':'yaml_dependency_missing'},''))
+
+    def test_workflow_yaml_uses_common_compiler_and_raw_pin(self):
+        yaml_python=os.environ.get('WORKEROS_YAML_PYTHON')
+        if not yaml_python: self.skipTest('optional preinstalled YAML test environment unavailable')
+        entry=Path(yaml_python).parent/'workeros'
+        policy={
+            'version':1,
+            'roles':{'runner':{'operations':['launch']}},
+            'workflows':{'ordinary':{'role':'runner','operations':['launch'],
+                                      'bindings':{'executable':'sample'}}},
+        }
+        json_policy=self.root/'policy.json'
+        json_policy.write_text(json.dumps(policy))
+        yaml_policy=self.root/'policy.yaml'
+        raw=b'''# The original file bytes are the evidence pin.
+version: 1
+roles:
+  runner:
+    operations: [launch]
+workflows:
+  ordinary:
+    role: runner
+    operations: [launch]
+    bindings: {executable: sample}
+'''
+        yaml_policy.write_bytes(raw)
+        digest=sha256(raw).hexdigest()
+        json_digest=sha256(json_policy.read_bytes()).hexdigest()
+
+        def run(mode, document, *, flags=(), data=''):
+            result=subprocess.run([str(entry),'config',mode,str(document),'--executable','sample',
+                                   sys.executable,*flags],input=data,text=True,capture_output=True,timeout=8)
+            self.assertEqual(result.stderr,'')
+            return result.returncode,json.loads(result.stdout)
+
+        json_exit,json_reply=run('--check-policy',json_policy,flags=('--explain',))
+        yaml_flags=('--format','yaml','--policy-sha256',digest)
+        yaml_exit,yaml_reply=run('--check-policy',yaml_policy,flags=(*yaml_flags,'--explain'))
+        self.assertEqual((json_exit,yaml_exit),(0,0))
+        self.assertEqual((json_reply.pop('policy_sha256'),yaml_reply.pop('policy_sha256')),(json_digest,digest))
+        self.assertEqual(json_reply,yaml_reply)
+        self.assertEqual(yaml_reply['status'],'checked')
+
+        invalid=(1,{'status':'refused','code':'invalid_json'})
+        self.assertEqual(run('--check-policy',yaml_policy),invalid)
+        self.assertEqual(run('--check-policy',yaml_policy,flags=('--format','yaml','--policy-sha256',json_digest)),
+                         (1,{'status':'refused','code':'policy_digest_mismatch'}))
+        request=json.dumps({'version':1,'workflow':'missing','role':'runner','operation':'launch',
+                            'options':{'name':'probe'}})
+        self.assertEqual(run('--run-policy',yaml_policy,flags=yaml_flags,data=request),
+                         (1,{'status':'refused','code':'workflow_operation_not_enrolled','policy_sha256':digest}))
+        self.assertEqual(run('--run-policy',yaml_policy,flags=yaml_flags,data='version: 1\n'),
+                         (1,{'status':'refused','code':'invalid_json','policy_sha256':digest}))
+        for malformed in (b'version: 1\nversion: 1\n', b'version: !!int 1\n', b'version: 01\n'):
+            yaml_policy.write_bytes(malformed)
+            self.assertEqual(run('--check-policy',yaml_policy,flags=('--format','yaml')),
+                             (1,{'status':'refused','code':'invalid_yaml'}))
 
     def test_json_yaml_same_schema_and_revision(self):
         yaml_python=os.environ.get('WORKEROS_YAML_PYTHON')

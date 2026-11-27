@@ -8,8 +8,8 @@ from tempfile import TemporaryDirectory
 import unittest
 from unittest.mock import patch
 
-from worker_handoff.managed import EffectStatus
-from worker_handoff.recording import (
+from workeros.managed import EffectStatus
+from workeros.recording import (
     Destination, EvidenceType, LocalStore, Persistence, RecordError, RecordKey, RecorderPolicy,
     Retention, Route, StoragePolicy,
 )
@@ -62,7 +62,7 @@ class RecordingTests(unittest.TestCase):
     def test_commit_reopen_idempotency_conflict_and_retention(self):
         store = self.make_store("archive")
         policy = self.policy(store, max_age_seconds=1)
-        with patch("worker_handoff.recording.time_ns", return_value=1_000_000_000):
+        with patch("workeros.recording.time_ns", return_value=1_000_000_000):
             first = policy.record(self.key, self.kind, self.payload).destinations[0]
         reopened = self.policy(LocalStore(store.directory), max_age_seconds=1)
         duplicate = reopened.record(self.key, self.kind, self.payload).destinations[0]
@@ -71,9 +71,9 @@ class RecordingTests(unittest.TestCase):
         other = reopened.record(self.key, self.kind, b"replacement").destinations[0]
         self.assertIs(other.state, Persistence.CONFLICT)
         at = reopened.purge
-        with patch("worker_handoff.recording.time_ns", return_value=1_999_999_999):
+        with patch("workeros.recording.time_ns", return_value=1_999_999_999):
             self.assertIs(at("archive", first.receipt, resolved=True), Retention.RETAINED_YOUNG)
-        with patch("worker_handoff.recording.time_ns", return_value=2_000_000_000):
+        with patch("workeros.recording.time_ns", return_value=2_000_000_000):
             self.assertIs(at("archive", first.receipt), Retention.RETAINED_UNRESOLVED)
             self.assertEqual(reopened.readback("archive", first.receipt), self.payload)
             self.assertIs(at("archive", first.receipt, resolved=True), Retention.PURGED)
@@ -111,7 +111,7 @@ class RecordingTests(unittest.TestCase):
                 raise OSError(errno.EIO, "fixture")
             return normal(fd)
 
-        with patch("worker_handoff.recording.os.fsync", side_effect=sync):
+        with patch("workeros.recording.os.fsync", side_effect=sync):
             failed = policy.record(self.key, self.kind, self.payload).destinations[0]
         self.assertIs(failed.state, Persistence.UNKNOWN)
         self.assertIsNone(failed.receipt)
@@ -128,7 +128,7 @@ import os
 from pathlib import Path
 import sys
 from unittest.mock import patch
-import worker_handoff.recording as recording
+import workeros.recording as recording
 
 local = recording.LocalStore(Path(sys.argv[1]))
 kind = recording.EvidenceType('audit', 'application/octet-stream')

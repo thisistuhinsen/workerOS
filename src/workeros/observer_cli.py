@@ -1,4 +1,4 @@
-"""One-shot JSON observation: python -m worker_handoff.observer_cli.
+"""One-shot JSON observation: python -m workeros.observer_cli.
 
 The launcher's first stdin line supplies the trusted binding. An observation is
 not a signed receipt. No default file opens, PID discovery or policy changes.

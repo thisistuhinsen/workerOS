@@ -11,7 +11,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from worker_handoff import delegated_acl
+from workeros import delegated_acl
 
 
 class DelegatedAclTest(unittest.TestCase):

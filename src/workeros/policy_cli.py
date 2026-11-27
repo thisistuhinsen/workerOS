@@ -297,6 +297,14 @@ def run_policy_cli(args):
                 expected = args.policy_sha256
                 _require(re.fullmatch(r"[0-9a-f]{64}", expected) is not None, "invalid_policy_digest")
                 _require(hmac.compare_digest(digest, expected), "policy_digest_mismatch")
+            if args.format == "yaml":
+                from .cli import InputError, _yaml_to_json
+
+                # Pin the original policy bytes. Normalize only the compiler input.
+                try:
+                    data = _yaml_to_json(data)
+                except InputError as exc:
+                    raise ConfigurationError(str(exc)) from None
             document = decode_policy(data)
             policy = compile_policy(document, _bindings(args, owned), workflow=args.workflow)
             for workflow in policy.values():

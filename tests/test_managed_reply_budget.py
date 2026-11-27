@@ -9,13 +9,13 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
-from worker_handoff import managed_bootstrap as bootstrap
-from worker_handoff import managed_cli
-from worker_handoff.aggregate_setup import AggregateSetup
-from worker_handoff.appointment_registry import definition_sha256
-from worker_handoff.configuration import ConfigurationError
-from worker_handoff.managed_host import ManagedHostAdapter
-from worker_handoff.profile_setup import ManagedProfileSetup, ManagerSelection, ProfileDefinition
+from workeros import managed_bootstrap as bootstrap
+from workeros import managed_cli
+from workeros.aggregate_setup import AggregateSetup
+from workeros.appointment_registry import definition_sha256
+from workeros.configuration import ConfigurationError
+from workeros.managed_host import ManagedHostAdapter
+from workeros.profile_setup import ManagedProfileSetup, ManagerSelection, ProfileDefinition
 
 
 def framed(body):
@@ -168,9 +168,9 @@ def exercise(point_delay, meter_delay, *, wheel_read=0.0, approval_read=0.0,
         patch.object(managed_cli, "monotonic_ns", clock.ns),
         patch.object(managed_cli, "_binding_response", validate_with_delay),
         patch.object(bootstrap._EvidenceProvider, "attest", attest_with_delay),
-        patch("worker_handoff.managed_host.verify_install", verify),
-        patch("worker_handoff.managed_host.monotonic_ns", clock.ns),
-        patch("worker_handoff.aggregate_setup.monotonic_ns", clock.ns),
+        patch("workeros.managed_host.verify_install", verify),
+        patch("workeros.managed_host.monotonic_ns", clock.ns),
+        patch("workeros.aggregate_setup.monotonic_ns", clock.ns),
         patch.object(ManagedHostAdapter, "_approval", approval),
     ):
         try:

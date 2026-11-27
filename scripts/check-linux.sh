@@ -18,4 +18,4 @@ python3 -m venv "$work/yaml"
 "$work/yaml/bin/python" -m pip install --no-index --no-deps "${wheel[0]}"
 WORKEROS_TEST_WHEEL="${wheel[0]}" WORKEROS_YAML_PYTHON="$work/yaml/bin/python" \
     "$work/test/bin/python" -I -m unittest discover -v -s tests
-"$work/test/bin/python" -I "$work/test/share/worker-handoff/examples/run_inherited_fd.py"
+"$work/test/bin/python" -I "$work/test/share/workeros/examples/run_inherited_fd.py"

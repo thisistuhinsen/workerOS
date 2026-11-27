@@ -1,4 +1,4 @@
-package io.github.thisistuhinsen.workerhandoff;
+package io.github.thisistuhinsen.workeros;
 
 import java.io.IOException;
 import java.lang.foreign.Arena;
@@ -33,7 +33,7 @@ public final class InheritedReader implements AutoCloseable {
             throw new IllegalArgumentException("Expected uppercase ASCII binding");
         }
         if (!"1".equals(System.getenv("WORKER_HANDOFF_ABI"))) {
-            throw new IllegalArgumentException("Expected worker-handoff ABI 1");
+            throw new IllegalArgumentException("Expected workeros ABI 1");
         }
         long raw = decimal("FD", binding);
         if (raw < 3 || raw > Integer.MAX_VALUE) {

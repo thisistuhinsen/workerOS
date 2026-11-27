@@ -1,6 +1,7 @@
 # workerOS for Java
 
-> These commands use v0.8.0. For the previous release, use the [v0.7.0 guide](https://github.com/thisistuhinsen/workerOS/blob/v0.7.0/java/README.md).
+> These are v0.8.0 instructions. Use public downloads only after that release,
+> or use a verified offline bundle now. For the published v0.7.0 release, use the [v0.7.0 guide](https://github.com/thisistuhinsen/workerOS/blob/v0.7.0/java/README.md).
 
 Use JDK 22 or later on 64-bit Linux with procfs and Maven 3.9 or newer. The
 JAR has no runtime dependencies. It reads a file descriptor inherited
@@ -84,7 +85,7 @@ Use the installed coordinates in your own Maven project.
 ```xml
 <dependency>
   <groupId>io.github.thisistuhinsen</groupId>
-  <artifactId>worker-handoff</artifactId>
+  <artifactId>workeros</artifactId>
   <version>0.8.0</version>
 </dependency>
 ```
@@ -98,7 +99,7 @@ Pass `--enable-native-access=ALL-UNNAMED` when starting a Java worker on
 the classpath. The launcher supplies the regular file under the name `INPUT`.
 
 ```java
-import io.github.thisistuhinsen.workerhandoff.InheritedReader;
+import io.github.thisistuhinsen.workeros.InheritedReader;
 
 // In the launched worker:
 try (var input = InheritedReader.open("INPUT")) {

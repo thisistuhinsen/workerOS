@@ -1,8 +1,9 @@
-# workerOS for Node.js
+# WorkerOS for Node.js
 
-> These commands use v0.8.0. For the previous release, use the [v0.7.0 guide](https://github.com/thisistuhinsen/workerOS/blob/v0.7.0/node/README.md).
+> These are v0.8.0 instructions. Use public downloads only after that release,
+> or use a verified offline bundle now. For the published v0.7.0 release, use the [v0.7.0 guide](https://github.com/thisistuhinsen/workerOS/blob/v0.7.0/node/README.md).
 
-Read a file that your launcher already opened. The workerOS reader for Node.js
+Read a file that your launcher already opened. The WorkerOS reader for Node.js
 uses positional reads on the inherited Linux descriptor, preserving the
 launcher's file offset. Its npm install ID is `workeros`.
 
@@ -12,7 +13,7 @@ guest under WSL2.
 
 ## Download from GitHub Releases
 
-download its npm tarball, the matching Python wheel
+Download the npm tarball, the matching Python wheel
 for the launcher example, and their release checksums. This prepares a fresh
 npm project with a local `vendor/` directory. Use curl and GNU coreutils
 (`sha256sum`). The verified local tarball works with stock npm 12, whose
@@ -61,18 +62,8 @@ directory.
 npm install --offline --ignore-scripts --no-audit --no-fund ./vendor/workeros-0.8.0.tgz
 ```
 
-To keep an existing `require("worker-handoff")` or
-`import ... from "worker-handoff"`, use an explicit npm alias instead of the
-install above. Run the project preparation first, then run this from that
-fresh project directory.
-
-```sh
-npm install --offline --ignore-scripts --no-audit --no-fund "worker-handoff@file:vendor/workeros-0.8.0.tgz"
-```
-
-Keep `package.json`, `package-lock.json`, and `vendor/workeros-0.8.0.tgz`
-together. From a fresh copy of your npm project, restore either installation
-with `npm ci --offline --ignore-scripts --no-audit --no-fund`.
+Keep the lockfile and verified tarball together; restore the project with
+`npm ci --offline --ignore-scripts --no-audit --no-fund`.
 
 ## Read one inherited file
 
@@ -86,8 +77,7 @@ python3 -m venv .venv &&
 
 The launcher opens a temporary file, renames it, and creates different
 contents at its old path. The Node worker reads through the granted descriptor
-and prints `Hello from workerOS`. For an alias install, use
-`node_modules/worker-handoff/examples/read-input.cjs` as the example path.
+and prints `Hello from workerOS`.
 
 ```sh
 .venv/bin/python -I - <<'PY'
@@ -96,7 +86,7 @@ from pathlib import Path
 from shutil import which
 from tempfile import TemporaryDirectory
 from time import monotonic_ns
-from worker_handoff import WorkerRoster
+from workeros import WorkerRoster
 
 node = which("node")
 if node is None:

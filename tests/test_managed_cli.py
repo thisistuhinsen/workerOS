@@ -16,11 +16,11 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from worker_handoff import managed_cli, roles_cli
-from worker_handoff.appointment_registry import definition_sha256
-from worker_handoff.managed_host import AttemptRecord, LocalProfileApproval, ManagedHostAdapter, RoleAppointment
-from worker_handoff.profile_setup import ManagerReadback
-from worker_handoff.managed_journal import ManagedJournal
+from workeros import managed_cli, roles_cli
+from workeros.appointment_registry import definition_sha256
+from workeros.managed_host import AttemptRecord, LocalProfileApproval, ManagedHostAdapter, RoleAppointment
+from workeros.profile_setup import ManagerReadback
+from workeros.managed_journal import ManagedJournal
 from test_aggregate_setup import make_scope
 
 
@@ -184,7 +184,7 @@ class TransportTest(unittest.TestCase):
         script=str(Path(sys.prefix)/'bin'/('workeros' if canonical else 'workeros-managed'))
         entry=[script,'managed',operation] if canonical else [script,operation]
         if altered:
-            code=('import sys,runpy; import worker_handoff.managed_cli as m; '
+            code=('import sys,runpy; import workeros.managed_cli as m; '
                   'm._CONFIG_PARENT=sys.argv[1]; m._TRUSTED_UID=int(sys.argv[2]); '
                   + ('' if canonical else 'm._TIMEOUT=0.8; ')
                   + 'sys.argv=sys.argv[3:]; runpy.run_path(sys.argv[0],run_name="__main__")')
@@ -202,10 +202,10 @@ class TransportTest(unittest.TestCase):
         script = str(Path(sys.prefix)/'bin'/'workeros')
         code = """
 import os, runpy, sys
-from worker_handoff import roles_cli
+from workeros import roles_cli
 roles_cli._PARENT, roles_cli._UID = sys.argv[1], os.getuid()
 if sys.argv[2] == 'fail':
-    from worker_handoff import appointment_registry
+    from workeros import appointment_registry
     def fail_registration(*args):
         raise OSError('synthetic interruption before appointment write')
     appointment_registry._register_store = fail_registration
@@ -647,7 +647,7 @@ class AdapterTest(unittest.TestCase):
             payload=json.dumps({'version':1,'operation':'readback','profile':adapter.profile,
                                 'identity':adapter.identity,'operation_key':adapter.operation_key}).encode()
             right.sendall(struct.pack('!I',len(payload))+payload)
-            with patch('worker_handoff.managed_cli.monotonic_ns',return_value=2**62):
+            with patch('workeros.managed_cli.monotonic_ns',return_value=2**62):
                 managed_cli.serve_connection(left,authorized_uids=frozenset({os.getuid()}),adapter=adapter)
             length=struct.unpack('!I',right.recv(4))[0]
             result=json.loads(right.recv(length))

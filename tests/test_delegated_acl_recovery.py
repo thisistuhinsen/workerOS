@@ -11,8 +11,8 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
-from worker_handoff import delegated_acl as acl
-from worker_handoff.recording import Persistence, RecordKey
+from workeros import delegated_acl as acl
+from workeros.recording import Persistence, RecordKey
 
 
 class RecoveryTest(unittest.TestCase):

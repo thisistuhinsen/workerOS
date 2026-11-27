@@ -5,7 +5,7 @@ import tempfile
 import time
 import unittest
 
-from worker_handoff import Worker, observe, receive_original, send_original
+from workeros import Worker, observe, receive_original, send_original
 
 
 class ConnectedOriginal(unittest.TestCase):

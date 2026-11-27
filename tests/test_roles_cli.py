@@ -25,7 +25,7 @@ class RoleDeclarationTest(unittest.TestCase):
         code = """
 import runpy
 import sys
-import worker_handoff.roles_cli as roles
+import workeros.roles_cli as roles
 
 roles._PARENT = sys.argv[1]
 roles._UID = int(sys.argv[2])
@@ -207,8 +207,8 @@ runpy.run_path(sys.argv[0], run_name='__main__')
     def test_commission_status_reports_unresolved_record_without_modifying_it(self):
         profile, revision = self.doc['profile'], self.doc['revision']
         self.assertEqual(self.command(['apply'], self.doc).returncode, 0)
-        from worker_handoff.roles_cli import _key
-        from worker_handoff.recording import LocalStore
+        from workeros.roles_cli import _key
+        from workeros.recording import LocalStore
         directory = self.root/'workeros'/'profiles'
         pending = directory/LocalStore._staged_name(_key(profile, revision, 'commission'))
         pending.write_bytes(b'')

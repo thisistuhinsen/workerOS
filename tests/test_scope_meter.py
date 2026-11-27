@@ -17,12 +17,12 @@ import unittest
 from unittest.mock import patch
 from uuid import uuid4
 
-from worker_handoff import CleanupStatus, DirectChildSupervisor, LifecycleStatus, observe
-from worker_handoff.evidence import (
+from workeros import CleanupStatus, DirectChildSupervisor, LifecycleStatus, observe
+from workeros.evidence import (
     EvidenceScope, EvidenceState, RunBinding, ScopePhase, validate_scope_evidence,
 )
-from worker_handoff.lifecycle import Match, ProcessState, RegularFileObserver
-from worker_handoff.scope_meter import (
+from workeros.lifecycle import Match, ProcessState, RegularFileObserver
+from workeros.scope_meter import (
     CgroupIdentity, CgroupSample, CgroupScopeMeter, ScopeMeterUnavailable, cpu_delta_usec,
     monotonic_clock_id,
 )
@@ -187,7 +187,7 @@ class CgroupScopeMeterTest(unittest.TestCase):
     def start_meter_cli(self, stack, scope, fd):
         python = [sys.executable, "-I"] if sys.flags.isolated else [sys.executable]
         process = subprocess.Popen(
-            [*python, "-m", "worker_handoff.scope_meter"],
+            [*python, "-m", "workeros.scope_meter"],
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, bufsize=0, pass_fds=(fd,),
         )
         stack.callback(process.stdin.close)
@@ -317,7 +317,7 @@ class CgroupScopeMeterTest(unittest.TestCase):
                     raise FileNotFoundError(errno.ENOENT, "fixture metric file absent")
                 return real_open(path, *args, **kwargs)
 
-            with patch("worker_handoff.scope_meter.os.open", side_effect=missing_fields):
+            with patch("workeros.scope_meter.os.open", side_effect=missing_fields):
                 cpu_only = diagnostic_meter.sample(ScopePhase.METER_END)
             self.check_observed_sample(cpu_only, ScopePhase.METER_END, clock_id)
             self.assertIs(cpu_only.population_state, EvidenceState.UNAVAILABLE)

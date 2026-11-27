@@ -1,14 +1,14 @@
 from dataclasses import replace
 import unittest
 
-from worker_handoff.evidence import (
+from workeros.evidence import (
     EvidenceObservation,
     EvidenceState,
     RunBinding,
     RunEvent,
     validate_run_evidence,
 )
-from worker_handoff.supervisor import (
+from workeros.supervisor import (
     CleanupResult,
     CleanupStatus,
     LifecycleStatus,

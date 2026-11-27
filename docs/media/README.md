@@ -1,7 +1,6 @@
 # Terminal animation transcripts
 
-The first comic repeats twice after the initial play, then stops. The other
-animations play once. The transcripts below give the same dialogue in text.
+These are the text versions of the WorkerOS comics. Nothing plays on this page.
 
 ## Everything is green
 

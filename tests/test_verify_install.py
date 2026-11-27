@@ -11,7 +11,7 @@ from unittest import TestCase
 from unittest.mock import patch
 from zipfile import ZIP_DEFLATED, ZipFile
 
-from worker_handoff.verify_install import VerificationError, verify_install
+from workeros.verify_install import VerificationError, verify_install
 
 
 class VerifyInstallTest(TestCase):
@@ -24,7 +24,7 @@ class VerifyInstallTest(TestCase):
         with ZipFile(self.wheel, "w", ZIP_DEFLATED) as archive:
             for entry in self.distribution.files:
                 name = str(entry)
-                if (not name.startswith("worker_handoff/") or "__pycache__" in entry.parts
+                if (not name.startswith("workeros/") or "__pycache__" in entry.parts
                         or name.endswith(".pyc")):
                     continue
                 data = Path(self.distribution.locate_file(entry)).read_bytes()
@@ -42,7 +42,7 @@ class VerifyInstallTest(TestCase):
             verify_install(self.wheel, "0" * 64)
 
     def test_refuses_package_content_mismatch_and_ambiguous_owners(self):
-        digest = self.build_fixture(alter="worker_handoff/managed.py")
+        digest = self.build_fixture(alter="workeros/managed.py")
         with self.assertRaisesRegex(VerificationError, "installed_package_file_mismatch"):
             verify_install(self.wheel, digest)
         digest = self.build_fixture()
@@ -54,11 +54,11 @@ class VerifyInstallTest(TestCase):
             path=[str(self.distribution._path.parent), str(alias_parent)])
             if dist.metadata["Name"] == "workeros"]
         self.assertEqual(len(alias_distributions), 2)
-        with patch("worker_handoff.verify_install.metadata.distributions",
+        with patch("workeros.verify_install.metadata.distributions",
                    return_value=alias_distributions):
             self.assertEqual(verify_install(self.wheel, digest)["status"], "matched")
 
-        with patch("worker_handoff.verify_install.metadata.distributions",
+        with patch("workeros.verify_install.metadata.distributions",
                    return_value=[self.distribution, self.distribution]):
             self.assertEqual(verify_install(self.wheel, digest)["status"], "matched")
         separate_parent = self.directory / "second-site-packages"
@@ -67,7 +67,7 @@ class VerifyInstallTest(TestCase):
         copytree(self.distribution._path, separate_metadata)
         separate_distribution = copy(self.distribution)
         separate_distribution._path = separate_metadata
-        with patch("worker_handoff.verify_install.metadata.distributions",
+        with patch("workeros.verify_install.metadata.distributions",
                    return_value=[self.distribution, separate_distribution]):
             with self.assertRaisesRegex(VerificationError, "ambiguous_distribution"):
                 verify_install(self.wheel, digest)
@@ -75,13 +75,13 @@ class VerifyInstallTest(TestCase):
         linked_metadata.parent.mkdir()
         linked_metadata.symlink_to(self.distribution._path, target_is_directory=True)
         linked_distribution = metadata.PathDistribution(linked_metadata)
-        with patch("worker_handoff.verify_install.metadata.distributions",
+        with patch("workeros.verify_install.metadata.distributions",
                    return_value=[self.distribution, linked_distribution]):
             with self.assertRaisesRegex(VerificationError, "ambiguous_distribution"):
                 verify_install(self.wheel, digest)
         other_owner = SimpleNamespace(metadata={"Name": "other-package"},
-                                      files=("worker_handoff/managed.py",))
-        with patch("worker_handoff.verify_install.metadata.distributions",
+                                      files=("workeros/managed.py",))
+        with patch("workeros.verify_install.metadata.distributions",
                    return_value=[self.distribution, other_owner]):
             with self.assertRaisesRegex(VerificationError, "ambiguous_distribution"):
                 verify_install(self.wheel, digest)

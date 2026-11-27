@@ -20,6 +20,8 @@ def main(argv=None):
     mode.add_argument("--example-root", type=Path, help="caller-owned directory containing archive and review")
     mode.add_argument("--check-policy", type=Path, help="validate policy against enrolled local bindings")
     mode.add_argument("--run-policy", type=Path, help="serve one invocation under an approved local policy")
+    parser.add_argument("--format", choices=("json", "yaml"),
+                        help="policy file format for --check-policy or --run-policy (default: json; invocations use JSON)")
     parser.add_argument("--policy-sha256", help="optional expected SHA-256 of the policy bytes")
     parser.add_argument("--executable", nargs=2, action="append", default=[], metavar=("NAME", "ABSOLUTE_PATH"))
     parser.add_argument("--store", nargs=2, action="append", default=[], metavar=("NAME", "ABSOLUTE_DIR"))
@@ -35,11 +37,13 @@ def main(argv=None):
     args = parser.parse_args(argv)
     if args.check_policy or args.run_policy:
         return run_policy_cli(args)
+    if args.format is not None:
+        parser.error("--format requires --check-policy or --run-policy")
     if any((args.policy_sha256, args.executable, args.store, args.group_store, args.inherit_fd,
             args.cwd, args.env, args.secret_env, args.stream_fd, args.explain, args.workflow, args.settled_run)):
         parser.error("host enrollment flags require a policy mode")
     if args.schema:
-        sys.stdout.write(files("worker_handoff").joinpath("configuration.schema.json").read_text())
+        sys.stdout.write(files("workeros").joinpath("configuration.schema.json").read_text())
         return 0
     try:
         data = sys.stdin.buffer.read(1_048_577)

@@ -1,36 +1,31 @@
-# Configure a workerOS application
+# Run a job from JSON
 
-The shared interface uses two JSON v1 documents. A reusable **policy** names
-roles, workflows, allowed operations, bindings, and recorder settings. A
-per-run **invocation** selects one allowed operation and provides its options.
-The host enrolls the real executables, handles, providers, destinations, and
-authorization before accepting invocations. A role name is an application
-label. OS credentials and service configuration come from the host.
+For one runnable example with the install steps, start with [Run a job from
+JSON](start/config.md). This page is the complete configuration reference.
 
-Install the [0.7.0 offline wheel](install.md#python), then activate its
-environment in your Linux shell, for example `. .venv-0.7.0/bin/activate`
-from the bundle root. The command is `workeros-config`;
-`worker-handoff-config` is a compatibility alias for the same entry point.
-Both emit the same JSON invocation schema with `--schema` and use the same
-version 1 contracts. In v0.8.0, `workeros config` accepts the same arguments
-as `workeros-config`. Both the workflow policy and the invocation use JSON.
-Optional YAML input in v0.8.0 is for [role profiles](host-preflight.md#record-an-administrator-approved-role-declaration).
-The application can also use the [Python API](api.md).
-For a workflow using existing host-provided roles and scopes, see
-[Use an authorized host profile](host-preflight.md). This preflight is separate
-from defining policy, granting access and qualifying independent evidence.
+- **Policy:** Which jobs and inputs your app may use. Save it once.
+- **Request:** Which job to run this time. Pass it on standard input.
+
+In a Linux or Ubuntu WSL2 terminal, go to the folder where you installed
+with [pip or uv](../README.md#install-and-run), then activate the environment:
+`. .venv-0.7.0/bin/activate`. Use `workeros-config` (or its alias
+`worker-handoff-config`). The v0.8.0 candidate also accepts the same
+arguments through `workeros config`. Requests and results are JSON.
+In the v0.8.0 candidate, the saved policy can also be YAML with optional
+PyYAML and `--format yaml`. [Run the same job from YAML](start/config.md#run-from-yaml)
+or [preview a role profile](start/config.md#preview-with-yaml).
+
+The app can also use the [Python API](api.md). A role is an application
+label, not an OS permission. The host grants access to executables, handles,
+providers and destinations, with separate checks for independent evidence.
+See [authorized host profiles](host-preflight.md) for that deployment path.
 
 ## Check and run an installed policy
 
 ### Run a fileless worker
 
-On Linux, activate the environment containing the wheel and run as an
-ordinary user. This policy allows one workflow to run the executable that
-the operator enrolls as `sample`. It uses the installed command's default
-direct-child wait, with a 30-second active budget and a 2-second cleanup
-budget. The basic and supervised waits can return an exit first collected
-at or after the cutoff. An exit result carries the status observed by the
-wait, with no guarantee about the physical exit time.
+`/usr/bin/true` prints nothing and exits successfully. The policy calls it
+`sample`; the request tells WorkerOS to launch it.
 
 ```sh
 root=$(mktemp -d)
@@ -55,7 +50,11 @@ workeros-config --run-policy "$policy" \
 JSON
 ```
 
-Check `result.terminal` for the child's lifecycle, exit code, and cleanup.
+Read `result.terminal` in the JSON reply. For this job, look for
+`lifecycle: "exited"`, `returncode: "0"`, and `cleanup.status: "reaped"`.
+Exit and cleanup are reported separately from timeout. This example uses a 30-second
+active budget and a 2-second cleanup budget. An exit may first be collected
+at or after the cutoff, so it does not establish the physical exit time.
 The reply's `policy_sha256` identifies the exact bytes the command read and
 validated. For an ordinary local run, the trusted operator chooses the
 policy and enrolled paths. Use `--check-policy` with optional `--explain`
@@ -186,9 +185,10 @@ runs one enrolled recorder operation. Subsequent wait, cancel, or cleanup
 calls require an application controller that keeps the owning supervisor
 alive. The installed policy command runs with ordinary, non-root credentials.
 
-For other resources, an application can build a trusted
-`worker_handoff.enrollment.HostBindings` catalog once and call
-`compile_policy(document, host)`. The compiled policy uses the same JSON
+For other resources, an application can build a trusted `HostBindings`
+catalog and call `compile_policy(document, host)`. Import both from
+`worker_handoff.enrollment` on v0.7.0 or `workeros.enrollment` on v0.8.0.
+The compiled policy uses the same JSON
 invocations through `serve(source, destination)`. The host authorizes each
 request and separately authorizes the exact plan for a managed release.
 Connected `SCM_RIGHTS`, Python callables, registration of an external
@@ -312,6 +312,10 @@ If protocol I/O fails, the reply is unknown. The controller attempts the
 same bounded reconciliation for any child it already owns and keeps a
 nonzero exit status even if it reaps that child. A definite refusal keeps
 its original status and skips reconciliation.
+
+This example uses the published v0.7.0 `worker_handoff` import. On v0.8.0,
+import the same classes and functions from `workeros` and
+`workeros.configuration`.
 
 ```python
 import os

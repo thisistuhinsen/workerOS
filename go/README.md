@@ -1,6 +1,7 @@
 # workerOS for Go
 
-> These commands use v0.8.0. For the previous release, use the [v0.7.0 guide](https://github.com/thisistuhinsen/workerOS/blob/v0.7.0/go/README.md).
+> These are v0.8.0 instructions. Use public downloads only after that release,
+> or use a verified offline bundle now. For the published v0.7.0 release, use the [v0.7.0 guide](https://github.com/thisistuhinsen/workerOS/blob/v0.7.0/go/README.md).
 
 Use Go 1.22 or later on Linux amd64 or arm64. This example builds a reader in
 a fresh Go module, then starts it with an already-open file.
@@ -20,7 +21,7 @@ that environment's Python directly.
     trap 'rm -rf -- "$work"' EXIT
     cd "$work"
     go mod init example.invalid/workeros-reader
-    GOTOOLCHAIN=local go get github.com/thisistuhinsen/workerOS/go/workerhandoff@v0.8.0
+    GOTOOLCHAIN=local go get github.com/thisistuhinsen/workerOS/go/workeros@v0.8.0
     go mod verify
     cat > main.go <<'GO'
 package main
@@ -30,11 +31,11 @@ import (
     "io"
     "log"
 
-    "github.com/thisistuhinsen/workerOS/go/workerhandoff"
+    "github.com/thisistuhinsen/workerOS/go/workeros"
 )
 
 func main() {
-    input, err := workerhandoff.Open("INPUT")
+    input, err := workeros.Open("INPUT")
     if err != nil {
         log.Fatal(err)
     }
@@ -57,7 +58,7 @@ from tempfile import TemporaryDirectory
 from time import monotonic_ns
 import sys
 
-from worker_handoff import WorkerRoster
+from workeros import WorkerRoster
 
 with TemporaryDirectory() as directory:
     path = Path(directory) / "input.txt"
@@ -111,11 +112,11 @@ import (
     "io"
     "log"
 
-    "github.com/thisistuhinsen/workerOS/go/workerhandoff"
+    "github.com/thisistuhinsen/workerOS/go/workeros"
 )
 
 func main() {
-    input, err := workerhandoff.Open("INPUT")
+    input, err := workeros.Open("INPUT")
     if err != nil {
         log.Fatal(err)
     }
@@ -138,7 +139,7 @@ from tempfile import TemporaryDirectory
 from time import monotonic_ns
 import sys
 
-from worker_handoff import WorkerRoster
+from workeros import WorkerRoster
 
 with TemporaryDirectory() as directory:
     path = Path(directory) / "input.txt"

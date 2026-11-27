@@ -1,5 +1,6 @@
 """Installed no-start host with inherited handles and a separate synthetic provider."""
 from contextlib import ExitStack
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict
 from hashlib import sha256
 import json
@@ -15,27 +16,31 @@ from threading import Event, Thread
 from time import monotonic, monotonic_ns, time
 import unittest
 
-from worker_handoff.appointment_registry import definition_sha256
-from worker_handoff.evidence import EvidenceScope, RunBinding
-from worker_handoff.managed_bootstrap import _observer, setup_clock_id
-from worker_handoff.managed_provider import _serve
-from worker_handoff.scope_meter import _cgroup_mount, _mount_id, monotonic_clock_id
-from worker_handoff.managed_cli import _read_exact
-from worker_handoff.profile_setup import ProfileDefinition, ProviderBinding
-from worker_handoff.roles_cli import _canonical
+from workeros.appointment_registry import definition_sha256
+from workeros.evidence import EvidenceScope, RunBinding
+from workeros.managed_bootstrap import _observer, setup_clock_id
+from workeros.managed_provider import _serve
+from workeros.scope_meter import _cgroup_mount, _mount_id, monotonic_clock_id
+from workeros.managed_cli import _read_exact
+from workeros.profile_setup import ProfileDefinition, ProviderBinding
+from workeros.roles_cli import _canonical
 
 
 ENTRY = """
 import os, runpy, sys
-from worker_handoff import managed_bootstrap, managed_cli, roles_cli, scope_meter
+from workeros import managed_bootstrap, managed_cli, roles_cli, scope_meter
 roles_cli._PARENT = managed_cli._CONFIG_PARENT = sys.argv[1]
 roles_cli._UID = managed_cli._TRUSTED_UID = os.getuid()
 if sys.argv[2]:
     managed_bootstrap._provider_is_independent = lambda uid: uid == os.getuid()
+if sys.argv[2] == 'interval-fixture':
+    # Substitute only the separate-principal prerequisite in this single-UID
+    # fixture; the actual SO_PEERCRED check is still enforced.
+    managed_bootstrap._provider_is_independent = lambda uid: True
 if sys.argv[2] == 'synthetic':
     managed_bootstrap._meter_peer_is_distinct = lambda observer, meter: True
 if sys.argv[2] == 'interrupt-before-finish':
-    from worker_handoff.managed_journal import ManagedJournal
+    from workeros.managed_journal import ManagedJournal
     ManagedJournal.finish = lambda *_args: os._exit(81)
 if sys.argv[3]:
     managed_bootstrap.setup_clock_id = lambda: fixture_clock
@@ -47,6 +52,14 @@ runpy.run_path(sys.argv[0],run_name='__main__')
 
 
 class InstalledHostTest(unittest.TestCase):
+    def test_interval_provider_is_checked_without_setup_or_runtime(self):
+        wheel = os.environ.get('WORKEROS_TEST_WHEEL')
+        if not wheel:
+            self.skipTest('exact installed wheel path required')
+        for peer_offset in (0, 1):
+            with self.subTest(peer_offset=peer_offset), tempfile.TemporaryDirectory() as directory:
+                self.exercise(Path(directory), wheel, multiple=False, interval_peer_offset=peer_offset)
+
     def test_apply_serve_restart_and_require_external_evidence(self):
         wheel = os.environ.get('WORKEROS_TEST_WHEEL')
         if not wheel:
@@ -75,7 +88,7 @@ class InstalledHostTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             self.exercise(Path(directory), wheel, multiple=False, stock_provider='interrupt-before-finish')
 
-    def exercise(self, root, wheel, *, multiple, stock_provider=False):
+    def exercise(self, root, wheel, *, multiple, stock_provider=False, interval_peer_offset=None):
         config_dir = root/'workeros'
         config_dir.mkdir(mode=0o700)
         journal = root/'journal'
@@ -140,10 +153,17 @@ class InstalledHostTest(unittest.TestCase):
                     directory = os.fstat(directory_fd)
                     plan['directory'] = {'device':directory.st_dev,'inode':directory.st_ino,'leaf':original_path.name}
                     inherited_directory = {**plan['directory'],'directory_fd':directory_fd}
-                bindings = [ProviderBinding('observer',sha256(_canonical(plan)).hexdigest(),scope_id,'point',
+                endpoint = {'socket':str(root/'provider.sock'),'peer_uid':uid}
+                interval = interval_peer_offset is not None
+                if interval:
+                    endpoint['peer_uid'] += interval_peer_offset
+                    plan['require_readable'] = True
+                bound_plan = {'observer':plan,'interval_provider':endpoint} if interval else plan
+                bindings = [ProviderBinding('observer',sha256(_canonical(bound_plan)).hexdigest(),scope_id,
+                                            'interval' if interval else 'point',
                                             'fixture-provider','observers','fixture-writer')]
                 registration = {'observer':{**plan,'original_fd':original_fd,'pidfd':pidfd},
-                                'provider':{'socket':str(root/'provider.sock'),'peer_uid':uid}}
+                                'interval_provider' if interval else 'provider':endpoint}
                 if inherited_directory is not None:
                     registration['observer']['directory'] = inherited_directory
                 operations = ['observe']
@@ -189,10 +209,10 @@ class InstalledHostTest(unittest.TestCase):
                 scopes.append({**registration,'definition':asdict(definition),'policy':policy,
                                'role':'operator','binding_generation':'generation-1'})
             self.handshake(root,config_dir,journal,wheel,passed,server,provider,meter,command,run,
-                           scopes,appointments,expected,expiry,uid,stock_provider)
+                           scopes,appointments,expected,expiry,uid,stock_provider,interval_peer_offset)
 
     def handshake(self,root,config_dir,journal,wheel,passed,server,provider,meter,command,run,
-                  scopes,appointments,expected,expiry,uid,stock_provider):
+                  scopes,appointments,expected,expiry,uid,stock_provider,interval_peer_offset):
         document = {'version':1,'profile':'fixture','revision':'revision-1',
                     'roles':[{'name':'operator','principal':pwd.getpwuid(uid).pw_name,
                               'operations':['observe','meter'] if meter else ['observe'],
@@ -203,12 +223,17 @@ class InstalledHostTest(unittest.TestCase):
         self.assertEqual(run('profile-status','fixture','revision-1'),
                          run('commission-status','fixture','revision-1'))
         approval = {key:receipt[key] for key in ('declaration_sha256','intent_sha256')}
-        setup_config = {'version':2 if meter else 1,'profile':'fixture','revision':'revision-1',
+        multiscopes = meter is not None or interval_peer_offset is not None
+        setup_config = {'version':2 if multiscopes else 1,'profile':'fixture','revision':'revision-1',
                         'operation_key':'b'*64,'authorized_uids':[uid],'wheel_path':wheel,
                         'journal_directory':str(journal),'local_approval':approval}
-        setup_config.update({'scopes':scopes} if meter else scopes[0])
+        setup_config.update({'scopes':scopes} if multiscopes else scopes[0])
         setup_path = config_dir/'managed-setup.json'
         setup_path.write_text(json.dumps(setup_config))
+        if interval_peer_offset is not None:
+            self.check_interval_registration(setup_config, setup_path, journal, provider, run,
+                                             passed, expected, expiry, interval_peer_offset)
+            return
         refused = run('serve-setup','--describe',passed=passed,code=1,synthetic=False)
         self.assertEqual((refused['status'],refused['code']),('unavailable','provider_requires_distinct_uid'))
         if stock_provider:
@@ -404,6 +429,79 @@ class InstalledHostTest(unittest.TestCase):
         self.assertFalse(errors)
         self.assertGreaterEqual(len(requests),4)
         self.assertEqual(len(requests),len(set(requests)))
+
+    def check_interval_registration(self, config, path, journal, provider, run, passed, expected, expiry, peer_offset):
+        original = config['scopes'][0]
+        self.assertEqual(len(expected), 1)
+        request_pins, = expected.values()
+        request_pins = {**request_pins, 'version': 2, 'capability': 'interval'}
+
+        def check(scope, code=1, *, real_peer=False):
+            path.write_text(json.dumps({**config, 'scopes':[scope]}))
+            result = run('serve-setup', '--check-bindings', passed=passed, code=code,
+                         synthetic=False if real_peer else 'interval-fixture')
+            self.assertEqual((result['effect'],result['readiness'],result['independence'],result['runtime_evidence']),
+                             ('not_attempted','not_checked','unverified','not_requested'))
+            self.assertEqual(list(journal.iterdir()), [])
+            return result
+
+        def respond(changes):
+            provider.settimeout(5)
+            connection, _ = provider.accept()
+            with connection:
+                deadline = monotonic() + 5
+                if peer_offset:
+                    # The client must close without sending a challenge.
+                    connection.settimeout(5)
+                    self.assertEqual(connection.recv(1), b'')
+                    return
+                size, = struct.unpack('!I', _read_exact(connection, 4, deadline))
+                request = json.loads(_read_exact(connection, size, deadline))
+                challenge = request.pop('request_id')
+                self.assertRegex(challenge, r'^[0-9a-f]{32}$')
+                self.assertEqual(request, request_pins)
+                reply = _canonical({**request, 'request_id':challenge, 'source':'fixture-provider',
+                    'status':'verified', 'evidence_sha256':'1'*64, 'valid_until_ns':str(expiry), **changes})
+                connection.sendall(struct.pack('!I', len(reply)) + reply)
+
+        if peer_offset:
+            with ThreadPoolExecutor(max_workers=1) as replies:
+                rejected = replies.submit(respond, {})
+                result = check(original, real_peer=True)
+                rejected.result()
+            self.assertEqual(result['scopes'][0]['code'], 'manager_selection_denied')
+            return
+
+        # Every other entry mode refuses before opening or consulting a provider.
+        for mode in (('--describe',), ('--listen-fd', '1'), ('--recover-interrupted',)):
+            with self.subTest(mode=mode):
+                outcome = run('serve-setup', *mode, code=1, synthetic=False)
+                self.assertEqual(outcome['code'], 'interval_check_only')
+        self.assertEqual(check(original, real_peer=True)['code'], 'provider_requires_distinct_uid')
+        missing = {name:value for name,value in original.items() if name != 'interval_provider'}
+        self.assertEqual(check(missing)['code'], 'interval_custody_unsupported')
+        for field,value in (('scope','unrelated-scope'), ('independent_of',None)):
+            definition = original['definition']
+            misplaced = {**definition['providers'][0], field:value}
+            scope = {**original,'definition':{**definition, 'providers':[misplaced]}}
+            self.assertEqual(check(scope)['code'], 'interval_registration_mismatch')
+        endpoint = {**original['interval_provider'], 'socket':str(path.parent/'unapproved.sock')}
+        self.assertEqual(check({**original,'interval_provider':endpoint})['code'], 'observer_plan_mismatch')
+        provider.settimeout(0.02)
+        with self.assertRaises(TimeoutError):
+            provider.accept()
+        for changes,expected_code in (({}, 'bindings_verified'),
+                ({'status':'unverified'}, 'independent_evidence_invalid'),
+                ({'definition_sha256':'0'*64}, 'independent_evidence_invalid'),
+                ({'request_id':'0'*32}, 'independent_evidence_invalid'),
+                ({'valid_until_ns':'1'}, 'independent_evidence_invalid'),
+                ({'capability':'point'}, 'independent_evidence_invalid')):
+            with self.subTest(changes=changes), ThreadPoolExecutor(max_workers=1) as replies:
+                sent = replies.submit(respond, changes)
+                result = check(original, code=int(bool(changes)))
+                sent.result()
+                self.assertEqual(result['scopes'][0]['code'], expected_code)
+                self.assertEqual(result['status'], 'incomplete' if changes else 'bindings_verified')
 
     def check_stock_provider(self, root, config_dir, journal, passed, server, provider, command, run,
                              setup_config, scope, uid, interrupt):

@@ -18,15 +18,15 @@ from time import monotonic_ns
 from unittest import TestCase, skipUnless
 from unittest.mock import patch
 
-from worker_handoff import Worker, observe
-from worker_handoff.managed_cli import _TRUSTED_UID
-from worker_handoff.lifecycle import Match, ProcessState, RegularFileObserver
-from worker_handoff.managed_provider import ProviderRefusal, _point_digest, _registration
-from worker_handoff.profile_setup import ProfileDefinition, ProviderBinding
-from worker_handoff.roles_cli import _canonical
-from worker_handoff.appointment_registry import definition_sha256
-from worker_handoff.evidence import EvidenceScope, EvidenceState, RunBinding, ScopePhase
-from worker_handoff.scope_meter import CgroupScopeMeter, ScopeMeterUnavailable, monotonic_clock_id
+from workeros import Worker, observe
+from workeros.managed_cli import _TRUSTED_UID
+from workeros.lifecycle import Match, ProcessState, RegularFileObserver
+from workeros.managed_provider import ProviderRefusal, _point_digest, _registration
+from workeros.profile_setup import ProfileDefinition, ProviderBinding
+from workeros.roles_cli import _canonical
+from workeros.appointment_registry import definition_sha256
+from workeros.evidence import EvidenceScope, EvidenceState, RunBinding, ScopePhase
+from workeros.scope_meter import CgroupScopeMeter, ScopeMeterUnavailable, monotonic_clock_id
 
 from test_scope_meter import open_self_cgroup
 
@@ -135,7 +135,7 @@ class PointProviderTest(TestCase):
         config["definition"]["providers"] = (observer_entry, meter_entry)
         # Scope/identity checking here is structural; the clock is stubbed
         # because this container lacks the required monotonic clock context.
-        with patch("worker_handoff.managed_provider.setup_clock_id", return_value="fixture-clock"):
+        with patch("workeros.managed_provider.setup_clock_id", return_value="fixture-clock"):
             definition, selected = _registration(config)
             self.assertEqual((selected.kind, selected.capability), ("observers", "point"))
             meter_config = {**config, "binding": "meter", "meter": {"test": "placeholder"}}
@@ -157,7 +157,7 @@ class PointProviderTest(TestCase):
     def test_owned_unix_listener_handles_bounded_serial_requests(self):
         # This is a real socket exchange and point sample. The executor runs
         # both ends under one UID, so only the credential boundary is stubbed.
-        from worker_handoff.managed_provider import _serve
+        from workeros.managed_provider import _serve
         config = self.registration(host_uid=0)
         providers = tuple(ProviderBinding(**entry) for entry in config["definition"]["providers"])
         definition = ProfileDefinition(**{**config["definition"], "providers": providers})
@@ -209,7 +209,7 @@ class PointProviderTest(TestCase):
                         _serve(listener, config, definition, binding, observer, **options)
                     except BaseException as exc:
                         errors.append(exc)
-                with patch("worker_handoff.managed_provider._credentials", side_effect=credentials):
+                with patch("workeros.managed_provider._credentials", side_effect=credentials):
                     thread = Thread(target=run, daemon=True)
                     thread.start()
                     try:
@@ -221,7 +221,7 @@ class PointProviderTest(TestCase):
             self.assertEqual(errors, [])
 
     def test_meter_digest_reads_own_visible_cgroup_without_cleanup_claim(self):
-        from worker_handoff.managed_provider import _meter_digest
+        from workeros.managed_provider import _meter_digest
 
         clock = monotonic_clock_id()
         if clock is None:
@@ -250,7 +250,7 @@ class PointProviderTest(TestCase):
                 _meter_digest(meter)
 
     def test_point_requests_refuse_cross_scope_and_reused_challenges(self):
-        from worker_handoff.managed_provider import _serve_once
+        from workeros.managed_provider import _serve_once
         from time import monotonic
         config = self.registration(host_uid=0)
         providers = tuple(ProviderBinding(**entry) for entry in config["definition"]["providers"])
@@ -272,7 +272,7 @@ class PointProviderTest(TestCase):
                         errors.append(exc)
                     finally:
                         server.shutdown(socket.SHUT_WR)
-                with patch("worker_handoff.managed_provider._credentials",
+                with patch("workeros.managed_provider._credentials",
                            return_value=(os.getpid() + 1, config["host_uid"])):
                     thread = Thread(target=run, daemon=True)
                     thread.start()
@@ -299,16 +299,16 @@ class PointProviderTest(TestCase):
         self.assertEqual(seen, {"1" * 32})
 
     def test_provider_request_limit_rejects_nonpositive_or_unbounded_values(self):
-        from worker_handoff.managed_provider import _serve
+        from workeros.managed_provider import _serve
         for count in (0, 17, True, "2"):
             with self.subTest(count=count), self.assertRaisesRegex(ProviderRefusal, "^provider_request_limit_invalid$"):
                 _serve(None, None, None, None, None, max_requests=count)
 
     def test_cli_refuses_bad_request_limit_before_reading_descriptors(self):
-        from worker_handoff.managed_provider import main
+        from workeros.managed_provider import main
         for value in ("0", "-1", "17", "999999999999999999999"):
             with self.subTest(value=value), patch(
-                    "worker_handoff.managed_provider._read_registration") as read_registration:
+                    "workeros.managed_provider._read_registration") as read_registration:
                 output = StringIO()
                 with redirect_stdout(output):
                     result = main(["--config-fd", "3", "--listen-fd", "4", "--max-requests", value])
@@ -321,7 +321,7 @@ class PointProviderTest(TestCase):
 
         # Omitting the option preserves the one-request default and proceeds
         # to normal registration validation.
-        with patch("worker_handoff.managed_provider._read_registration",
+        with patch("workeros.managed_provider._read_registration",
                    side_effect=ProviderRefusal("registration_checked")) as read_registration:
             output = StringIO()
             with redirect_stdout(output):

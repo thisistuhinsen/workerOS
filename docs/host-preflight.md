@@ -2,7 +2,7 @@
 
 ## Run the local profile
 
-Install the [Python wheel](install.md#python) on Linux or in Ubuntu in WSL2.
+Install the [v0.7.0 Python wheel](install.md#python) on Linux or in Ubuntu in WSL2.
 Use the same directory where you created `.venv-0.7.0`:
 
 ```sh
@@ -25,7 +25,7 @@ require a venue integration.
 
 Use this Python integration when a host manager already provides a named
 workflow and authorized bindings. For a local command or recorder that the
-current user owns, start with the [configuration guide](configuration.md).
+current user owns, start with the [v0.8.0 JSON workflow example](start/config.md#run-from-json-v080).
 
 The host selects the profile and creates a fresh session. `HostBindings`
 registers the approved executable, original, optional supervisor, independent
@@ -57,7 +57,7 @@ manager and establishes its clock context before calling. The clock ID must
 identify the same boot and time namespace as local monotonic timestamps:
 
 ```python
-from worker_handoff.profile_setup import ManagedProfileSetup
+from workeros.profile_setup import ManagedProfileSetup
 
 setup = ManagedProfileSetup(manager, clock_id=manager_clock_id,
                             package_sha256=verified_wheel_sha256)
@@ -72,7 +72,7 @@ from a source your host already trusts.
 Activate the trusted WorkerOS environment before running this command.
 
 ```sh
-python -I -m worker_handoff.verify_install /path/to/workeros.whl --sha256 TRUSTED_SHA256
+python -I -m workeros.verify_install /path/to/workeros.whl --sha256 TRUSTED_SHA256
 ```
 
 The command checks the wheel digest, package ownership, installed module and
@@ -103,6 +103,8 @@ service, privilege grant or venue-specific provider. The ordinary
 
 ## Resolve the selected profile before an effect
 
+This example uses the `workeros` Python package from the
+[v0.8.0 install guide](install-0.8.0.md#python).
 The host already has the selected workflow, exact approved policy bytes and
 pre-authorized bindings when it calls this function. Keep name resolution,
 provider shape, execution authority and storage results distinct. A policy
@@ -112,8 +114,8 @@ ownership and authority separately.
 ```python
 from io import BytesIO
 
-from worker_handoff.configuration import ConfigurationError
-from worker_handoff.enrollment import compile_policy, decode_policy
+from workeros.configuration import ConfigurationError
+from workeros.enrollment import compile_policy, decode_policy
 
 
 def prepare(policy_bytes, workflow_name, bindings):
@@ -186,7 +188,7 @@ verifier decides whether its required evidence is present. See the
 
 ### Setup several authorized scopes
 
-`worker_handoff.aggregate_setup.AggregateSetup` is a setup-only Python integration
+`workeros.aggregate_setup.AggregateSetup` is a setup-only Python integration
 for a host that already operates authenticated profile managers. Construct one
 `ScopeSetup` per independently authorized workflow, with its own
 `ProfileRequirements`, live `HostBindings`, and manager. Each manager must
@@ -418,7 +420,7 @@ For each `ProviderBinding.reference`, hash that binding's compact plan JSON
 with sorted keys, excluding inherited descriptor numbers at every level.
 Use different inherited descriptor numbers for each registered binding.
 
-`setup_clock_id()` from `worker_handoff.managed_bootstrap` binds the definition
+`setup_clock_id()` from `workeros.managed_bootstrap` binds the definition
 to this Linux boot and monotonic time namespace. `definition.expires_ns` and
 provider `valid_until_ns` are absolute monotonic nanoseconds. The declaration's
 `expires_at` is Unix seconds. A meter's nested run clock uses the actual Linux
@@ -521,13 +523,15 @@ venue evidence.
 This setup checks associations and current provider attestations. A named
 directory entry is a point observation. Interval custody, worker-to-worker
 handoff, writer state, dedicated-run meter deltas and whole-scope retirement
-still require their own provider or native workflow evidence. The bootstrap
-refuses non-point observer capabilities and does not expose a runtime launch,
+still require their own provider or native workflow evidence. The bundled
+listener refuses non-point observers for setup and exposes no runtime launch,
 write or release operation. A visible cgroup alone does not establish
 exclusive workload membership.
 
-`serve-setup` reports `interval_custody_unsupported` before accepting a request
-or writing a managed mapping when the definition asks for interval custody.
+`serve-setup` refuses a runtime custody binding or a workflow that requires
+custody before accepting a request or writing a managed mapping. The separate
+read-only [interval registration check](#check-a-registered-interval-provider)
+can verify the binding of an already appointed external provider.
 `require_custody` authenticates one pre-grant decision for an exact original,
 recipient, scope and deadline. A point observation or a pair of meter readings
 cannot establish ongoing exclusion or who retained access after delivery.
@@ -545,6 +549,30 @@ does not qualify mutable originals or directory and whole-scope retirement.
 Use a disposable Linux venue with a verifiable monotonic clock context,
 a separately authorized observer principal, an unprivileged release caller
 and explicitly pre-granted handles to qualify the provider.
+
+#### Check a registered interval provider
+
+For an existing provider, the administrator can opt in to a read-only
+`serve-setup --check-bindings` in a version 2 configuration. Use one
+`observers` binding with capability `interval`, the exact definition scope,
+and an explicit `independent_of` principal. The workflow selects only
+`observe`. Supply the existing `observer` plan and inherited descriptors with
+`require_readable: true`. In place of `provider`, supply
+`interval_provider: {"socket":"/approved/provider.sock","peer_uid":1234}`
+with the already authorized provider's actual address and UID. The binding
+reference hashes compact, sorted JSON containing the `observer` plan
+(excluding all descriptor numbers) and the exact `interval_provider` object.
+Provision the appointment against that exact definition digest.
+
+The separately controlled provider must implement the bounded Unix-stream
+attestation exchange above with `version: 2` and `capability: "interval"` in
+both request and verified reply. It must independently verify its current
+appointment and exact evidence before replying. The bundled point/meter
+provider does not implement this exchange. The host authenticates the pinned
+peer before sending the challenge and refuses a mismatched or expired reply.
+Success verifies the current binding only. Readiness remains `not_checked`,
+independence remains `unverified`, and runtime evidence is `not_requested`.
+Registration is unavailable in listen, describe and recovery modes.
 
 #### Existing custom host integration
 
@@ -574,9 +602,9 @@ scope digests, and clock context in the reply. It checks bindings without
 creating or reading a setup attempt. Exit zero means `bindings_verified`
 at the reported observation time, with `readiness: not_checked` and
 `runtime_evidence: not_requested`. When a reply cannot be confirmed,
-verify the host and its pins before using the bindings. A host using the
-stock bootstrap still refuses interval custody. A host with an already
-authorized typed interval provider can use the same client command.
+verify the host and its pins before using the bindings. The stock bootstrap's
+interval registration is a local check only. An existing trusted host with
+an already authorized typed interval provider can use this client command.
 
 Use a dedicated authorized host UID where other processes must not impersonate
 that service. The command verifies the connected peer's Linux `SO_PEERCRED` UID
@@ -633,7 +661,7 @@ and map diagnostics outside the fixed code list to `other`. See
 An existing trusted host that already has administrator access to the local
 role store can also supply
 `local_approval=LocalProfileApproval(declaration_sha256, intent_sha256)` to
-`ManagedHostAdapter`. Import both from `worker_handoff.managed_host`. The host
+`ManagedHostAdapter`. Import both from `workeros.managed_host`. The host
 provides the pins from its approved deployment configuration and the typed
 scope, provider and generation registrations described above. The two local
 receipt digests become part of the adapter identity.
@@ -656,7 +684,7 @@ appointment has `workflow`, `workflow_revision`, `definition_sha256`, `role`,
 `principal`, `scope`, `generation`, and `operations` (an array of allowed
 workflow operations). For separate registration, use the two digests from
 `profile-status`. The host supplies the definition pin using
-`worker_handoff.appointment_registry.definition_sha256` on its pinned
+`workeros.appointment_registry.definition_sha256` on its pinned
 `ProfileDefinition`. This includes the provider references and capabilities,
 policy digest, scope, clock, expiry and package pin.
 

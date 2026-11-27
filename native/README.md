@@ -1,8 +1,9 @@
 # workerOS for C and C++
 
-> These commands use v0.8.0. For the previous release, use the [v0.7.0 guide](https://github.com/thisistuhinsen/workerOS/blob/v0.7.0/native/README.md).
+> These are v0.8.0 instructions. Use public downloads only after that release,
+> or use a verified offline bundle now. For the published v0.7.0 release, use the [v0.7.0 guide](https://github.com/thisistuhinsen/workerOS/blob/v0.7.0/native/README.md).
 
-`worker-handoff/0.8.0` is a header-only Conan 2 package for Linux. Both C and
+`workeros/0.8.0` is a header-only Conan 2 package for Linux. Both C and
 C++ readers take an already-open regular file from the workerOS launcher.
 The release download uses curl and GNU coreutils (`sha256sum`).
 
@@ -75,12 +76,12 @@ The [historical v0.4.0 release](https://github.com/thisistuhinsen/workerOS/relea
 has its own recipe archive and checksums.
 
 Use this in your consumer's `conanfile.txt`. With CMake, use
-`find_package(worker-handoff CONFIG REQUIRED)` and link to
-`worker-handoff::worker-handoff`.
+`find_package(workeros CONFIG REQUIRED)` and link to
+`workeros::workeros`.
 
 ```ini
 [requires]
-worker-handoff/0.8.0
+workeros/0.8.0
 
 [generators]
 CMakeDeps
@@ -89,34 +90,34 @@ CMakeToolchain
 
 ## Read an inherited input
 
-Use `<worker_handoff/input.h>` from C99 or newer, or C++11 or newer. Strict
+Use `<workeros/input.h>` from C99 or newer, or C++11 or newer. Strict
 POSIX builds should define `_POSIX_C_SOURCE=200809L` before any system
 header. On 32-bit systems that need large file support, compile with
 `_FILE_OFFSET_BITS=64`.
 
 ```c
 #define _POSIX_C_SOURCE 200809L
-#include <worker_handoff/input.h>
+#include <workeros/input.h>
 
 int main(void)
 {
-    worker_handoff_input input = WORKER_HANDOFF_INPUT_INIT;
-    if (worker_handoff_open_inherited("INPUT", WORKER_HANDOFF_OWNED, &input) == -1) {
+    workeros_input input = WORKEROS_INPUT_INIT;
+    if (workeros_open_inherited("INPUT", WORKEROS_OWNED, &input) == -1) {
         return 1;
     }
     char byte;
-    ssize_t count = worker_handoff_read_at(&input, &byte, 1, 0);
-    int closed = worker_handoff_close(&input);
+    ssize_t count = workeros_read_at(&input, &byte, 1, 0);
+    int closed = workeros_close(&input);
     return count == 1 && byte == 'W' && closed == 0 ? 0 : 1;
 }
 ```
 
 The binding is checked against ABI version 1 and the live descriptor's
 file type, device, inode and access mode. Both `read` and `read-write`
-bindings can be read. `worker_handoff_read_at` returns a byte count, zero
+bindings can be read. `workeros_read_at` returns a byte count, zero
 at EOF, or `-1` with `errno`. Positional reads preserve the shared offset.
 
-Initialize each handle with `WORKER_HANDOFF_INPUT_INIT`. An owned handle
+Initialize each handle with `WORKEROS_INPUT_INIT`. An owned handle
 closes the descriptor once. Closing a borrowed handle invalidates just
 that handle. Keep the slot stable and give an owned handle exclusive
 close authority. The launcher and caller retain responsibility for

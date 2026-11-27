@@ -1,4 +1,8 @@
-# Install workerOS
+# WorkerOS installation reference
+
+For a first install, use [the short install guide](start/install.md).
+The examples below cover verified downloads, project locks, offline use and rollback.
+Choose either pip or uv in a fresh folder; both create `.venv-0.7.0`.
 
 Use **Linux or Ubuntu in WSL2**, Python 3.11+ with venv support, and usable
 Linux pidfds for the demo. Native Windows Python can install the wheel;
@@ -69,18 +73,18 @@ python3 -m venv .venv-0.7.0 &&
 **Public wheel with uv**
 
 ```sh
-test ! -e .venv-0.7.0-uv &&
+test ! -e .venv-0.7.0 &&
 (cd workeros-download-0.7.0 &&
   awk '$2 == "workeros-0.7.0-py3-none-any.whl" { print; n++ } END { if (n != 1) exit 1 }' SHA256SUMS > wheel.sha256 &&
   sha256sum --strict -c wheel.sha256) &&
-uv venv --offline --python "$(command -v python3)" .venv-0.7.0-uv &&
-uv pip install --offline --no-index --no-deps --python .venv-0.7.0-uv/bin/python ./workeros-download-0.7.0/workeros-0.7.0-py3-none-any.whl
+uv venv --offline --python "$(command -v python3)" .venv-0.7.0 &&
+uv pip install --offline --no-index --no-deps --python .venv-0.7.0/bin/python ./workeros-download-0.7.0/workeros-0.7.0-py3-none-any.whl
 ```
 
 <a name="run-the-installed-demo"></a>
 
-After installation you can run `.venv-0.7.0/bin/workeros-demo` for pip or
-`.venv-0.7.0-uv/bin/workeros-demo` for uv, without a checkout. For a uv
+After installing with either manager, run `.venv-0.7.0/bin/workeros-demo` from
+the same folder. No checkout is needed. For a uv
 application that needs to lock the public URL, run the download block from
 its project root, then use this verified wheel digest:
 
@@ -117,23 +121,21 @@ python3 -m venv .venv-0.7.0 &&
 **uv**
 
 ```sh
-test ! -e .venv-0.7.0-uv &&
+test ! -e .venv-0.7.0 &&
 (cd assets && grep -Eq '^[0-9a-f]{64}  workeros-0\.7\.0-py3-none-any\.whl$' SHA256SUMS && sha256sum --strict -c SHA256SUMS) &&
-uv venv --offline --python "$(command -v python3)" .venv-0.7.0-uv &&
-uv pip install --offline --no-index --no-deps --python .venv-0.7.0-uv/bin/python ./assets/workeros-0.7.0-py3-none-any.whl
+uv venv --offline --python "$(command -v python3)" .venv-0.7.0 &&
+uv pip install --offline --no-index --no-deps --python .venv-0.7.0/bin/python ./assets/workeros-0.7.0-py3-none-any.whl
 ```
 
 For a language walkthrough that asks for `WORKEROS_OFFLINE`, set
 `export WORKEROS_OFFLINE="$PWD"` here before changing directories.
 
 **Try a job (optional).** In the bundle directory, run
-`.venv-0.7.0/bin/workeros-demo` for pip or `.venv-0.7.0-uv/bin/workeros-demo`
-for uv. The first child reports the free space on your disk and exits. The second
+`.venv-0.7.0/bin/workeros-demo` for either installer. The first child reports the free space on your disk and exits. The second
 outlasts its wait; the supervisor stops and collects that direct child. Look
 for `report: exited 0`, `slow job: timed out`, then `cleanup: reaped`.
 A successful demo exits zero. To run a command of your own, use
-`.venv-0.7.0/bin/workeros-demo -- /usr/bin/printf 'hello\n'` (or use the binary
-under `.venv-0.7.0-uv`). The arguments after `--` go to that executable.
+`.venv-0.7.0/bin/workeros-demo -- /usr/bin/printf 'hello\n'`. The arguments after `--` go to that executable.
 
 **Upgrade and roll back.** Both distribution names install the
 `worker_handoff` import. A helper that still requires `worker-handoff` can
@@ -161,8 +163,8 @@ assert actual.is_relative_to(Path(sys.prefix).resolve())
 PY
 ```
 
-For uv, use `uv pip check --python .venv-0.7.0-uv/bin/python` for the
-dependency check and `.venv-0.7.0-uv/bin/python -I` for the Python check.
+For uv, use `uv pip check --python .venv-0.7.0/bin/python` for the
+dependency check and `.venv-0.7.0/bin/python -I` for the Python check.
 If an editable install or transitive helper brings in the old distribution,
 update the project's pins or upgrade to a compatible helper, then resolve in
 another clean environment. Switch
@@ -197,7 +199,7 @@ Install the resulting wheel in a fresh application environment. Record its
 own SHA-256 if you distribute that build.
 
 [Python first run](package-python.md) · [Python worker API and examples](workers.md#python-apis) ·
-[Give a worker an open file](../README.md#run-an-inherited-fd-example)
+[Give a worker an open file](start/code.md)
 
 The same wheel installs `workeros-config` and its compatibility alias
 `worker-handoff-config`. To inspect the invocation schema, run

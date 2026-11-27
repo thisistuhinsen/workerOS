@@ -5,6 +5,7 @@ from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 import os
 from pathlib import Path
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -16,7 +17,7 @@ REPOSITORY = "https://github.com/thisistuhinsen/workerOS"
 README_WHEEL = ("https://github.com/thisistuhinsen/workerOS/releases/download/v0.7.0/"
                 "workeros-0.7.0-py3-none-any.whl#sha256="
                 "1a418f20bffcfbed304855edb6663ce35c75c818b3f0af1ff51b6dc445e92c3b")
-DEMO_OUTPUT = ("report: exited 0", "slow job: timed out", "cleanup: reaped")
+HELLO_OUTPUT = ("hello", "job: exited 0")
 
 
 @contextmanager
@@ -45,8 +46,20 @@ def serve_release(assets, allowed):
 
 
 def quickstart(document, directory, release_url, expected, *, stage_url=None):
-    script = re.search(r"(?m)^```sh\n([\s\S]+?)^```$", document.read_text(encoding="utf-8"))
-    if not script or script[1].count(release_url) != 1:
+    block = re.search(r"(?m)^```sh\n([\s\S]+?)^```$", document.read_text(encoding="utf-8"))
+    if block is None:
+        raise SystemExit(f"{document.name}: missing first shell block")
+    script = block[1]
+    if stage_url is None:
+        release, artifact = release_url.rsplit("/", 1)
+        wheel, digest = artifact.split("#sha256=")
+        header = script.replace("\\\n", "").splitlines()[:3]
+        expected_pin = [[f"release={release}"], [f"wheel={wheel}"], [f"sha={digest}"]]
+        pinned = [shlex.split(line) for line in header] == expected_pin
+        pinned = pinned and script.count('"$release/$wheel#sha256=$sha"') == 1
+    else:
+        pinned = script.count(release_url) == 1
+    if not pinned:
         raise SystemExit(f"{document.name}: expected first shell block to use the pinned release URL")
     home = directory / ".home"
     home.mkdir()
@@ -57,7 +70,7 @@ def quickstart(document, directory, release_url, expected, *, stage_url=None):
     environment.update(HOME=str(home), PIP_CONFIG_FILE=os.devnull,
                        PIP_DISABLE_PIP_VERSION_CHECK="1", PIP_NO_CACHE_DIR="1")
     result = subprocess.run(
-        ["bash"], input=script[1].replace(release_url, stage_url) if stage_url else script[1], cwd=directory,
+        ["bash"], input=script.replace(release_url, stage_url) if stage_url else script, cwd=directory,
         env=environment,
         encoding="utf-8", stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
         timeout=90, check=False,
@@ -93,11 +106,11 @@ def main(assets, source, work, version):
 
     # The default README stays on the last published wheel while the next
     # release is pending. Its literal command is checked against that wheel.
-    quickstart(readme_doc, readme, README_WHEEL, ("hello", "job: exited 0"))
+    quickstart(readme_doc, readme, README_WHEEL, HELLO_OUTPUT)
 
     release_url = f"{REPOSITORY}/releases/download/v{version}"
     with serve_release(assets, {f"/{name}" for name in names}) as stage_url:
-        quickstart(metadata_doc, metadata, release_url, DEMO_OUTPUT, stage_url=stage_url)
+        quickstart(metadata_doc, metadata, release_url, HELLO_OUTPUT, stage_url=stage_url)
     installed = metadata / f".venv-{version}/bin/python"
     subprocess.run([str(installed), "-I", "-c",
                     "from importlib.metadata import version; import sys; "

@@ -35,8 +35,8 @@ def verify_install(wheel, expected_sha256):
                 names = archive.namelist()
                 if len(set(names)) != len(names):
                     raise VerificationError("ambiguous_wheel")
-                modules = [name for name in names if name.startswith("worker_handoff/") and not name.endswith("/")]
-                if not modules or "worker_handoff/__init__.py" not in modules:
+                modules = [name for name in names if name.startswith("workeros/") and not name.endswith("/")]
+                if not modules or "workeros/__init__.py" not in modules:
                     raise VerificationError("wheel_package_missing")
                 for name in modules:
                     path = PurePosixPath(name)
@@ -49,8 +49,8 @@ def verify_install(wheel, expected_sha256):
                 for dist in metadata.distributions():
                     name = re.sub(r"[-_.]+", "-", dist.metadata.get("Name", "")).lower()
                     files = dist.files or ()
-                    owns_package = any(str(path).startswith("worker_handoff/") for path in files)
-                    if name not in ("workeros", "worker-handoff") and not owns_package:
+                    owns_package = any(str(path).startswith("workeros/") for path in files)
+                    if name != "workeros" and not owns_package:
                         continue
                     # Some platform installation schemes expose the same
                     # site-packages directory through multiple sys.path
@@ -75,7 +75,7 @@ def verify_install(wheel, expected_sha256):
                 records = dist.files
                 if records is None:
                     raise VerificationError("installed_manifest_missing")
-                installed = {str(path) for path in records if str(path).startswith("worker_handoff/")
+                installed = {str(path) for path in records if str(path).startswith("workeros/")
                              and "__pycache__" not in path.parts and not str(path).endswith(".pyc")}
                 if installed != set(modules):
                     raise VerificationError("installed_package_file_set_mismatch")
@@ -85,15 +85,15 @@ def verify_install(wheel, expected_sha256):
                         raise VerificationError("installed_package_file_missing")
                     if target.read_bytes() != archive.read(name):
                         raise VerificationError("installed_package_file_mismatch")
-                expected_init = Path(dist.locate_file("worker_handoff/__init__.py")).resolve(strict=True)
-                spec = util.find_spec("worker_handoff")
+                expected_init = Path(dist.locate_file("workeros/__init__.py")).resolve(strict=True)
+                spec = util.find_spec("workeros")
                 if spec is None or spec.origin is None or Path(spec.origin).resolve(strict=True) != expected_init:
                     raise VerificationError("loaded_package_mismatch")
-                loaded = sys.modules.get("worker_handoff")
+                loaded = sys.modules.get("workeros")
                 if loaded is None or Path(loaded.__file__).resolve(strict=True) != expected_init:
                     raise VerificationError("loaded_package_mismatch")
                 for name, loaded_module in tuple(sys.modules.items()):
-                    if not name.startswith("worker_handoff.") or loaded_module is None:
+                    if not name.startswith("workeros.") or loaded_module is None:
                         continue
                     origin = getattr(loaded_module, "__file__", None)
                     if origin is None:
@@ -101,7 +101,7 @@ def verify_install(wheel, expected_sha256):
                     path = Path(origin).resolve(strict=True)
                     if not path.is_relative_to(expected_init.parent):
                         raise VerificationError("loaded_module_mismatch")
-                    relative = "worker_handoff/" + path.relative_to(expected_init.parent).as_posix()
+                    relative = "workeros/" + path.relative_to(expected_init.parent).as_posix()
                     if relative not in modules:
                         raise VerificationError("loaded_module_mismatch")
                 wheel_metadata = [name for name in names if name.endswith(".dist-info/METADATA")]

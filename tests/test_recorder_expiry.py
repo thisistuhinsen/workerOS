@@ -13,8 +13,8 @@ from tempfile import TemporaryDirectory
 import unittest
 from unittest.mock import patch
 
-from worker_handoff.managed import EffectStatus
-from worker_handoff.recording import (
+from workeros.managed import EffectStatus
+from workeros.recording import (
     Destination, EvidenceType, LocalStore, Persistence, RecordError, RecordKey, RecorderPolicy,
     RecordReceipt, Retention, RetentionStamp, Route, StoragePolicy, StoreCommit, StoredEvidence,
 )
@@ -40,7 +40,7 @@ class RecorderExpiryTests(unittest.TestCase):
         )
 
     def commit(self, policy, name="record", *, seconds=1):
-        with patch("worker_handoff.recording.time_ns", return_value=seconds * _SECOND):
+        with patch("workeros.recording.time_ns", return_value=seconds * _SECOND):
             result = policy.record(RecordKey("run", name), self.evidence, self.payload,
                                    effect=EffectStatus.COMPLETE, source="owner", scope="local").destinations[0]
         self.assertIs(result.state, Persistence.COMMITTED)
@@ -77,12 +77,12 @@ class RecorderExpiryTests(unittest.TestCase):
         expected = self.commit(self.policy(minimum=10, expiry=50))
         weaker = self.policy(minimum=2, expiry=3)
         stricter = self.policy(minimum=12, expiry=99)
-        with patch("worker_handoff.recording.time_ns", return_value=5 * _SECOND):
+        with patch("workeros.recording.time_ns", return_value=5 * _SECOND):
             self.assertIs(weaker.purge("archive", expected, resolved=True), Retention.RETAINED_YOUNG)
-        with patch("worker_handoff.recording.time_ns", return_value=11 * _SECOND):
+        with patch("workeros.recording.time_ns", return_value=11 * _SECOND):
             self.assertIs(stricter.purge("archive", expected, resolved=True), Retention.RETAINED_YOUNG)
             self.assertIs(stricter.purge("archive", expected), Retention.RETAINED_UNRESOLVED)
-        with patch("worker_handoff.recording.time_ns", return_value=13 * _SECOND):
+        with patch("workeros.recording.time_ns", return_value=13 * _SECOND):
             self.assertIs(stricter.purge("archive", expected, resolved=True), Retention.PURGED)
         self.assert_persistence(Persistence.PURGED, stricter.readback, "archive", expected)
 
@@ -110,7 +110,7 @@ class RecorderExpiryTests(unittest.TestCase):
         route = (Route(self.evidence, required=("archive", "remote")),)
         policy = RecorderPolicy({"archive": Destination(local, StoragePolicy(max_age_seconds=2)),
                                  "remote": Destination(remote, StoragePolicy(max_age_seconds=8))}, route)
-        with patch("worker_handoff.recording.time_ns", return_value=0):
+        with patch("workeros.recording.time_ns", return_value=0):
             result = policy.record(RecordKey("run", "two-stores"), self.evidence, self.payload)
         archive, external = [row.receipt for row in result.destinations]
         self.assertTrue(result.required_complete)
@@ -122,7 +122,7 @@ class RecorderExpiryTests(unittest.TestCase):
         self.assert_persistence(Persistence.REFUSED, policy.verify_durable, "remote", external)
 
         current = RecorderPolicy({"archive": Destination(local), "remote": Destination(remote)}, route)
-        with patch("worker_handoff.recording.time_ns", return_value=7 * _SECOND):
+        with patch("workeros.recording.time_ns", return_value=7 * _SECOND):
             self.assertIs(current.purge("remote", external, resolved=True), Retention.RETAINED_YOUNG)
         self.assert_persistence(Persistence.REFUSED, current.sweep, "remote", [external], settled=lambda _: True)
         self.assertEqual(current.readback("remote", external), self.payload)
@@ -134,7 +134,7 @@ class RecorderExpiryTests(unittest.TestCase):
             (Route(self.evidence, required=("archive",), optional=("optional",)),),
         )
         self.assertTrue(policy.check_required_local(self.evidence))
-        with patch("worker_handoff.recording.os.access", return_value=False) as check_access:
+        with patch("workeros.recording.os.access", return_value=False) as check_access:
             self.assert_persistence(Persistence.REFUSED, policy.check_required_local, self.evidence)
             check_access.assert_called_once()
             self.assertEqual(check_access.call_args.args, (".", os.W_OK | os.X_OK))
@@ -179,7 +179,7 @@ class RecorderExpiryTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             current.sweep("archive", [old, replace(old, committed_ns=0)], settled=settled)
         self.assertEqual(current.readback("archive", old), self.payload)
-        with patch("worker_handoff.recording.time_ns", return_value=7 * _SECOND):
+        with patch("workeros.recording.time_ns", return_value=7 * _SECOND):
             results = current.sweep("archive", receipts, settled=settled, limit=4)
         self.assertEqual([r.retention for r in results], [Retention.PURGED, Retention.RETAINED_YOUNG,
                                                        Retention.RETAINED_UNRESOLVED, Retention.RETAINED_MANUAL])
@@ -212,8 +212,8 @@ class RecorderExpiryTests(unittest.TestCase):
                 raise OSError(errno.EIO, "injected directory sync error")
             return original_fsync(fd)
 
-        with patch("worker_handoff.recording.os.fsync", side_effect=fail_directory):
-            with patch("worker_handoff.recording.time_ns", return_value=0):
+        with patch("workeros.recording.os.fsync", side_effect=fail_directory):
+            with patch("workeros.recording.time_ns", return_value=0):
                 recorded = policy.record(key, self.evidence, self.payload).destinations[0]
             self.assertEqual((recorded.state, recorded.receipt), (Persistence.UNKNOWN, None))
             expected = LocalStore(self.directory).read(key, policy=StoragePolicy(expire_after_seconds=1)).receipt
@@ -232,7 +232,7 @@ class RecorderExpiryTests(unittest.TestCase):
 import json
 from pathlib import Path
 import sys
-from worker_handoff.recording import LocalStore, RecordError, RecordKey, RecordReceipt, RecorderPolicy
+from workeros.recording import LocalStore, RecordError, RecordKey, RecordReceipt, RecorderPolicy
 
 config = {'version': 1, 'destinations': {'archive': {'expire_after_seconds': 1}},
           'routes': [{'name': 'result', 'media_type': 'text/plain', 'required': ['archive']}]}

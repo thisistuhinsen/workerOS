@@ -1,9 +1,9 @@
 //go:build linux && (amd64 || arm64)
 
-// Package workerhandoff reads regular files inherited from a workerOS ABI v1
+// Package workeros reads regular files inherited from a workerOS ABI v1
 // launcher on 64-bit Linux. The launcher supplies the descriptor and its scope.
 // Environment metadata describes the grant. Applications supply authorization.
-package workerhandoff
+package workeros
 
 import (
 	"fmt"
@@ -76,7 +76,7 @@ func Open(binding string) (*Reader, error) {
 		syscall.Close(int(dup))
 		return nil, err
 	}
-	file := os.NewFile(dup, "worker-handoff-"+binding)
+	file := os.NewFile(dup, "workeros-"+binding)
 	return &Reader{file: file, deadline: deadline}, nil
 }
 

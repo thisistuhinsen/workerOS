@@ -9,8 +9,8 @@ import tempfile
 from time import monotonic_ns
 import unittest
 
-from worker_handoff import HandoffError, Identity, Original, WorkerRoster, Writer, observe
-from worker_handoff.original import _receive_one
+from workeros import HandoffError, Identity, Original, WorkerRoster, Writer, observe
+from workeros.original import _receive_one
 
 DATA = b"one original, two independent reads\n"
 

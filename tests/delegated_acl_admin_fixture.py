@@ -14,7 +14,7 @@ import sys
 import tempfile
 from time import time
 
-from worker_handoff.verify_install import verify_install
+from workeros.verify_install import verify_install
 
 
 def main():
@@ -45,7 +45,7 @@ def main():
               'path':str(file),'exclusive_admin':True}
         # Only the product's trusted-root configuration parent is redirected
         # to this disposable fixture; the installed console script is executed.
-        wrapper=('import sys,runpy; import worker_handoff.roles_cli as m; '
+        wrapper=('import sys,runpy; import workeros.roles_cli as m; '
                  'm._PARENT=sys.argv[1]; sys.argv=[sys.argv[2]]+sys.argv[3:]; '
                  'runpy.run_path(sys.argv[0],run_name="__main__")')
         def command(op,document):

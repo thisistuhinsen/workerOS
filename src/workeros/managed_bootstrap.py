@@ -1,4 +1,4 @@
-"""Serve one no-start setup request for approved point observers and scope meters."""
+"""Check approved no-start bindings or serve one point/meter setup request."""
 import argparse
 from contextlib import ExitStack
 from dataclasses import asdict
@@ -40,6 +40,7 @@ _HOST_REFUSALS = frozenset((
     'meter_provider_requires_separate_principal', 'point_observer_requires_readable_original',
     'directory_plan_mismatch', 'duplicate_inherited_setup_handles',
     'interval_custody_unsupported', 'independent_attester_unavailable',
+    'interval_check_only', 'interval_registration_mismatch',
 ))
 
 
@@ -58,7 +59,7 @@ def _provider_is_independent(uid):
 class _EvidenceProvider:
     """Read one attestation from a pinned local provider. Never derives evidence from a record."""
 
-    def __init__(self, socket_path, uid, source, *, window_end_ns=None):
+    def __init__(self, socket_path, uid, source, *, window_end_ns=None, interval=False):
         if (type(socket_path) is not str or not socket_path.startswith('/')
                 or '\0' in socket_path or len(os.fsencode(socket_path)) > 107
                 or type(uid) is not int or not 0 <= uid < 2**32 - 1):
@@ -67,11 +68,19 @@ class _EvidenceProvider:
             raise ValueError('provider_requires_distinct_uid')
         self.path, self.uid, self.source = socket_path, uid, _name(source)
         self.window_end_ns = window_end_ns
+        self.interval = interval
+
+    def _invalid_attestation(self, code):
+        if self.interval:
+            return ConfigurationError('independent_evidence_invalid')
+        return ValueError(code)
 
     def attest(self, selection, role, generation):
         definition = selection.definition
         request = {'version': 1, 'request_id': uuid4().hex, 'definition_sha256': definition_sha256(definition),
                    'role': role, 'clock_id': definition.clock_id, 'generation': generation}
+        if self.interval:
+            request.update(version=2, capability='interval')
         data = _canonical(request)
         work_deadline = managed_cli._CHECK_WORK_DEADLINE.get()
         if work_deadline is not None and monotonic() >= work_deadline:
@@ -96,14 +105,17 @@ class _EvidenceProvider:
             connection.sendall(struct.pack('!I', len(data)) + data)
             size, = struct.unpack('!I', managed_cli._read_exact(connection, 4, deadline))
             if not 0 < size <= managed_cli._LIMIT:
-                raise ValueError('invalid_provider_frame')
+                raise self._invalid_attestation('invalid_provider_frame')
             reply = managed_cli.decode_policy(managed_cli._read_exact(connection, size, deadline))
         expected = {'request_id':request['request_id'], 'definition_sha256':request['definition_sha256'],
                     'role':role, 'clock_id':definition.clock_id, 'generation':generation,
                     'source':self.source, 'status':'verified'}
+        if self.interval:
+            expected.update(version=2, capability='interval')
         if (type(reply) is not dict or set(reply) != set(expected) | {'evidence_sha256', 'valid_until_ns'}
+                or (self.interval and type(reply['version']) is not int)
                 or any(reply[key] != value for key, value in expected.items())):
-            raise ValueError('provider_attestation_mismatch')
+            raise self._invalid_attestation('provider_attestation_mismatch')
         until = reply['valid_until_ns']
         limit = selection.expires_ns
         if self.window_end_ns is not None:
@@ -111,7 +123,7 @@ class _EvidenceProvider:
         if (type(until) is not str or not until.isascii() or not until.isdecimal()
                 or len(until) > 19 or str(int(until)) != until
                 or not monotonic_ns() < int(until) <= limit):
-            raise ValueError('provider_attestation_expired')
+            raise self._invalid_attestation('provider_attestation_expired')
         return ScopeEvidence(definition, role, self.source, reply['evidence_sha256'],
                              definition.clock_id, int(until), True, generation)
 
@@ -193,13 +205,13 @@ _SCOPE_FIELDS = _SCOPE_BASE_FIELDS + ('observer', 'provider')
 _SCOPE_OPTIONAL_FIELDS = ('observer', 'provider', 'meter', 'meter_provider')
 
 
-def _provider(config, binding, definition, *, window_end_ns=None):
+def _provider(config, binding, definition, *, window_end_ns=None, interval=False):
     _fields(config, ('socket', 'peer_uid'))
     if (binding.principal == definition.manager
             or any(binding.principal == item.independent_of for item in definition.providers)):
         raise ValueError('provider_source_conflict')
     return _EvidenceProvider(config['socket'], config['peer_uid'], binding.principal,
-                             window_end_ns=window_end_ns)
+                             window_end_ns=window_end_ns, interval=interval)
 
 
 def _meter_peer_is_distinct(observer, meter):
@@ -216,7 +228,7 @@ def _inherit(fds, used):
     used.update(fds)
 
 
-def _observer(config, binding, definition, resources, used):
+def _observer(config, binding, definition, resources, used, *, interval_provider=None):
     _fields(config, ('original_fd', 'pidfd', 'device', 'inode', 'pid', 'uid', 'slot', 'scope_sha256'),
             ('require_readable', 'directory'))
     plan = {key:value for key,value in config.items() if key not in ('original_fd','pidfd')}
@@ -226,6 +238,10 @@ def _observer(config, binding, definition, resources, used):
         _fields(directory, ('directory_fd', 'device', 'inode', 'leaf'))
         plan['directory'] = {key:value for key,value in directory.items() if key != 'directory_fd'}
         directory_fd, leaf = directory['directory_fd'], directory['leaf']
+    if interval_provider is not None:
+        if config.get('require_readable') is not True:
+            raise ValueError('interval_registration_mismatch')
+        plan = {'observer': plan, 'interval_provider': interval_provider}
     if binding.reference != sha256(_canonical(plan)).hexdigest():
         raise ValueError('observer_plan_mismatch')
     original_fd, pidfd = config['original_fd'], config['pidfd']
@@ -271,38 +287,24 @@ def _meter(config, binding, definition, resources, used):
 
 
 def _bound_scope(config, *, clock_id, resources, used):
-    _fields(config, _SCOPE_BASE_FIELDS, _SCOPE_OPTIONAL_FIELDS)
+    _fields(config, _SCOPE_BASE_FIELDS, _SCOPE_OPTIONAL_FIELDS + ('interval_provider',))
+    # The caller has already screened the shape and mode of every scope.
+    interval = 'interval_provider' in config
     has_observer = 'observer' in config
-    if has_observer != ('provider' in config):
-        raise ValueError('unsupported_setup_binding')
     has_meter = 'meter' in config
-    if has_meter != ('meter_provider' in config):
-        raise ValueError('unsupported_setup_binding')
     definition = _definition(config['definition'])
     providers = definition.providers
     if definition.clock_id != clock_id:
         raise ValueError('setup_clock_mismatch')
-    if any(binding.kind == 'custody' or
-           (binding.kind == 'observers' and binding.capability in ('interval', 'custody', 'interval-custody'))
-           for binding in providers):
-        raise ValueError('interval_custody_unsupported')
     by_kind = {binding.kind:binding for binding in providers}
-    allowed = {**({'observers':'point'} if has_observer else {}),
-               **({'meters':'cgroup-v2'} if has_meter else {})}
-    if not allowed:
-        raise ValueError('independent_attester_unavailable')
-    if len(providers) != len(allowed) or {kind:binding.capability for kind,binding in by_kind.items()} != allowed:
-        raise ValueError('unsupported_setup_binding')
 
     policy = config['policy']
     _fields(policy, ('version', 'roles', 'workflows'))
     workflow = policy['workflows'][definition.name]
-    if workflow.get('require_custody') is True or 'custody' in workflow['bindings']:
-        raise ValueError('interval_custody_unsupported')
     operations = ({'observe'} if has_observer else set()) | ({'meter'} if has_meter else set())
     if (set(policy['workflows']) != {definition.name}
             or _operations(workflow['operations']) != operations
-            or set(workflow['bindings']) != set(allowed)
+            or set(workflow['bindings']) != set(by_kind)
             or any(list(workflow['bindings'][kind].values()) != [binding.name] for kind,binding in by_kind.items())
             or workflow['role'] != config['role']):
         raise ValueError('unsupported_setup_policy')
@@ -315,8 +317,10 @@ def _bound_scope(config, *, clock_id, resources, used):
     attesters, observers = [], {}
     if has_observer:
         observation = by_kind['observers']
-        attesters.append(_provider(config['provider'], observation, definition))
-        observer = _observer(config['observer'], observation, definition, resources, used)
+        endpoint = config['interval_provider' if interval else 'provider']
+        attesters.append(_provider(endpoint, observation, definition, interval=interval))
+        observer = _observer(config['observer'], observation, definition, resources, used,
+                             interval_provider=endpoint if interval else None)
         observers[observation.name] = (observer, None, observation.name)
     meters = None
     if has_meter:
@@ -367,6 +371,8 @@ def _reconcile_local(config):
     entries = _scope_entries(config)
     definitions, requirements, generations = [], [], []
     for entry in entries:
+        if 'interval_provider' in entry:
+            raise ValueError('interval_check_only')
         _fields(entry, _SCOPE_BASE_FIELDS, _SCOPE_OPTIONAL_FIELDS)
         definition = _definition(entry['definition'])
         if sha256(_canonical(entry['policy'])).hexdigest() != definition.policy_sha256:
@@ -404,7 +410,7 @@ class _UnsupportedScopes(ValueError):
         super().__init__(next(item['code'] for item in scopes if item['status'] == 'unavailable'))
 
 
-def _preflight_scopes(entries):
+def _preflight_scopes(entries, *, check_intervals=False):
     """Report unsupported requested scopes before binding any resources or writing state."""
     results = []
     for entry in entries:
@@ -418,15 +424,27 @@ def _preflight_scopes(entries):
                     or workflow.get('require_custody') is True or 'custody' in workflow['bindings'])
         has_observer = 'observer' in entry
         has_meter = 'meter' in entry
+        registered = 'interval_provider' in entry
         allowed = {**({'observers': 'point'} if has_observer else {}),
                    **({'meters': 'cgroup-v2'} if has_meter else {})}
         by_kind = {binding.kind: binding.capability for binding in providers}
         unsupported = (has_observer != ('provider' in entry) or
                        has_meter != ('meter_provider' in entry) or
                        len(providers) != len(allowed) or by_kind != allowed)
-        code = ('interval_custody_unsupported' if interval else
-                'unsupported_setup_binding' if unsupported else
-                'independent_attester_unavailable' if not allowed else None)
+        if registered:
+            if not check_intervals:
+                code = 'interval_check_only'
+            elif (by_kind != {'observers': 'interval'} or len(providers) != 1
+                    or providers[0].scope != definition.scope or providers[0].independent_of is None
+                    or set(entry) != set(_SCOPE_BASE_FIELDS) | {'observer', 'interval_provider'}
+                    or workflow.get('require_custody') is True or 'custody' in workflow['bindings']):
+                code = 'interval_registration_mismatch'
+            else:
+                code = None
+        else:
+            code = ('interval_custody_unsupported' if interval else
+                    'unsupported_setup_binding' if unsupported else
+                    'independent_attester_unavailable' if not allowed else None)
         result = {'name': name, 'status': 'unavailable' if code else 'not_checked'}
         if code:
             result['code'] = code
@@ -437,9 +455,9 @@ def _preflight_scopes(entries):
         raise _UnsupportedScopes(results)
 
 
-def _build(config, resources):
+def _build(config, resources, *, check_intervals=False):
     entries = _scope_entries(config)
-    _preflight_scopes(entries)
+    _preflight_scopes(entries, check_intervals=check_intervals)
 
     clock_id = setup_clock_id()
     used = set()
@@ -490,7 +508,7 @@ def main(argv=None):
             print(json.dumps(recovered, sort_keys=True))
             return 1  # This is historical scope evidence, never setup completion.
         with ExitStack() as resources:
-            adapter, uids, handles = _build(config, resources)
+            adapter, uids, handles = _build(config, resources, check_intervals=args.check_bindings)
             if args.describe:
                 print(json.dumps({'status':'configured','identity':adapter.identity,'profile':adapter.profile,
                                   'scopes':[scope.name for scope in adapter.scopes],

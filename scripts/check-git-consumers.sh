@@ -84,11 +84,11 @@ package main
 
 import (
     "fmt"
-    "github.com/thisistuhinsen/workerOS/go/workerhandoff"
+    "github.com/thisistuhinsen/workerOS/go/workeros"
 )
 
 func main() {
-    input, err := workerhandoff.Open("INPUT")
+    input, err := workeros.Open("INPUT")
     if err != nil { panic(err) }
     var data [1]byte
     count, err := input.ReadAt(data[:], 0)
@@ -101,7 +101,7 @@ GO
 (
     cd -- "$work/go"
     go mod init example.invalid/worker-reader
-    go get "$module/go/workerhandoff@v$version"
+    go get "$module/go/workeros@v$version"
     [[ "$(go list -m -f '{{.Version}}' "$module")" == "v$version" ]]
     if [[ "$mode" == public ]]; then
         # The normal fetch provided the sums. Check that the exact Git origin
@@ -126,11 +126,11 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-worker-handoff = { git = "$repository", tag = "v$version" }
+workeros = { git = "$repository", tag = "v$version" }
 EOF
 cat > "$work/rust/src/main.rs" <<'RUST'
 fn main() -> std::io::Result<()> {
-    let reader = worker_handoff::open_read("INPUT")?;
+    let reader = workeros::open_read("INPUT")?;
     let mut data = [0_u8; 1];
     assert_eq!(reader.read_at(&mut data, 0)?, 1);
     assert_eq!(data[0], b'W');
@@ -150,7 +150,7 @@ import os
 import sys
 from tempfile import TemporaryDirectory
 from time import monotonic_ns
-from worker_handoff import WorkerRoster
+from workeros import WorkerRoster
 
 with TemporaryDirectory() as directory:
     path = Path(directory) / "input"

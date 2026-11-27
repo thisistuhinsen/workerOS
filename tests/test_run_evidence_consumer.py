@@ -12,14 +12,14 @@ import unittest
 from unittest.mock import patch
 from uuid import uuid4
 
-from worker_handoff import (
+from workeros import (
     CleanupStatus, DirectChildSupervisor, LifecycleStatus, Original, SupervisionStartError,
     Worker, observe, receive_original, send_original,
 )
-from worker_handoff.evidence import (
+from workeros.evidence import (
     EvidenceObservation, EvidenceState, RunBinding, RunEvent, validate_run_evidence,
 )
-import worker_handoff.original as original_module
+import workeros.original as original_module
 
 
 def _bind_run(payload):

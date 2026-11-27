@@ -9,8 +9,8 @@ from tempfile import TemporaryDirectory
 import unittest
 from unittest.mock import patch
 
-from worker_handoff.policy_cli import _LocalDestination
-from worker_handoff.recording import EvidenceType, Persistence, RecordError, RecordKey, RecorderPolicy
+from workeros.policy_cli import _LocalDestination
+from workeros.recording import EvidenceType, Persistence, RecordError, RecordKey, RecorderPolicy
 
 
 class InstalledPolicyDurabilityTest(unittest.TestCase):
@@ -78,7 +78,7 @@ class InstalledPolicyDurabilityTest(unittest.TestCase):
                     "--store", "archive", str(archive)]
             inject = (
                 "import errno, os\n"
-                "from worker_handoff.configuration_cli import main\n"
+                "from workeros.configuration_cli import main\n"
                 "sync = os.fsync\n"
                 "def fsync(fd):\n"
                 f"    if os.path.isdir({str(archive)!r}) and "
@@ -107,7 +107,7 @@ class InstalledPolicyDurabilityTest(unittest.TestCase):
             self.assertEqual(reply["result"]["terminal"]["returncode"], "0")
             item = reply["result"]["capture"]["record"]["destinations"][0]
             self.assertEqual((item["state"], item["receipt"]), ("unknown", None))
-            cli = ["-m", "worker_handoff.configuration_cli"]
+            cli = ["-m", "workeros.configuration_cli"]
             recovered = invoke(cli, "recover_receipt",
                                {"destination": "archive", "attempt_id": event["attempt_id"]})
             self.assertEqual(recovered.returncode, 0, recovered.stdout)

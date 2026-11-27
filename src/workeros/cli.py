@@ -17,17 +17,20 @@ _HELP={
 Run a job. Know how it ended.
 Version: {version}
 
-  workeros run -- /usr/bin/printf 'hello\\n'    Run a local job
-  workeros help file                           Give a worker an open file
-  workeros help config                         Run a workflow from JSON
-  workeros roles guide                         Draft a role profile in your terminal
-  workeros help formats                        Use JSON or YAML role profiles
-  workeros managed reconcile                    Check an interrupted setup
-
 First run:
   $ workeros run -- /usr/bin/printf 'hello\\n'
   hello
   job: exited 0
+
+Choose how to use WorkerOS:
+  workeros help run       Run commands from your terminal
+  workeros help config    Check and run a workflow from JSON or YAML
+  workeros help file      Use the Python API or pass an open file
+
+Host setup and recovery:
+  workeros roles guide          Draft a role profile in your terminal
+  workeros help formats         Use JSON or YAML role profiles
+  workeros managed reconcile    Check an interrupted setup
 
 Use wos as a short form. Run workeros help install for packages and platforms,
 workeros help roles for the administrator handoff, or workeros help managed for
@@ -61,9 +64,9 @@ stderr. The JSON result separates lifecycle and cleanup and leaves effects
 unknown. This starts one trusted local command.
 For the timeout and cleanup example, run workeros demo. A timeout or an unknown
 effect is not proof that nothing happened; check effects before retrying.''',
- 'file': '''Give a worker an open file
+ 'file': '''Use WorkerOS from code
 
-Run the example using this installation:
+Give a worker an open file:
   {command}
 
 Expected: Python: PASSED. The launcher opens a disposable file and runs one
@@ -71,7 +74,15 @@ worker; it checks the worker's exit and shared offset. Worker-side readers are
 also supplied for Node.js, C, C++, Go, Rust and Java, where their toolchains
 are available. They do not supply the Python controller's full API. Run
 workeros help install for their packages, or workeros help config to call
-the controller from another language.''',
+the controller from another language.
+
+Check the Python API import in this installation:
+  {import_command}
+
+Expected: WorkerRoster.
+
+Python API examples:
+https://github.com/thisistuhinsen/workerOS/blob/v0.8.0/docs/api.md#launch-and-supervise-workers''',
  'roles': '''Manage custom role declarations and named-UID ACL plans
 
   workeros roles guide
@@ -143,23 +154,34 @@ check readiness. See docs/host-preflight.md.''',
  'formats': '''Profile input formats
 
 Role profiles use JSON by default. Add --format yaml to roles preview, roles
-apply, the grant commands, or managed apply-profile to use YAML. Install
-PyYAML in the same environment or submit JSON if yaml_dependency_missing.
+apply, the grant commands, or managed apply-profile to use YAML. For a
+workflow policy, add --format yaml to workeros config with --check-policy
+or --run-policy. Install PyYAML in the same environment or submit JSON if
+yaml_dependency_missing.
 Both formats use the same validation. YAML duplicate keys, aliases, anchors and
 multiple documents are refused. Quote ambiguous YAML identifiers. Command
 results and workflow invocations use JSON.''',
  'config': '''Workflow configuration
 
+Check the installed example policy from your project directory:
+  workeros config --check-policy {policy} \\
+    --executable sample /usr/bin/printf --store archive "$PWD/archive"
+
+Expected: JSON with status "checked" and workflow "fileless". This checks
+the policy and supplied bindings without creating the archive or starting work.
+
   workeros config --schema
   workeros config --help
 
 The schema command prints JSON without starting a job. To run a workflow,
-supply a JSON policy and a JSON invocation. The Python API starts workers
-directly. Other languages can call this command and exchange the same JSON,
-or use their reader packages to consume an already-open file.
+use --run-policy and supply the invocation as JSON on stdin. Policy files
+default to JSON. Use --format yaml with optional PyYAML for a YAML policy.
+The policy SHA-256 covers the original file bytes in either format.
+Other languages can call this command and exchange the same JSON.
 
-First runnable policy and examples for calling from seven languages:
-https://github.com/thisistuhinsen/workerOS/blob/main/docs/configuration.md#run-a-fileless-worker
+First runnable policies:
+JSON: https://github.com/thisistuhinsen/workerOS/blob/v0.8.0/docs/start/config.md#run-from-json-v080
+YAML: https://github.com/thisistuhinsen/workerOS/blob/v0.8.0/docs/start/config.md#run-from-yaml
 
 Host bindings and authority come from the operator. Check the result for
 delivery, cleanup and evidence. Reconcile an unknown effect before retrying.''',
@@ -167,7 +189,12 @@ delivery, cleanup and evidence. Reconcile an unknown effect before retrying.''',
 _ROLE_HELP={
  'guide': 'Create a role draft interactively: workeros roles guide\nRequires a terminal. Use back or cancel; JSON is printed without writing a file or granting access.',
  'draft': 'Create a no-write draft: workeros roles draft --help\nChoose an existing principal, scope and expiry. The output is JSON; no authority is granted.',
- 'preview': 'Preview a role declaration: workeros roles preview [--format json|yaml] < profile.json\nStarts nothing and writes nothing. YAML needs PyYAML; JSON does not.',
+ 'preview': (
+     "Preview a role declaration from the administrator's trusted installation.\n"
+     '  workeros roles preview < profile.json\n'
+     '  workeros roles preview --format yaml < profile.yaml\n'
+     'Requires an administrator. Preview starts nothing and writes nothing. YAML needs PyYAML.'
+ ),
  'apply': 'Record a declaration: workeros roles apply [--format json|yaml] < profile.json\nRequires an administrator. It creates no principal, OS grant or observer authority.',
  'status': 'Read a declaration: workeros roles status PROFILE REVISION\nShows configured, expired or revoked declaration state; it does not verify a grant.',
  'show': 'Read a declaration: workeros roles status PROFILE REVISION\nShows configured, expired or revoked declaration state; it does not verify a grant.',
@@ -272,6 +299,7 @@ def _refuse(code):
     advice=('Install the optional PyYAML package in this environment, or use JSON.' if code=='yaml_dependency_missing'
             else 'Run workeros roles guide in a terminal, or use the noninteractive draft command.' if code=='tty_required'
             else 'Use workeros run -- COMMAND ARG ... for text output; no command was started.' if code=='run_json_unsupported'
+            else 'Run workeros --help to find a command or help topic.' if code in ('unknown_command','unknown_help_topic')
             else 'Correct the command or input; no operation was attempted.')
     print(json.dumps({'status':'refused','effect':'not_attempted','code':code,'next_action':advice},separators=(',',':')))
     return 1
@@ -394,9 +422,14 @@ def _render_help(topic):
     if topic == 'start':
         return help_text.replace('{version}', _installed_version())
     if topic == 'file':
-        example = Path(sys.prefix) / 'share/worker-handoff/examples/run_inherited_fd.py'
+        example = Path(sys.prefix) / 'share/workeros/examples/run_inherited_fd.py'
         command = shlex.join([sys.executable, '-I', str(example), '--language', 'python'])
-        return help_text.format(command=command)
+        import_command = shlex.join([sys.executable, '-I', '-c',
+                                     'from workeros import WorkerRoster; print(WorkerRoster.__name__)'])
+        return help_text.format(command=command, import_command=import_command)
+    if topic == 'config':
+        policy = Path(sys.prefix) / 'share/workeros/examples/workflow_policy.json'
+        return help_text.format(policy=shlex.quote(str(policy)))
     return help_text
 
 

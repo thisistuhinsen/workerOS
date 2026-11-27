@@ -5,9 +5,9 @@ import json
 import unittest
 from unittest.mock import patch
 
-from worker_handoff.aggregate_setup import AggregateSetup, ScopeEvidence, ScopeSetup
-from worker_handoff.enrollment import HostBindings
-from worker_handoff.profile_setup import ProfileDefinition, ProfileRequirements, ProviderBinding, ProviderRequirement
+from workeros.aggregate_setup import AggregateSetup, ScopeEvidence, ScopeSetup
+from workeros.enrollment import HostBindings
+from workeros.profile_setup import ProfileDefinition, ProfileRequirements, ProviderBinding, ProviderRequirement
 from test_aggregate_setup import Manager, Observer
 from test_profile_setup import CLOCK, EXPIRY, PACKAGE_HASH
 
@@ -32,8 +32,8 @@ def custom_scope(operation='observe'):
 
 class CustomCommissionTest(unittest.TestCase):
     def setUp(self):
-        self.enterContext(patch('worker_handoff.profile_setup.version',return_value='0.8.0'))
-        self.enterContext(patch('worker_handoff.aggregate_setup.verify_install'))
+        self.enterContext(patch('workeros.profile_setup.version',return_value='0.8.0'))
+        self.enterContext(patch('workeros.aggregate_setup.verify_install'))
 
     def setup_scope(self, scope):
         return AggregateSetup((scope,),wheel='fixture.whl',wheel_sha256=PACKAGE_HASH,clock_id=CLOCK)

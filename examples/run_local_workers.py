@@ -4,7 +4,7 @@ from subprocess import TimeoutExpired
 import sys
 from time import monotonic_ns
 
-from worker_handoff import (
+from workeros import (
     CleanupStatus, DirectChildSupervisor, LifecycleStatus, SupervisionStartError,
 )
 
