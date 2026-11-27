@@ -7,7 +7,7 @@ from hashlib import sha256
 from io import StringIO
 import json
 import os
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 import socket
 import subprocess
 import struct
@@ -27,6 +27,8 @@ from worker_handoff.roles_cli import _canonical
 from worker_handoff.appointment_registry import definition_sha256
 from worker_handoff.evidence import EvidenceScope, EvidenceState, RunBinding, ScopePhase
 from worker_handoff.scope_meter import CgroupScopeMeter, ScopeMeterUnavailable, monotonic_clock_id
+
+from test_scope_meter import open_self_cgroup
 
 
 @skipUnless(sys.platform == "linux" and hasattr(os, "pidfd_open"), "Linux pidfd required")
@@ -221,14 +223,6 @@ class PointProviderTest(TestCase):
     def test_meter_digest_reads_own_visible_cgroup_without_cleanup_claim(self):
         from worker_handoff.managed_provider import _meter_digest
 
-        rows = Path("/proc/self/cgroup").read_text().splitlines()
-        groups = [PurePosixPath(row[3:]) for row in rows if row.startswith("0::")]
-        if len(groups) != 1 or not groups[0].is_absolute() or ".." in groups[0].parts:
-            self.skipTest("own cgroup v2 membership is unavailable or not visible")
-        # This direct path is used only when the visible cgroup v2 root is /.
-        # Never probe a different principal or alternate mount after refusal.
-        if groups[0] != PurePosixPath("/"):
-            self.skipTest("fixture supports the caller's visible cgroup root only")
         clock = monotonic_clock_id()
         if clock is None:
             self.skipTest("own monotonic clock context unavailable")
@@ -236,8 +230,8 @@ class PointProviderTest(TestCase):
         end = start + 10_000_000_000
         run = RunBinding("fixture-run", "fixture-artifact", clock, start, end)
         scope = EvidenceScope(run, "fixture-scope", start, end)
+        descriptor, _ = open_self_cgroup(self, self.owned)
         try:
-            descriptor = self.fd(Path("/sys/fs/cgroup"), os.O_RDONLY | os.O_DIRECTORY)
             meter = self.owned.enter_context(CgroupScopeMeter(
                 scope=scope, provider_id="fixture-meter", directory_fd=descriptor))
             sample = meter.sample(ScopePhase.METER_BEGIN)

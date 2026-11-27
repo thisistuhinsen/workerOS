@@ -300,7 +300,12 @@ assert refusal["cleanup"]["local_resources"] == "not_created"
 print("Installed local host profile and pre-effect refusal passed")
 PY
 
-    (cd -- "$work" && "$pip_env/bin/python" -I -m unittest discover -v -s "$source/tests") \
+    local yaml_env="$work/yaml-wheel"
+    "$python" -I -m venv "$yaml_env"
+    "$yaml_env/bin/python" -m pip install --no-deps 'PyYAML==6.0.3'
+    pip_offline "$yaml_env/bin/python" install "$output/$wheel"
+    (cd -- "$work" && WORKEROS_TEST_WHEEL="$output/$wheel" WORKEROS_YAML_PYTHON="$yaml_env/bin/python" \
+        "$pip_env/bin/python" -I -m unittest discover -v -s "$source/tests") \
         2>&1 | tee "$work/tests.log"
     if ! awk '
         /^Ran [0-9]+ tests in / && $2 >= 126 { count++ }

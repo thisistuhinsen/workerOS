@@ -1,8 +1,10 @@
 """Installed package verification against caller-pinned wheel bytes."""
 
+from copy import copy
 from hashlib import sha256
 from importlib import metadata
 from pathlib import Path
+from shutil import copytree
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 from unittest import TestCase
@@ -44,8 +46,37 @@ class VerifyInstallTest(TestCase):
         with self.assertRaisesRegex(VerificationError, "installed_package_file_mismatch"):
             verify_install(self.wheel, digest)
         digest = self.build_fixture()
+        # Two sys.path spellings can make importlib.metadata yield the same
+        # physical .dist-info tree twice. That is one installation, not two.
+        alias_parent = self.directory / "site-packages-alias"
+        alias_parent.symlink_to(self.distribution._path.parent, target_is_directory=True)
+        alias_distributions = [dist for dist in metadata.distributions(
+            path=[str(self.distribution._path.parent), str(alias_parent)])
+            if dist.metadata["Name"] == "workeros"]
+        self.assertEqual(len(alias_distributions), 2)
+        with patch("worker_handoff.verify_install.metadata.distributions",
+                   return_value=alias_distributions):
+            self.assertEqual(verify_install(self.wheel, digest)["status"], "matched")
+
         with patch("worker_handoff.verify_install.metadata.distributions",
                    return_value=[self.distribution, self.distribution]):
+            self.assertEqual(verify_install(self.wheel, digest)["status"], "matched")
+        separate_parent = self.directory / "second-site-packages"
+        separate_parent.mkdir()
+        separate_metadata = separate_parent / self.distribution._path.name
+        copytree(self.distribution._path, separate_metadata)
+        separate_distribution = copy(self.distribution)
+        separate_distribution._path = separate_metadata
+        with patch("worker_handoff.verify_install.metadata.distributions",
+                   return_value=[self.distribution, separate_distribution]):
+            with self.assertRaisesRegex(VerificationError, "ambiguous_distribution"):
+                verify_install(self.wheel, digest)
+        linked_metadata = self.directory / "third-site-packages" / self.distribution._path.name
+        linked_metadata.parent.mkdir()
+        linked_metadata.symlink_to(self.distribution._path, target_is_directory=True)
+        linked_distribution = metadata.PathDistribution(linked_metadata)
+        with patch("worker_handoff.verify_install.metadata.distributions",
+                   return_value=[self.distribution, linked_distribution]):
             with self.assertRaisesRegex(VerificationError, "ambiguous_distribution"):
                 verify_install(self.wheel, digest)
         other_owner = SimpleNamespace(metadata={"Name": "other-package"},

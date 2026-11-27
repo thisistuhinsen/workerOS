@@ -45,12 +45,30 @@ def verify_install(wheel, expected_sha256):
                             or info.file_size > 16 * 1024 * 1024):
                         raise VerificationError("invalid_wheel_entry")
                 owners = []
+                seen_locations = set()
                 for dist in metadata.distributions():
                     name = re.sub(r"[-_.]+", "-", dist.metadata.get("Name", "")).lower()
                     files = dist.files or ()
                     owns_package = any(str(path).startswith("worker_handoff/") for path in files)
-                    if name in ("workeros", "worker-handoff") or owns_package:
-                        owners.append(dist)
+                    if name not in ("workeros", "worker-handoff") and not owns_package:
+                        continue
+                    # Some platform installation schemes expose the same
+                    # site-packages directory through multiple sys.path
+                    # spellings (for example Fedora's lib and lib64 paths).
+                    # Collapse only aliases of both the metadata directory and
+                    # its installation root. Either location can differ.
+                    metadata_dir = getattr(dist, "_path", None)
+                    if isinstance(dist, metadata.PathDistribution) and isinstance(metadata_dir, Path):
+                        try:
+                            location = (metadata_dir.resolve(strict=True),
+                                        Path(dist.locate_file("")).resolve(strict=True))
+                        except (OSError, RuntimeError):
+                            pass
+                        else:
+                            if location in seen_locations:
+                                continue
+                            seen_locations.add(location)
+                    owners.append(dist)
                 if len(owners) != 1 or re.sub(r"[-_.]+", "-", owners[0].metadata["Name"]).lower() != "workeros":
                     raise VerificationError("ambiguous_distribution")
                 dist = owners[0]

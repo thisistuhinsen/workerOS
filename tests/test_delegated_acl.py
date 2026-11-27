@@ -41,10 +41,8 @@ class DelegatedAclTest(unittest.TestCase):
         self.assertFalse((self.root/'.workeros-acl-grants').exists())
 
     def test_unmapped_distinct_principal_refuses_before_mutation(self):
-        try: uid=pwd.getpwnam('nobody').pw_uid
-        except KeyError: self.skipTest('nobody account unavailable')
-        if delegated_acl._uid_mapped(uid): self.skipTest('separate principal is mapped; venue needs actual fixture')
         with patch.object(delegated_acl,'_ADMIN_UID',os.geteuid()), \
+             patch.object(delegated_acl,'_uid_mapped',return_value=False), \
              patch.object(delegated_acl.roles_cli,'_store',return_value=nullcontext(object())), \
              patch.object(delegated_acl.roles_cli,'_inspect_store',return_value=self.declaration):
             with self.assertRaisesRegex(delegated_acl.Refusal,'principal_unmapped'):
