@@ -101,7 +101,9 @@ class UnifiedCliTest(unittest.TestCase):
         self.assertEqual((receipt['code'],receipt['effect']),('command_start_failed','not_attempted'))
 
     def test_structured_run_timeout_reports_cleanup_separately(self):
-        result=self.call('workeros',['run','--json','--','/usr/bin/sleep','10'])
+        command = shutil.which('sleep')
+        self.assertIsNotNone(command, 'sleep is required on PATH for the timeout test')
+        result=self.call('workeros',['run','--json','--',command,'10'])
         self.assertEqual(result.returncode,1)
         receipt=json.loads(result.stdout)
         self.assertEqual((receipt['status'],receipt['effect']),('reported','unknown'))
@@ -110,7 +112,9 @@ class UnifiedCliTest(unittest.TestCase):
 
     def test_structured_run_passes_piped_stdin_without_mixing_the_receipt(self):
         data = 'first line\nsecond line\n'
-        result=self.call('workeros',['run','--json','--','/usr/bin/cat'],data=data)
+        command = shutil.which('cat')
+        self.assertIsNotNone(command, 'cat is required on PATH for the piped input test')
+        result=self.call('workeros',['run','--json','--',command],data=data)
         self.assertEqual((result.returncode,result.stderr),(0,data))
         receipt=json.loads(result.stdout)
         self.assertEqual((receipt['status'],receipt['result']['terminal']['returncode']),('reported','0'))
