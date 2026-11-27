@@ -11,6 +11,27 @@ They use individual release assets. If you already received a directory named
 For the published historical v0.4.0 package, use its
 [tagged instructions](https://github.com/thisistuhinsen/workerOS/blob/v0.4.0/README.md#install).
 
+For newer versions, see the [latest stable release](https://github.com/thisistuhinsen/workerOS/releases/latest).
+Follow its release notes for that version’s package-manager instructions.
+
+## Package manager quick reference
+
+These commands use the published GitHub release and tag. GitHub hosts the
+artifacts; the commands do not imply a package registry listing. Use Linux or
+Ubuntu in WSL2. Python starts jobs; the other packages read an input supplied
+to a worker. The linked walkthroughs create disposable consumers and run a
+first read.
+
+| Manager | Add to your project | First run |
+| --- | --- | --- |
+| pip | [Download, verify and install the wheel](#python) | [Run the installed demo](#run-the-installed-demo) |
+| uv | [Verify the wheel and install or lock it](#python) | [Run the installed demo](#run-the-installed-demo) |
+| npm | [Download and verify the tarball, then install locally](#nodejs) | [Node.js walkthrough](https://github.com/thisistuhinsen/workerOS/blob/v0.7.0/node/README.md) |
+| Go modules | [Resolve the v0.7.0 module](#go) | [Go walkthrough](https://github.com/thisistuhinsen/workerOS/blob/v0.7.0/go/README.md) |
+| Cargo | [Add the v0.7.0 Git dependency](#rust) | [Rust walkthrough](https://github.com/thisistuhinsen/workerOS/blob/v0.7.0/rust/README.md) |
+| Conan 2 | [Verify and create the local recipe](#c-and-c) | [C and C++ walkthrough](https://github.com/thisistuhinsen/workerOS/blob/v0.7.0/native/README.md) |
+| Maven | [Verify and install the JAR and POM](#java) | [Java walkthrough](https://github.com/thisistuhinsen/workerOS/blob/v0.7.0/java/README.md) |
+
 ## Python
 
 The checksum commands below use GNU coreutils (`sha256sum --strict`).
@@ -55,6 +76,8 @@ test ! -e .venv-0.7.0-uv &&
 uv venv --offline --python "$(command -v python3)" .venv-0.7.0-uv &&
 uv pip install --offline --no-index --no-deps --python .venv-0.7.0-uv/bin/python ./workeros-download-0.7.0/workeros-0.7.0-py3-none-any.whl
 ```
+
+<a name="run-the-installed-demo"></a>
 
 After installation you can run `.venv-0.7.0/bin/workeros-demo` for pip or
 `.venv-0.7.0-uv/bin/workeros-demo` for uv, without a checkout. For a uv
@@ -187,7 +210,7 @@ A public v0.7.0 release supplies six individually downloadable files and a
 [SHA256SUMS manifest](https://github.com/thisistuhinsen/workerOS/releases/download/v0.7.0/SHA256SUMS).
 Use that manifest from the same release.
 
-| Consumer | Files available upon publication |
+| Consumer | Published files |
 | --- | --- |
 | Python | [Wheel](https://github.com/thisistuhinsen/workerOS/releases/download/v0.7.0/workeros-0.7.0-py3-none-any.whl) and [source distribution](https://github.com/thisistuhinsen/workerOS/releases/download/v0.7.0/workeros-0.7.0.tar.gz) |
 | Node.js | [npm tarball](https://github.com/thisistuhinsen/workerOS/releases/download/v0.7.0/workeros-0.7.0.tgz) |
@@ -203,28 +226,96 @@ local source layout. Those paths only apply when you receive that handoff.
 
 Use Node.js 22+ on Linux x64 or ARM64 with procfs. Install the release npm
 tarball, then run the packaged reader from a launcher that grants it the open
-file. [Node.js install and first read](../node/README.md)
+file. [Node.js install and first read](https://github.com/thisistuhinsen/workerOS/blob/v0.7.0/node/README.md)
+
+From your npm project, download and verify the tarball before adding the
+local dependency. This works with npm 12's default remote URL policy. Keep
+`vendor/workeros-0.7.0.tgz` with your lockfile for `npm ci`.
+
+```sh
+release=https://github.com/thisistuhinsen/workerOS/releases/download/v0.7.0
+mkdir -p vendor &&
+curl -fsSL "$release/SHA256SUMS" -o vendor/SHA256SUMS &&
+curl -fsSL "$release/workeros-0.7.0.tgz" -o vendor/workeros-0.7.0.tgz &&
+(cd vendor &&
+  awk '$2 == "workeros-0.7.0.tgz" { print; n++ } END { if (n != 1) exit 1 }' SHA256SUMS > npm.sha256 &&
+  sha256sum --strict -c npm.sha256) &&
+npm install --offline --ignore-scripts --no-audit --no-fund ./vendor/workeros-0.7.0.tgz
+```
 
 ## C and C++
 
 Use the versioned header-only Conan 2 recipe on Linux. The C and C++ clients
-each receive a file from the launcher. [Conan install and first read](../native/README.md)
+each receive a file from the launcher. [Conan install and first read](https://github.com/thisistuhinsen/workerOS/blob/v0.7.0/native/README.md)
 · [C client](../native/tests/c/) · [C++ client](../native/tests/cpp/)
+
+With Conan 2, curl and GNU coreutils installed, run this in a directory where
+you can create the archive and extracted recipe. Conan may need a default
+profile, created with `conan profile detect`.
+
+```sh
+release=https://github.com/thisistuhinsen/workerOS/releases/download/v0.7.0
+curl -fsSL "$release/SHA256SUMS" -o SHA256SUMS &&
+curl -fsSL "$release/workeros-conan-0.7.0.tar.gz" -o workeros-conan-0.7.0.tar.gz &&
+awk '$2 == "workeros-conan-0.7.0.tar.gz" { print; n++ } END { if (n != 1) exit 1 }' SHA256SUMS > conan.sha256 &&
+sha256sum --strict -c conan.sha256 &&
+tar -xzf workeros-conan-0.7.0.tar.gz &&
+conan create ./workeros-conan-0.7.0 --no-remote
+```
+
+Add `worker-handoff/0.7.0` to your consumer. The walkthrough builds and
+checks separate C and C++ consumers.
 
 ## Go
 
 Use Go 1.22+ on Linux amd64 or arm64. The Go guide explains how to resolve
 the module for this version and launch a compiled reader with an inherited
-input. [Go install and first read](../go/README.md)
+input. [Go install and first read](https://github.com/thisistuhinsen/workerOS/blob/v0.7.0/go/README.md)
+
+In your Go module, resolve the public tag with your normal checksum settings.
+`go.sum` records the verified dependency.
+
+```sh
+go get github.com/thisistuhinsen/workerOS/go/workerhandoff@v0.7.0 &&
+go mod verify
+```
 
 ## Rust
 
 Use Rust 1.85+ on Linux x86-64 or AArch64. Build the reader with Cargo, then
 start its binary with a launcher that supplies the named input.
-[Rust install and first read](../rust/README.md)
+[Rust install and first read](https://github.com/thisistuhinsen/workerOS/blob/v0.7.0/rust/README.md)
+
+In your Cargo project, add the Git dependency and keep the resulting lockfile.
+
+```sh
+cargo add worker-handoff --git https://github.com/thisistuhinsen/workerOS --tag v0.7.0 --rename workeros &&
+cargo build --locked
+```
 
 ## Java
 
 Use JDK 22+ on 64-bit Linux with procfs. The Java guide installs the release
 JAR and matching POM into Maven's local cache and shows the native-access flag
-for the FFM reader. [Maven install and first read](../java/README.md)
+for the FFM reader. [Maven install and first read](https://github.com/thisistuhinsen/workerOS/blob/v0.7.0/java/README.md)
+
+Download the matching JAR and POM and verify both release checksum entries
+before installing them into your Maven local cache. Maven may download its
+install plugin on first use. Use JDK 22+ and GNU coreutils.
+
+```sh
+release=https://github.com/thisistuhinsen/workerOS/releases/download/v0.7.0
+curl -fsSL "$release/SHA256SUMS" -o SHA256SUMS &&
+curl -fsSL "$release/workeros-0.7.0.jar" -o workeros-0.7.0.jar &&
+curl -fsSL "$release/workeros-0.7.0.pom" -o workeros-0.7.0.pom &&
+for asset in workeros-0.7.0.jar workeros-0.7.0.pom; do
+  awk -v asset="$asset" '$2 == asset { print; n++ } END { if (n != 1) exit 1 }' SHA256SUMS > "$asset.sha256" &&
+  sha256sum --strict -c "$asset.sha256" || exit 1
+done &&
+mvn -B -ntp org.apache.maven.plugins:maven-install-plugin:3.1.4:install-file \
+  -Dfile=workeros-0.7.0.jar -DpomFile=workeros-0.7.0.pom
+```
+
+The dependency coordinates are `io.github.thisistuhinsen:worker-handoff:0.7.0`.
+Pass `--enable-native-access=ALL-UNNAMED` to a classpath worker using the FFM
+reader.

@@ -1,6 +1,6 @@
 {
   "name": "workeros",
-  "version": "0.7.0",
+  "version": "0.8.0",
   "description": "Read Linux file descriptors inherited from a workerOS launcher",
   "license": "MIT",
   "private": true,

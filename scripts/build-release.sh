@@ -252,7 +252,7 @@ verify_release() {
     "$python" -I "$root/scripts/check-release-layout.py" "$output" "$source" "$work" "$version"
 
     (
-        cd -- "$work/readme-demo"
+        cd -- "$work/wheel-demo"
         demo=".venv-$version/bin/workeros-demo"
         "$demo" -- /usr/bin/printf 'hello\n' | tee custom.log
         grep -x 'hello' custom.log

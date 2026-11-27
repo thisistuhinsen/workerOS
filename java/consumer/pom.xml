@@ -12,7 +12,7 @@
     <dependency>
       <groupId>io.github.thisistuhinsen</groupId>
       <artifactId>worker-handoff</artifactId>
-      <version>0.7.0</version>
+      <version>0.8.0</version>
     </dependency>
   </dependencies>
   <build>

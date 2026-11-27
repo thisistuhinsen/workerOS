@@ -1,5 +1,5 @@
 [requires]
-worker-handoff/0.7.0
+worker-handoff/0.8.0
 
 [generators]
 CMakeDeps

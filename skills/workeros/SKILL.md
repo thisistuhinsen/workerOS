@@ -25,7 +25,7 @@ The release has six individual assets plus `SHA256SUMS`. Go and Cargo consume
 the tag. A separately supplied `workerOS-0.7.0-offline` directory has its own
 layout and source; do not infer a public bundle URL from that directory name.
 
-### Public wheel after publication
+### Public wheel
 
 Run this in a fresh working directory. An unavailable asset, checksum mismatch
 or missing manifest entry must stop the install. Report that outcome and use
@@ -119,7 +119,7 @@ continue using the intact previous environment.
 | Retain and read back a result | Choose an enrolled projection and a recorder policy with typed routes, destinations, retention and access. Keep the host-assigned attempt ID when returned on stderr. Recover or verify a receipt for that exact attempt before repeating an operation with unknown effects. |
 | Collect real scope measurements | `worker_handoff.scope_meter` samples an already accessible cgroup v2 directory. Keep raw field availability, units, scope and clock context. Verify provider authority and whole-scope coverage separately. |
 
-When v0.7.0 is published, use its [install guide](https://github.com/thisistuhinsen/workerOS/blob/v0.7.0/docs/install.md),
+Use the published v0.7.0 [install guide](https://github.com/thisistuhinsen/workerOS/blob/v0.7.0/docs/install.md),
 [capability matrix](https://github.com/thisistuhinsen/workerOS/blob/v0.7.0/docs/support.md) and
 [JSON policy guide](https://github.com/thisistuhinsen/workerOS/blob/v0.7.0/docs/configuration.md).
 With a matching source tree, open `docs/install.md` for installation,

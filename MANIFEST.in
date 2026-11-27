@@ -1,6 +1,6 @@
 include CONTRIBUTING.md SECURITY.md
 include docs/releasing.md docs/support.md docs/media/README.md
-include docs/install.md docs/package-python.md docs/workers.md docs/regular-file-observer.md
+include docs/install.md docs/install-0.8.0.md docs/package-python.md docs/workers.md docs/regular-file-observer.md
 include docs/api.md docs/configuration.md docs/host-preflight.md
 include docs/brand/README.md docs/brand/*.png skills/workeros/SKILL.md
 include docs/media/custody-lanyard.gif docs/media/fd-7.gif docs/media/one-small-ticket.gif

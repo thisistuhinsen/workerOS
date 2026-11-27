@@ -12,7 +12,10 @@ environment in your Linux shell, for example `. .venv-0.7.0/bin/activate`
 from the bundle root. The command is `workeros-config`;
 `worker-handoff-config` is a compatibility alias for the same entry point.
 Both emit the same JSON invocation schema with `--schema` and use the same
-version 1 contracts. The application can also use the [Python API](api.md).
+version 1 contracts. In v0.8.0, `workeros config` accepts the same arguments
+as `workeros-config`. Both the workflow policy and the invocation use JSON.
+Optional YAML input in v0.8.0 is for [role profiles](host-preflight.md#record-an-administrator-approved-role-declaration).
+The application can also use the [Python API](api.md).
 For a workflow using existing host-provided roles and scopes, see
 [Use an authorized host profile](host-preflight.md). This preflight is separate
 from defining policy, granting access and qualifying independent evidence.

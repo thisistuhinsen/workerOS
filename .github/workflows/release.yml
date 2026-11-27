@@ -180,7 +180,7 @@ jobs:
           releases_for_tag | jq -e 'length == 0' >/dev/null
 
           proof="workerOS release run $GITHUB_RUN_ID/$GITHUB_RUN_ATTEMPT ($GITHUB_SHA)"
-          notes=$(printf 'Release of %s. See the tagged README for package-manager instructions and SHA256SUMS for asset verification.\n\n<!-- %s -->' "$GITHUB_SHA" "$proof")
+          notes=$(printf 'Release of %s. [Install workerOS %s](https://github.com/thisistuhinsen/workerOS/blob/%s/docs/install-%s.md). Verify release assets with SHA256SUMS.\n\n<!-- %s -->' "$GITHUB_SHA" "$tag" "$tag" "$VERSION" "$proof")
           gh release create "$tag" --repo "$GH_REPO" --draft --verify-tag --target "$GITHUB_SHA" \
             --title "workerOS $tag" --notes "$notes" "${assets[@]}"
           id=$(releases_for_tag | jq -er --arg proof "$proof" '

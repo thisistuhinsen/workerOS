@@ -1,13 +1,14 @@
 # workerOS for C and C++
 
-`worker-handoff/0.7.0` is a header-only Conan 2 package for Linux. Both C and
+> These commands use v0.8.0. For the previous release, use the [v0.7.0 guide](https://github.com/thisistuhinsen/workerOS/blob/v0.7.0/native/README.md).
+
+`worker-handoff/0.8.0` is a header-only Conan 2 package for Linux. Both C and
 C++ readers take an already-open regular file from the workerOS launcher.
 The release download uses curl and GNU coreutils (`sha256sum`).
 
 ## Try the public release
 
-After the matching v0.7.0 Conan archive and Python wheel are published,
-[install the Python controller](../docs/install.md#python) and activate its
+[install the Python controller](https://github.com/thisistuhinsen/workerOS/blob/v0.8.0/docs/install-0.8.0.md#python) and activate its
 environment. Install Conan 2, CMake, Make and C and C++ compilers. Set
 `WORKEROS_PYTHON` to use a particular Python interpreter.
 
@@ -18,8 +19,8 @@ environment. Install Conan 2, CMake, Make and C and C++ compilers. Set
     work=$(mktemp -d)
     trap 'rm -rf -- "$work"' EXIT
     cd "$work"
-    release=https://github.com/thisistuhinsen/workerOS/releases/download/v0.7.0
-    archive=workeros-conan-0.7.0.tar.gz
+    release=https://github.com/thisistuhinsen/workerOS/releases/download/v0.8.0
+    archive=workeros-conan-0.8.0.tar.gz
     for file in "$archive" SHA256SUMS; do
         curl --fail --silent --show-error --location "$release/$file" --output "$file"
     done
@@ -27,7 +28,7 @@ environment. Install Conan 2, CMake, Make and C and C++ compilers. Set
         SHA256SUMS > "$archive.sha256"
     sha256sum --strict --check "$archive.sha256"
     tar -xzf "$archive"
-    PYTHON="$python" bash "$work/workeros-conan-0.7.0/check-conan.sh"
+    PYTHON="$python" bash "$work/workeros-conan-0.8.0/check-conan.sh"
 )
 ```
 
@@ -36,10 +37,10 @@ consumer fixtures and the script that launches them with an inherited file.
 
 ## Try the private offline bundle
 
-[Install the Python controller](../docs/install.md#python) and set
+[Install the Python controller](https://github.com/thisistuhinsen/workerOS/blob/v0.8.0/docs/install-0.8.0.md#python) and set
 `WORKEROS_OFFLINE` to the absolute path of the verified
-private `workerOS-0.7.0-offline` directory. The block uses the pip environment.
-For uv, set `WORKEROS_PYTHON="$WORKEROS_OFFLINE/.venv-0.7.0-uv/bin/python"`
+private `workerOS-0.8.0-offline` directory. The block uses the pip environment.
+For uv, set `WORKEROS_PYTHON="$WORKEROS_OFFLINE/.venv-0.8.0-uv/bin/python"`
 first. Install Conan 2, CMake, Make and the C and C++ compilers before
 running this block.
 
@@ -47,11 +48,11 @@ running this block.
 (
     set -eu
     offline=${WORKEROS_OFFLINE:?set WORKEROS_OFFLINE to the extracted bundle directory}
-    python=${WORKEROS_PYTHON:-"$offline/.venv-0.7.0/bin/python"}
+    python=${WORKEROS_PYTHON:-"$offline/.venv-0.8.0/bin/python"}
     work=$(mktemp -d)
     trap 'rm -rf -- "$work"' EXIT
-    tar -xzf "$offline/assets/workeros-conan-0.7.0.tar.gz" -C "$work"
-    PYTHON="$python" bash "$work/workeros-conan-0.7.0/check-conan.sh"
+    tar -xzf "$offline/assets/workeros-conan-0.8.0.tar.gz" -C "$work"
+    PYTHON="$python" bash "$work/workeros-conan-0.8.0/check-conan.sh"
 )
 ```
 
@@ -66,8 +67,8 @@ chosen local Conan cache. Run `conan profile detect` first if that cache
 needs a default profile.
 
 ```sh
-tar -xzf workeros-conan-0.7.0.tar.gz &&
-conan create ./workeros-conan-0.7.0 --no-remote
+tar -xzf workeros-conan-0.8.0.tar.gz &&
+conan create ./workeros-conan-0.8.0 --no-remote
 ```
 
 The [historical v0.4.0 release](https://github.com/thisistuhinsen/workerOS/releases/tag/v0.4.0)
@@ -79,7 +80,7 @@ Use this in your consumer's `conanfile.txt`. With CMake, use
 
 ```ini
 [requires]
-worker-handoff/0.7.0
+worker-handoff/0.8.0
 
 [generators]
 CMakeDeps

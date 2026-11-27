@@ -1,13 +1,15 @@
 # workerOS for Rust
 
+> These commands use v0.8.0. For the previous release, use the [v0.7.0 guide](https://github.com/thisistuhinsen/workerOS/blob/v0.7.0/rust/README.md).
+
 Use Rust 1.85 or later on Linux x86-64 or AArch64. The crate has no Cargo
 dependencies. This example builds a reader in a fresh Cargo project and runs
 it with a read-only file supplied by the Python launcher.
 
 ## Try the public tag
 
-After the matching v0.7.0 tag and Python wheel are published, [install the
-Python controller](../docs/install.md#python) and activate its environment.
+[install the
+Python controller](https://github.com/thisistuhinsen/workerOS/blob/v0.8.0/docs/install-0.8.0.md#python) and activate its environment.
 Run this from any directory. Set `WORKEROS_PYTHON` if you want to point to
 that environment's Python directly.
 
@@ -21,7 +23,7 @@ that environment's Python directly.
     cd "$work"
     cargo new --bin --vcs none worker-reader
     cd worker-reader
-    cargo add worker-handoff --git https://github.com/thisistuhinsen/workerOS --tag v0.7.0 --rename workeros
+    cargo add worker-handoff --git https://github.com/thisistuhinsen/workerOS --tag v0.8.0 --rename workeros
     cat > src/main.rs <<'RUST'
 use std::io;
 use workeros::open_read;
@@ -68,27 +70,27 @@ using the resulting lock.
 
 ## Try the private offline bundle
 
-[Install the Python controller](../docs/install.md#python) and set
+[Install the Python controller](https://github.com/thisistuhinsen/workerOS/blob/v0.8.0/docs/install-0.8.0.md#python) and set
 `WORKEROS_OFFLINE` to the absolute path of the verified
-private `workerOS-0.7.0-offline` directory. The block uses the pip environment.
-For uv, set `WORKEROS_PYTHON="$WORKEROS_OFFLINE/.venv-0.7.0-uv/bin/python"`
+private `workerOS-0.8.0-offline` directory. The block uses the pip environment.
+For uv, set `WORKEROS_PYTHON="$WORKEROS_OFFLINE/.venv-0.8.0-uv/bin/python"`
 first.
 
 ```sh
 (
     set -eu
     offline=${WORKEROS_OFFLINE:?set WORKEROS_OFFLINE to the extracted bundle directory}
-    python=${WORKEROS_PYTHON:-"$offline/.venv-0.7.0/bin/python"}
+    python=${WORKEROS_PYTHON:-"$offline/.venv-0.8.0/bin/python"}
     work=$(mktemp -d)
     trap 'rm -rf -- "$work"' EXIT
-    git clone --quiet --no-checkout "$offline/source/workeros-0.7.0.bundle" "$work/source"
-    git -C "$work/source" checkout --quiet --detach refs/tags/v0.7.0
+    git clone --quiet --no-checkout "$offline/source/workeros-0.8.0.bundle" "$work/source"
+    git -C "$work/source" checkout --quiet --detach refs/tags/v0.8.0
     export CARGO_HOME="$work/cargo"
     export GIT_ALLOW_PROTOCOL=file CARGO_NET_GIT_FETCH_WITH_CLI=true
     cd "$work"
     cargo new --bin --vcs none worker-reader
     cd worker-reader
-    cargo add worker-handoff --git "file://$work/source" --tag v0.7.0 --rename workeros
+    cargo add worker-handoff --git "file://$work/source" --tag v0.8.0 --rename workeros
     cat > src/main.rs <<'RUST'
 use std::io;
 use workeros::open_read;

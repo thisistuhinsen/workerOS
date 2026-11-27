@@ -1,0 +1,221 @@
+"""Installed unified entry points; YAML loader is optional and fixture-only."""
+import json
+import os
+from pathlib import Path
+import pwd
+import pty
+import shutil
+import subprocess
+import sys
+import tempfile
+import unittest
+
+
+class UnifiedCliTest(unittest.TestCase):
+    def setUp(self):
+        self.bin=Path(sys.prefix)/'bin'
+        self.tmp=tempfile.TemporaryDirectory(); self.addCleanup(self.tmp.cleanup)
+        self.root=Path(self.tmp.name); self.root.chmod(0o700)
+        self.principal=pwd.getpwuid(os.geteuid()).pw_name
+        self.document={'version':1,'profile':'custom','revision':'v1','roles':[{'name':'reader',
+            'principal':self.principal,'operations':['read'],'scopes':['archive'],'expires_at':4102444800}]}
+        self.yaml=('version: 1\nprofile: custom\nrevision: v1\nroles:\n  - name: reader\n'
+                   '    principal: '+self.principal+'\n    operations: [read]\n    scopes: [archive]\n'
+                   '    expires_at: 4102444800\n')
+
+    def call(self,name,args=(),data=None,env=None):
+        return subprocess.run([str(self.bin/name),*args],input=data,text=True,capture_output=True,timeout=8,env=env)
+
+    def patched(self,python,entry,args,data):
+        code=('import sys,runpy; import worker_handoff.roles_cli as r; '
+              'r._PARENT=sys.argv[1]; r._UID=int(sys.argv[2]); '
+              'sys.argv=[sys.argv[3]]+sys.argv[4:]; runpy.run_path(sys.argv[0],run_name="__main__")')
+        return subprocess.run([str(python),'-I','-c',code,str(self.root),str(os.getuid()),str(entry),*args],
+                              input=data,text=True,capture_output=True,timeout=8)
+
+    def test_bare_alias_help_and_redirected_no_color(self):
+        environment=dict(os.environ,NO_COLOR='1',TERM='dumb')
+        left=self.call('workeros',env=environment); right=self.call('wos',env=environment)
+        self.assertEqual((left.returncode,right.returncode),(0,0))
+        self.assertEqual(left.stdout,right.stdout)
+        self.assertIn('Run a job. Know how it ended.',left.stdout)
+        self.assertIn('workeros help config',left.stdout)
+        self.assertIn('workeros roles guide',left.stdout)
+        self.assertIn('workeros help formats',left.stdout)
+        self.assertIn('workeros managed reconcile',left.stdout)
+        self.assertNotIn('\x1b',left.stdout)
+        self.assertEqual(left.stderr,'')
+
+    def test_topics_and_subcommand_help_are_actionable(self):
+        for args,expected in ((['help','install'],'--no-index'),(['help','run'],'workeros run --'),(['help','file'],'run_inherited_fd.py'),(['help','formats'],'duplicate keys'),
+                              (['help','install'],'docs/install.md'),(['help','config'],'#run-a-fileless-worker'),
+                              (['help','formats'],'yaml_dependency_missing'),
+                              (['roles','--help'],'grant-check'),(['roles','apply','--help'],'creates no principal'),
+                              (['managed','--help'],'reconcile')):
+            with self.subTest(args=args):
+                result=self.call('workeros',args)
+                self.assertEqual(result.returncode,0,result.stderr)
+                self.assertIn(expected,result.stdout)
+                self.assertNotIn('\x1b',result.stdout)
+
+    def test_installed_run_alias_and_legacy_parity(self):
+        outputs=[]
+        for name,args in (('workeros',['run','--','/usr/bin/printf','hello\n']),
+                          ('wos',['run','--','/usr/bin/printf','hello\n']),
+                          ('workeros-demo',['--','/usr/bin/printf','hello\n'])):
+            result=self.call(name,args); self.assertEqual(result.returncode,0,result.stderr); outputs.append(result.stdout)
+        self.assertEqual(outputs,['hello\njob: exited 0\n']*3)
+
+    def test_fresh_offline_install_first_job(self):
+        wheel=os.environ.get('WORKEROS_TEST_WHEEL')
+        if not wheel: self.skipTest('exact wheel path not supplied')
+        local=self.root/Path(wheel).name; shutil.copyfile(wheel,local)
+        venv = self.root/"reader's test env"
+        created=subprocess.run([sys.executable,'-m','venv',str(venv)],capture_output=True,text=True,timeout=20)
+        self.assertEqual(created.returncode,0,created.stderr)
+        py=venv/'bin'/'python'
+        installed=subprocess.run([str(py),'-m','pip','install','--no-index','--no-deps',str(local)],
+                                 capture_output=True,text=True,timeout=20)
+        self.assertEqual(installed.returncode,0,installed.stderr)
+        cli=venv/'bin'/'workeros'
+        result=subprocess.run([str(cli),'run','--','/usr/bin/printf','hello\n'],
+                              cwd=self.root,capture_output=True,text=True,timeout=8)
+        self.assertEqual((result.returncode,result.stdout),(0,'hello\njob: exited 0\n'))
+        help_result = subprocess.run([str(cli),'help','file'], cwd=self.root,
+                                     capture_output=True,text=True,timeout=8)
+        self.assertEqual(help_result.returncode,0,help_result.stderr)
+        alias_result = subprocess.run([str(cli.with_name('wos')),'help','file'], cwd=self.root,
+                                      capture_output=True,text=True,timeout=8)
+        self.assertEqual((alias_result.returncode,alias_result.stdout),(0,help_result.stdout))
+        literal = next(line.strip() for line in help_result.stdout.splitlines() if line.startswith('  '))
+        example = subprocess.run(['sh','-c',literal], cwd=self.root,
+                                 capture_output=True,text=True,timeout=12)
+        self.assertEqual(example.returncode,0,example.stderr)
+        self.assertIn('Python: PASSED',example.stdout)
+
+    def test_json_schema_and_managed_preview_match_legacy(self):
+        self.assertEqual(self.call('workeros',['config','--schema']).stdout,self.call('workeros-config',['--schema']).stdout)
+        new=self.call('workeros',['managed','preview']); old=self.call('workeros-managed',['preview'])
+        self.assertEqual((new.returncode,new.stdout),(old.returncode,old.stdout))
+
+    def test_role_preview_matches_legacy_and_status_alias(self):
+        python=Path(sys.executable)
+        document=json.dumps(self.document)
+        new=self.patched(python,self.bin/'workeros',['roles','preview'],document)
+        old=self.patched(python,self.bin/'workeros-roles',['preview'],document)
+        self.assertEqual((new.returncode,new.stdout),(old.returncode,old.stdout))
+        apply=self.patched(python,self.bin/'workeros',['roles','apply'],document)
+        self.assertEqual(apply.returncode,0,apply.stderr)
+        status=self.patched(python,self.bin/'workeros',['roles','status','custom','v1'],None)
+        show=self.patched(python,self.bin/'workeros-roles',['show','custom','v1'],None)
+        self.assertEqual((status.returncode,status.stdout),(show.returncode,show.stdout))
+
+    def test_missing_yaml_is_actionable_and_no_effect(self):
+        result=self.call('workeros',['roles','preview','--format','yaml'],self.yaml)
+        if result.returncode==0: self.skipTest('default test environment has PyYAML')
+        receipt=json.loads(result.stdout)
+        self.assertEqual((receipt['code'],receipt['effect']),('yaml_dependency_missing','not_attempted'))
+        self.assertIn('PyYAML',receipt['next_action'])
+        self.assertNotIn('\x1b',result.stdout)
+        self.assertFalse((self.root/'workeros').exists())
+
+    def test_json_yaml_same_schema_and_revision(self):
+        yaml_python=os.environ.get('WORKEROS_YAML_PYTHON')
+        if not yaml_python: self.skipTest('optional preinstalled YAML test environment unavailable')
+        py=Path(yaml_python); entry=py.parent/'workeros'
+        source=json.dumps(self.document)
+        preview_json=self.patched(py,entry,['roles','preview'],source)
+        preview_yaml=self.patched(py,entry,['roles','preview','--format','yaml'],self.yaml)
+        self.assertEqual((preview_json.returncode,preview_yaml.returncode),(0,0),preview_yaml.stderr)
+        self.assertEqual(json.loads(preview_json.stdout),json.loads(preview_yaml.stdout))
+        apply_json=self.patched(py,entry,['roles','apply'],source)
+        apply_yaml=self.patched(py,entry,['roles','apply','--format','yaml'],self.yaml)
+        one,two=json.loads(apply_json.stdout),json.loads(apply_yaml.stdout)
+        self.assertEqual((apply_json.returncode,apply_yaml.returncode),(0,0))
+        self.assertEqual(one['digest'],two['digest'])
+        self.assertEqual((one['effect'],two['effect']),('recorded','unchanged'))
+
+    def test_unsafe_yaml_and_duplicate_json_refuse_without_store(self):
+        yaml_python=os.environ.get('WORKEROS_YAML_PYTHON')
+        if not yaml_python: self.skipTest('optional preinstalled YAML test environment unavailable')
+        py=Path(yaml_python); entry=py.parent/'workeros'
+        cases=['version: 1\nversion: 1\n','a: &x 1\nb: *x\n','a: 1\n---\na: 2\n',
+               'a: !!python/object:builtins.object {}\n','true: value\n', 'a: '+('x'*65537)]
+        for value in cases:
+            with self.subTest(value=value[:40]):
+                result=self.patched(py,entry,['roles','apply','--format','yaml'],value)
+                receipt=json.loads(result.stdout)
+                self.assertEqual(result.returncode,1)
+                self.assertEqual(receipt['effect'],'not_attempted')
+                self.assertIn(receipt['code'],('invalid_yaml','document_too_large'))
+                self.assertFalse((self.root/'workeros').exists())
+        duplicate='{"version":1,"version":1}'
+        result=self.patched(py,entry,['roles','apply'],duplicate)
+        self.assertNotEqual(result.returncode,0)
+        self.assertFalse((self.root/'workeros').exists())
+
+    def test_unknown_command_and_missing_action_return_json(self):
+        for args,code in ((['nope'],'unknown_command'),(['run'],'command_required'),
+                          (['roles','preview','--format','toml'],'invalid_format')):
+            result=self.call('workeros',args)
+            self.assertEqual(result.returncode,1)
+            self.assertEqual(json.loads(result.stdout)['code'],code)
+            self.assertNotIn('\x1b',result.stdout)
+
+    def test_draft_is_valid_profile_without_writes_or_authority(self):
+        args=['roles','draft','--profile','custom','--revision','v1','--role','reader',
+              '--principal',self.principal,'--scope','archive','--expires-at','4102444800']
+        result=self.call('wos',args)
+        self.assertEqual(result.returncode,0,result.stderr)
+        self.assertEqual(json.loads(result.stdout),self.document)
+        self.assertFalse((self.root/'workeros').exists())
+        bad=self.call('workeros',['roles','draft','--profile','custom'])
+        self.assertEqual((bad.returncode,json.loads(bad.stdout)['code']),(1,'invalid_draft'))
+
+    def guided(self,entries):
+        master,slave=pty.openpty()
+        try:
+            process=subprocess.Popen([str(self.bin/'workeros'),'roles','guide'],stdin=slave,
+                                     stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True,
+                                     env=dict(os.environ,NO_COLOR='1',TERM='dumb'))
+            os.close(slave); slave=None
+            os.write(master,entries.encode())
+            out,err=process.communicate(timeout=8)
+            return process.returncode,out,err
+        finally:
+            if slave is not None: os.close(slave)
+            os.close(master)
+
+    def test_tty_guide_back_output_and_runnable_preview(self):
+        entries='custom\nv1\noldrole\nback\nreader\n'+self.principal+'\narchive\n4102444800\n\n\n'
+        code,out,err=self.guided(entries)
+        self.assertEqual(code,0,err)
+        self.assertEqual(json.loads(out),self.document)
+        self.assertIn('No files or access changed.',err)
+        self.assertNotIn('\x1b',err)
+        self.assertIn('independently installed, trusted WorkerOS',err)
+        command=err.split('then preview:\n  ',1)[1].strip()
+        self.assertIn('"$ADMIN_WORKEROS" roles preview',command)
+        self.assertNotIn(str(self.bin),command)
+        result=subprocess.run(['sh','-c',command],capture_output=True,text=True,timeout=8,
+                              env=dict(os.environ,ADMIN_WORKEROS=str(self.bin/'workeros')))
+        if os.geteuid()!=0:
+            self.assertEqual((result.returncode,json.loads(result.stdout)['code']),(1,'administrator_required'))
+        self.assertFalse((self.root/'workeros').exists())
+
+    def test_tty_guide_custom_operations(self):
+        other=pwd.getpwnam('nobody')
+        if other.pw_uid == os.getuid(): self.skipTest('distinct fixture principal unavailable')
+        entries='custom\nv1\nreader\n'+self.principal+'\narchive\n4102444800\nread,write,observe\nnobody\n'
+        code,out,err=self.guided(entries)
+        self.assertEqual(code,0,err)
+        self.assertEqual(json.loads(out)['roles'][0]['operations'],['read','write','observe'])
+        self.assertEqual(json.loads(out)['roles'][0]['independent_of'],'nobody')
+        self.assertFalse((self.root/'workeros').exists())
+
+    def test_tty_guide_cancel_and_non_tty_refusal(self):
+        code,out,err=self.guided('cancel\n')
+        self.assertEqual((code,json.loads(out)),(1,{'status':'cancelled','effect':'not_attempted'}))
+        result=self.call('workeros',['roles','guide'],data='')
+        self.assertEqual((result.returncode,json.loads(result.stdout)['code']),(1,'tty_required'))
+        self.assertFalse((self.root/'workeros').exists())

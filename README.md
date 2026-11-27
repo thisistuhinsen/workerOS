@@ -34,11 +34,26 @@ hello
 job: exited 0
 ```
 
-Replace the `printf` command
-with a command you trust. The GitHub wheel is pinned by its SHA-256.
+Replace the `printf` command with a command you trust. The GitHub wheel is
+pinned by its SHA-256. To discover newer versions and their install guides,
+see the [latest stable release](https://github.com/thisistuhinsen/workerOS/releases/latest).
 
-[Install with uv, verify downloads, or work offline](docs/install.md#python) ·
-[See the timeout and cleanup demo](#try-a-timeout)
+[Install with uv, verify downloads, or work offline](docs/install.md#python)
+
+### Choose how to use workerOS
+
+- **From your terminal.** [Try a timeout and check cleanup](#try-a-timeout)
+  or [give a worker an open file](#give-a-worker-the-file-you-opened).
+- **With a config file.** [Run a workflow from JSON](docs/configuration.md#run-a-fileless-worker).
+  In v0.8.0, [draft a role profile in the terminal or preview one from JSON or YAML](docs/host-preflight.md#record-an-administrator-approved-role-declaration).
+  The host administrator approves roles and supplies access separately.
+- **From your code.** [Start jobs with the Python API](docs/api.md#launch-and-supervise-workers),
+  [write a reader in your language](#language-packages), or
+  [call the JSON command from any of the seven languages](docs/configuration.md#run-the-same-configuration-from-seven-languages).
+
+The quickstart above installs v0.7.0. If you have v0.8.0, use its
+[install guide](docs/install-0.8.0.md) and run `workeros help` (or `wos`)
+from that environment.
 
 [![The dashboard shows every worker in green. Audit never started, so the lead says to promote Audit.](docs/media/one-small-ticket.gif)](docs/media/README.md#everything-is-green)
 
@@ -94,7 +109,7 @@ who can read them, and when stored records may be removed.
 
 [Run the local host profile](docs/host-preflight.md#run-the-local-profile) to
 hand an open file to a reader and verify its terminal record in one session
-you own. The same guide describes connecting an existing host manager.
+you own. For managed setup, see [the authorized host setup guide](docs/host-preflight.md#installed-no-start-host-command).
 
 ## Fit it into your app
 

@@ -22,7 +22,7 @@ SOURCE_NAME = f"workeros-{VERSION}"
 PUBLIC_DOCS = {
     "CONTRIBUTING.md", "SECURITY.md", "docs/releasing.md", "docs/support.md",
     "docs/media/README.md", "docs/media/custody-lanyard.gif", "docs/media/fd-7.gif", "docs/media/one-small-ticket.gif",
-    "docs/install.md", "docs/package-python.md", "docs/workers.md",
+    "docs/install.md", "docs/install-0.8.0.md", "docs/package-python.md", "docs/workers.md",
     "docs/api.md", "docs/configuration.md", "docs/host-preflight.md",
     "docs/regular-file-observer.md", "skills/workeros/SKILL.md",
     "go/README.md", "java/README.md", "native/README.md", "node/README.md", "rust/README.md",
@@ -155,8 +155,13 @@ def check_wheel(path, source):
         check(archive.read(schema) == (source / "src" / schema).read_bytes(), "installed schema differs from source")
         check(archive.read(f"{info}entry_points.txt").splitlines() == [
             b"[console_scripts]", b"worker-handoff-config = worker_handoff.configuration_cli:main",
+            b"workeros = worker_handoff.cli:main",
             b"workeros-config = worker_handoff.configuration_cli:main",
             b"workeros-demo = worker_handoff.quickstart:main",
+            b"workeros-managed = worker_handoff.managed_cli:main",
+            b"workeros-owner-access = worker_handoff.owner_access:main",
+            b"workeros-roles = worker_handoff.roles_cli:main",
+            b"wos = worker_handoff.cli:main",
         ], "unexpected Python entry points")
         wheel = BytesParser().parsebytes(archive.read(f"{info}WHEEL"))
         check(wheel.get_all("Tag") == ["py3-none-any"], "wheel is not architecture-independent")

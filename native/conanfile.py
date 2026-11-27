@@ -6,7 +6,7 @@ from pathlib import Path
 
 class WorkerHandoffRecipe(ConanFile):
     name = "worker-handoff"
-    version = "0.7.0"
+    version = "0.8.0"
     package_type = "header-library"
     license = "MIT"
     url = "https://github.com/thisistuhinsen/workerOS"
