@@ -32,8 +32,10 @@ after checking its digest and runs a job without a checkout.
 ```
 
 Look for `report: exited 0`, `slow job: timed out` and `cleanup: reaped`.
-Use the [install guide](https://github.com/thisistuhinsen/workerOS/blob/v0.8.0/docs/install-0.8.0.md)
-for uv and source installs, migration, or a separately supplied offline handoff.
+Run `.venv-0.8.0/bin/workeros help` for the available commands.
+See [uv, source and offline installs](https://github.com/thisistuhinsen/workerOS/blob/v0.8.0/docs/install-0.8.0.md),
+[upgrade and rollback](https://github.com/thisistuhinsen/workerOS/blob/v0.8.0/docs/install-0.8.0.md#upgrade-and-roll-back),
+and [failed or uncertain jobs](https://github.com/thisistuhinsen/workerOS/blob/v0.8.0/docs/support.md#troubleshooting).
 Keep using `import worker_handoff` in your code. Keep your previous environment
 until the new one passes its checks.
 

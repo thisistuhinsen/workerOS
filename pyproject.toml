@@ -13,7 +13,9 @@ dependencies = []
 
 [project.urls]
 Homepage = "https://github.com/thisistuhinsen/workerOS"
-Documentation = "https://github.com/thisistuhinsen/workerOS/blob/main/docs/install.md"
+Documentation = "https://github.com/thisistuhinsen/workerOS/blob/v0.8.0/docs/install-0.8.0.md"
+Upgrade = "https://github.com/thisistuhinsen/workerOS/blob/v0.8.0/docs/install-0.8.0.md#upgrade-and-roll-back"
+Troubleshooting = "https://github.com/thisistuhinsen/workerOS/blob/v0.8.0/docs/support.md#troubleshooting"
 Issues = "https://github.com/thisistuhinsen/workerOS/issues"
 
 [project.scripts]

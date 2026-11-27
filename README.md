@@ -17,8 +17,13 @@ When a worker needs a file, give it the open file rather than the pathname.
 ## Install and run
 
 Open a **Linux or Ubuntu WSL2 terminal** with Python 3.11+ and `venv`.
-Paste this block in a folder where you can create a virtual environment.
-No clone, `sudo`, or separate download step. [Other platforms and setup help](docs/support.md#windows-and-macos)
+
+**New install.** Open the [latest published release](https://github.com/thisistuhinsen/workerOS/releases/latest)
+for its install guide and `SHA256SUMS`. The [v0.8.0 guide](docs/install-0.8.0.md)
+covers its release assets and verified offline bundles.
+
+**Pinned v0.7.0 quickstart.** Paste this block in a folder where you can create
+a virtual environment. [Other platforms and setup help](docs/support.md#windows-and-macos)
 
 ```sh
 python3 -m venv .venv-0.7.0 &&
@@ -34,11 +39,10 @@ hello
 job: exited 0
 ```
 
-Replace the `printf` command with a command you trust. The GitHub wheel is
-pinned by its SHA-256. To discover newer versions and their install guides,
-see the [latest stable release](https://github.com/thisistuhinsen/workerOS/releases/latest).
-
-[Install with uv, verify downloads, or work offline](docs/install.md#python)
+Replace `printf` with a command you trust. This quickstart checks a pinned
+SHA-256. Use the [tagged v0.7.0 guide](https://github.com/thisistuhinsen/workerOS/blob/v0.7.0/docs/install.md)
+for uv, offline installs or rollback. Keep the existing environment until a
+replacement has passed its checks.
 
 ### Choose how to use workerOS
 
@@ -51,14 +55,14 @@ see the [latest stable release](https://github.com/thisistuhinsen/workerOS/relea
   [write a reader in your language](#language-packages), or
   [call the JSON command from any of the seven languages](docs/configuration.md#run-the-same-configuration-from-seven-languages).
 
-The quickstart above installs v0.7.0. If you have v0.8.0, use its
-[install guide](docs/install-0.8.0.md) and run `workeros help` (or `wos`)
-from that environment.
+In v0.8.0, `workeros help` (or `wos`) shows install and recovery links. If a
+job fails or its effect is unknown, follow
+[troubleshooting](docs/support.md#troubleshooting) before retrying.
 
-[![The dashboard shows every worker in green. Audit never started, so the lead says to promote Audit.](docs/media/one-small-ticket.gif)](docs/media/README.md#everything-is-green)
+[![WorkerOS comic opening frame. The lead says all three workers are green.](docs/media/one-small-ticket.gif)](docs/media/README.md#everything-is-green)
 
 [Open the animation](docs/media/one-small-ticket.gif?raw=true) ·
-[Read the comic](docs/media/README.md#everything-is-green)
+[Read the full comic transcript](docs/media/README.md#everything-is-green)
 
 ### Try a timeout
 
@@ -78,21 +82,25 @@ If setup fails or shutdown or effects are uncertain, use the
 ## Language packages
 
 Already have a command that does the work? Use it as it is, whichever
-language it was written in. The [Python launcher install](docs/install.md#python)
-starts and supervises commands. Pick a package below when your worker
+language it was written in. The Python launcher starts and supervises
+commands. Pick a package below when your worker
 needs to read a file the app hands it.
 
-| Language | Install and try an example |
-| --- | --- |
-| <img src="docs/brand/language-python.png" alt="" width="20" height="20"> Python | [<img src="docs/brand/manager-pip.png" alt="" width="14" height="14"> `pip` or <img src="docs/brand/manager-uv.png" alt="" width="14" height="14"> `uv`](docs/install.md#python) |
-| <img src="docs/brand/language-node.png" alt="" width="20" height="20"> Node.js | [<img src="docs/brand/manager-npm.png" alt="" width="14" height="14"> `npm`](docs/install.md#nodejs) |
-| <img src="docs/brand/language-c.png" alt="" width="20" height="20"> C | [<img src="docs/brand/manager-conan.png" alt="" width="14" height="14"> `Conan 2`](docs/install.md#c-and-c) |
-| <img src="docs/brand/language-cpp.png" alt="" width="20" height="20"> C++ | [<img src="docs/brand/manager-conan.png" alt="" width="14" height="14"> `Conan 2`](docs/install.md#c-and-c) |
-| <img src="docs/brand/language-go.png" alt="" width="20" height="20"> Go | [<img src="docs/brand/manager-go.png" alt="" width="14" height="14"> `Go modules`](docs/install.md#go) |
-| <img src="docs/brand/language-rust.png" alt="" width="20" height="20"> Rust | [<img src="docs/brand/manager-cargo.png" alt="" width="14" height="14"> `Cargo`](docs/install.md#rust) |
-| <img src="docs/brand/language-java.png" alt="" width="20" height="20"> Java | [<img src="docs/brand/manager-maven.png" alt="" width="14" height="14"> `Maven`](docs/install.md#java) |
+Choose the column for your version. The v0.8.0 guide uses its release or a
+verified offline bundle. GitHub hosts the assets and source tags.
 
-[Downloads and checksums](docs/install.md#verify-downloads)
+| Language | Pinned v0.7.0 | v0.8.0 guide |
+| --- | --- | --- |
+| <img src="docs/brand/language-python.png" alt="" width="20" height="20"> Python | [<img src="docs/brand/manager-pip.png" alt="" width="14" height="14"> `pip` or <img src="docs/brand/manager-uv.png" alt="" width="14" height="14"> `uv`](https://github.com/thisistuhinsen/workerOS/blob/v0.7.0/docs/install.md#python) | [v0.8.0](docs/install-0.8.0.md#python) |
+| <img src="docs/brand/language-node.png" alt="" width="20" height="20"> Node.js | [<img src="docs/brand/manager-npm.png" alt="" width="14" height="14"> `npm`](https://github.com/thisistuhinsen/workerOS/blob/v0.7.0/docs/install.md#nodejs) | [v0.8.0](docs/install-0.8.0.md#nodejs) |
+| <img src="docs/brand/language-c.png" alt="" width="20" height="20"> C | [<img src="docs/brand/manager-conan.png" alt="" width="14" height="14"> `Conan 2`](https://github.com/thisistuhinsen/workerOS/blob/v0.7.0/docs/install.md#c-and-c) | [v0.8.0](docs/install-0.8.0.md#c-and-c) |
+| <img src="docs/brand/language-cpp.png" alt="" width="20" height="20"> C++ | [<img src="docs/brand/manager-conan.png" alt="" width="14" height="14"> `Conan 2`](https://github.com/thisistuhinsen/workerOS/blob/v0.7.0/docs/install.md#c-and-c) | [v0.8.0](docs/install-0.8.0.md#c-and-c) |
+| <img src="docs/brand/language-go.png" alt="" width="20" height="20"> Go | [<img src="docs/brand/manager-go.png" alt="" width="14" height="14"> `Go modules`](https://github.com/thisistuhinsen/workerOS/blob/v0.7.0/docs/install.md#go) | [v0.8.0](docs/install-0.8.0.md#go) |
+| <img src="docs/brand/language-rust.png" alt="" width="20" height="20"> Rust | [<img src="docs/brand/manager-cargo.png" alt="" width="14" height="14"> `Cargo`](https://github.com/thisistuhinsen/workerOS/blob/v0.7.0/docs/install.md#rust) | [v0.8.0](docs/install-0.8.0.md#rust) |
+| <img src="docs/brand/language-java.png" alt="" width="20" height="20"> Java | [<img src="docs/brand/manager-maven.png" alt="" width="14" height="14"> `Maven`](https://github.com/thisistuhinsen/workerOS/blob/v0.7.0/docs/install.md#java) | [v0.8.0](docs/install-0.8.0.md#java) |
+
+[Current release and checksums](https://github.com/thisistuhinsen/workerOS/releases/latest) ·
+[Pinned v0.7.0 downloads and checksums](https://github.com/thisistuhinsen/workerOS/blob/v0.7.0/docs/install.md#verify-downloads)
 
 ## Configure a workflow once
 

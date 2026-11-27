@@ -1,7 +1,8 @@
 # Install workerOS 0.8.0
 
-These commands install v0.8.0. For the prior release, use the
-[v0.7.0 install guide](https://github.com/thisistuhinsen/workerOS/blob/v0.7.0/docs/install.md).
+Use this guide when the v0.8.0 GitHub release and tag are available or you
+have a verified v0.8.0 offline bundle. For an explicit v0.7.0 install or
+rollback, use the [tagged v0.7.0 guide](https://github.com/thisistuhinsen/workerOS/blob/v0.7.0/docs/install.md).
 
 Use **Linux or Ubuntu in WSL2**, Python 3.11+ with venv support, and usable
 Linux pidfds for the demo. Native Windows Python can install the wheel;
@@ -137,34 +138,31 @@ To try the inherited-file example, run `.venv-0.8.0/bin/workeros help file`
 or `.venv-0.8.0-uv/bin/workeros help file`. The printed command uses the
 interpreter and example from that installation.
 
+<a name="upgrade-and-roll-back"></a>
+
 **Upgrade and roll back.** Both distribution names install the
 `worker_handoff` import. A helper that still requires `worker-handoff` can
 bring the old distribution into the new environment. After installing your
-application's dependencies, check which distribution owns the running import.
-For the pip environment, run:
+application's dependencies, use the checksum from the trusted release
+manifest to compare the running import with the pinned wheel. From the
+offline bundle directory, check the pip environment:
 
 ```sh
-.venv-0.8.0/bin/python -m pip check &&
-.venv-0.8.0/bin/python -I - <<'PY'
-from importlib.metadata import distribution, packages_distributions
-from pathlib import Path
-import sys
-
-owners = packages_distributions().get("worker_handoff", [])
-package = distribution("workeros")
-print("owners:", owners, "version:", package.version)
-assert owners == ["workeros"] and package.version == "0.8.0"
-import worker_handoff
-
-actual = Path(worker_handoff.__file__).resolve()
-print("import:", actual)
-assert actual == Path(package.locate_file("worker_handoff/__init__.py")).resolve()
-assert actual.is_relative_to(Path(sys.prefix).resolve())
-PY
+(
+  set -eu
+  wheel=workeros-0.8.0-py3-none-any.whl
+  digest=$(awk -v wheel="$wheel" '$2 == wheel { print $1; n++ } END { if (n != 1) exit 1 }' assets/SHA256SUMS)
+  .venv-0.8.0/bin/python -m pip check
+  .venv-0.8.0/bin/python -I -m worker_handoff.verify_install "assets/$wheel" --sha256 "$digest"
+)
 ```
 
+Look for `"status": "matched"` and version `0.8.0`. With the public download
+steps above, use `workeros-download-0.8.0` in place of `assets` in both paths.
 For uv, use `uv pip check --python .venv-0.8.0-uv/bin/python` for the
-dependency check and `.venv-0.8.0-uv/bin/python -I` for the Python check.
+dependency check and `.venv-0.8.0-uv/bin/python` for verification.
+A repeated path to the same install is allowed. Separate installs or another
+distribution owning `worker_handoff` refuse with `ambiguous_distribution`.
 If an editable install or transitive helper brings in the old distribution,
 update the project's pins or upgrade to a compatible helper, then resolve in
 another clean environment. Switch

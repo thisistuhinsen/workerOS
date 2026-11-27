@@ -92,7 +92,7 @@ runpy.run_path(sys.argv[0], run_name='__main__')
                 '  - name: catalog_curator\n'
                 f'    principal: {json.dumps(self.user)}\n'
                 '    operations: [read, observe]\n    scopes: [east_archive]\n    expires_at: 4102444800\n')
-        code, json_receipt = self.commission_document(json.dumps(self.doc))
+        code, json_receipt = self.commission_document(json.dumps(self.doc), python=yaml_python)
         self.assertEqual(code, 0)
         with tempfile.TemporaryDirectory() as yaml_store:
             code, yaml_receipt = self.commission_document(yaml, '--format', 'yaml', root=yaml_store,
@@ -101,6 +101,39 @@ runpy.run_path(sys.argv[0], run_name='__main__')
         self.assertEqual(yaml_receipt['declaration_sha256'], json_receipt['declaration_sha256'])
         self.assertEqual(yaml_receipt['intent_sha256'], sha256(yaml.encode()).hexdigest())
         self.assertNotEqual(yaml_receipt['intent_sha256'], json_receipt['intent_sha256'])
+
+    def test_yaml_refuses_ambiguous_scalars_and_explicit_tags(self):
+        yaml_python=os.environ.get('WORKEROS_YAML_PYTHON')
+        if not yaml_python: self.skipTest('optional installed PyYAML environment unavailable')
+        py=Path(yaml_python); entry=py.parent/'workeros'
+        base=('version: 1\nprofile: custom_archive\nrevision: revision_1\nroles:\n'
+              '  - name: catalog_curator\n    principal: '+json.dumps(self.user)+'\n'
+              '    operations: [read]\n    scopes: [east_archive]\n    expires_at: 4102444800\n')
+        cases=(('version: 01\n','legacy octal-like integer'),
+               ('profile: on\n','YAML 1.1 boolean word'),
+               ('revision: 2026-11-27\n','implicit timestamp'),
+               ('profile: !!str custom_archive\n','explicit standard tag'),
+               ('profile: !custom custom_archive\n','explicit custom tag'))
+        for fragment,label in cases:
+            with self.subTest(label=label):
+                if fragment.startswith('profile:'):
+                    raw=base.replace('profile: custom_archive\n',fragment)
+                elif fragment.startswith('version:'):
+                    raw=base.replace('version: 1\n',fragment)
+                else:
+                    raw=base.replace('revision: revision_1\n',fragment)
+                result=self.command(['managed','commission-apply','--format','yaml'],raw,
+                                    entry='workeros',python=py)
+                self.assertEqual(result.returncode,1,result.stdout+result.stderr)
+                receipt=json.loads(result.stdout)
+                self.assertEqual((receipt['code'],receipt['effect']),('invalid_yaml','not_attempted'))
+                self.assertFalse((self.root/'workeros').exists())
+
+        # The JSON path remains dependency-free and keeps its original bytes
+        # as the intent digest even when the YAML extra is installed.
+        result=self.command(['managed','commission-apply'],json.dumps(self.doc),entry='workeros',python=py)
+        self.assertEqual(result.returncode,0,result.stdout+result.stderr)
+        self.assertEqual(json.loads(result.stdout)['intent_sha256'],sha256(json.dumps(self.doc).encode()).hexdigest())
 
     def test_commission_apply_reconciles_interruption_without_rollback(self):
         for interruption, expected in (('before', 'unconfigured'), ('after', 'configured')):

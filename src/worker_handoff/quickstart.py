@@ -73,3 +73,74 @@ def main(argv=None):
         return 1
     slow = _run("slow job", (sys.executable, "-c", "import time; time.sleep(10)"), 1)
     return int(slow is None or slow[:2] != (LifecycleStatus.TIMED_OUT, CleanupStatus.REAPED))
+
+
+def run_json(argv, *, wait_seconds=5):
+    """Run one direct child and emit one structured, effect-cautious result."""
+    import json
+    from .configuration import _clean, _terminal, _wire
+    from .supervisor import CleanupResult, SupervisionResult
+
+    if not argv or any(type(arg) is not str or "\x00" in arg for arg in argv):
+        print(json.dumps({"status": "refused", "effect": "not_attempted",
+                          "code": "command_required"}, separators=(",", ":")))
+        return 1
+    due_ns = monotonic_ns() + wait_seconds * SECOND
+    cleanup_due_ns = due_ns + 2 * SECOND
+    supervisor = DirectChildSupervisor()
+    try:
+        supervisor.start_executable(
+            "run", "command", argv, due_ns=due_ns, stdout=2, stderr=2)
+    except SupervisionStartError as exc:
+        process = exc.process
+        reaped = False
+        try:
+            remaining = max(0, cleanup_due_ns - monotonic_ns())
+            if process.poll() is None and remaining:
+                process.kill()
+            process.wait(timeout=max(0, cleanup_due_ns - monotonic_ns()) / SECOND)
+            reaped = True
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+        cleanup = CleanupResult(CleanupStatus.REAPED if reaped else CleanupStatus.PENDING,
+                                process.returncode)
+        terminal = _wire(_terminal(SupervisionResult(
+            LifecycleStatus.UNKNOWN, cleanup, process.returncode,
+            exc.__cause__ if isinstance(exc.__cause__, OSError) else None)))
+        reply = {"status": "unavailable", "effect": "unknown",
+                 "code": "supervision_pin_unavailable", "result": {"terminal": terminal}}
+        print(json.dumps(reply, separators=(",", ":")))
+        return 1
+    except (OSError, RuntimeError, ValueError):
+        print(json.dumps({"status": "refused", "effect": "not_attempted",
+                          "code": "command_start_failed"}, separators=(",", ":")))
+        return 1
+
+    try:
+        result = supervisor.wait("run", due_ns=due_ns, cleanup_due_ns=cleanup_due_ns)
+    except (OSError, RuntimeError, KeyboardInterrupt) as exc:
+        try:
+            cleanup = supervisor.cleanup("run", due_ns=cleanup_due_ns)
+        except (OSError, RuntimeError, KeyboardInterrupt):
+            cleanup = CleanupResult(CleanupStatus.PENDING)
+        result = SupervisionResult(LifecycleStatus.UNKNOWN, cleanup, error=exc)
+    cleanup = result.cleanup
+    if cleanup.status is CleanupStatus.NOT_REQUESTED:
+        try:
+            cleanup = supervisor.cleanup("run", due_ns=cleanup_due_ns)
+        except (OSError, ValueError):
+            # wait() already observed and reaped an EXITED child; a failure
+            # to make the follow-up read does not erase that direct evidence.
+            if result.lifecycle is LifecycleStatus.EXITED and result.error is None:
+                cleanup = CleanupResult(CleanupStatus.REAPED, result.returncode)
+    terminal = _terminal(result)
+    terminal["cleanup"] = _clean(cleanup)
+    terminal = _wire(terminal)
+    lifecycle = result.lifecycle.value
+    status = "unavailable" if lifecycle == "unknown" or result.error is not None else "reported"
+    reply = {"status": status, "effect": "unknown", "result": {"terminal": terminal}}
+    if status == "unavailable":
+        reply["code"] = "terminal_result_unavailable"
+    print(json.dumps(reply, separators=(",", ":")))
+    return int(not (lifecycle == LifecycleStatus.EXITED.value and result.returncode == 0
+                    and cleanup.status is CleanupStatus.REAPED and status == "reported"))

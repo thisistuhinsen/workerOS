@@ -39,7 +39,7 @@ _HOST_REFUSALS = frozenset((
     'invalid_setup_scopes', 'scope_meter_unavailable', 'meter_plan_mismatch',
     'meter_provider_requires_separate_principal', 'point_observer_requires_readable_original',
     'directory_plan_mismatch', 'duplicate_inherited_setup_handles',
-    'interval_custody_unsupported',
+    'interval_custody_unsupported', 'independent_attester_unavailable',
 ))
 
 
@@ -133,11 +133,10 @@ class _BootstrapProfileManager:
     def verify_bindings(self, selected, compiled, host):
         workflow = compiled[selected.definition.name]
         if (selected != self.selection or host is not self.bindings
-                or len(workflow.observers) != 1
-                or next(iter(workflow.observers.values())) is not next(iter(host.observers.values()))
+                or len(workflow.observers) != len(host.observers or {})
+                or any(a is not b for a, b in zip(workflow.observers.values(), (host.observers or {}).values()))
                 or len(workflow.meters) != len(host.meters or {})
-                or host.meters is not None
-                and next(iter(workflow.meters.values())) is not next(iter(host.meters.values()))):
+                or any(a is not b for a, b in zip(workflow.meters.values(), (host.meters or {}).values()))):
             raise PermissionError('setup_binding_mismatch')
         return self.generation
 
@@ -189,7 +188,9 @@ class _BootstrapProfileManager:
 
 _HOST_FIELDS = ('version', 'profile', 'revision', 'operation_key', 'authorized_uids',
                 'wheel_path', 'journal_directory', 'local_approval')
-_SCOPE_FIELDS = ('definition', 'policy', 'role', 'binding_generation', 'observer', 'provider')
+_SCOPE_BASE_FIELDS = ('definition', 'policy', 'role', 'binding_generation')
+_SCOPE_FIELDS = _SCOPE_BASE_FIELDS + ('observer', 'provider')
+_SCOPE_OPTIONAL_FIELDS = ('observer', 'provider', 'meter', 'meter_provider')
 
 
 def _provider(config, binding, definition, *, window_end_ns=None):
@@ -270,7 +271,10 @@ def _meter(config, binding, definition, resources, used):
 
 
 def _bound_scope(config, *, clock_id, resources, used):
-    _fields(config, _SCOPE_FIELDS, ('meter', 'meter_provider'))
+    _fields(config, _SCOPE_BASE_FIELDS, _SCOPE_OPTIONAL_FIELDS)
+    has_observer = 'observer' in config
+    if has_observer != ('provider' in config):
+        raise ValueError('unsupported_setup_binding')
     has_meter = 'meter' in config
     if has_meter != ('meter_provider' in config):
         raise ValueError('unsupported_setup_binding')
@@ -283,7 +287,10 @@ def _bound_scope(config, *, clock_id, resources, used):
            for binding in providers):
         raise ValueError('interval_custody_unsupported')
     by_kind = {binding.kind:binding for binding in providers}
-    allowed = {'observers':'point', 'meters':'cgroup-v2'} if has_meter else {'observers':'point'}
+    allowed = {**({'observers':'point'} if has_observer else {}),
+               **({'meters':'cgroup-v2'} if has_meter else {})}
+    if not allowed:
+        raise ValueError('independent_attester_unavailable')
     if len(providers) != len(allowed) or {kind:binding.capability for kind,binding in by_kind.items()} != allowed:
         raise ValueError('unsupported_setup_binding')
 
@@ -292,7 +299,7 @@ def _bound_scope(config, *, clock_id, resources, used):
     workflow = policy['workflows'][definition.name]
     if workflow.get('require_custody') is True or 'custody' in workflow['bindings']:
         raise ValueError('interval_custody_unsupported')
-    operations = {'observe', 'meter'} if has_meter else {'observe'}
+    operations = ({'observe'} if has_observer else set()) | ({'meter'} if has_meter else set())
     if (set(policy['workflows']) != {definition.name}
             or _operations(workflow['operations']) != operations
             or set(workflow['bindings']) != set(allowed)
@@ -305,15 +312,18 @@ def _bound_scope(config, *, clock_id, resources, used):
 
     selection = ManagerSelection(definition, policy_bytes, definition.clock_id, definition.expires_ns)
     requirements = _requirements(config['role'], definition)
-    observation = by_kind['observers']
-    attesters = [_provider(config['provider'], observation, definition)]
-    observer = _observer(config['observer'], observation, definition, resources, used)
+    attesters, observers = [], {}
+    if has_observer:
+        observation = by_kind['observers']
+        attesters.append(_provider(config['provider'], observation, definition))
+        observer = _observer(config['observer'], observation, definition, resources, used)
+        observers[observation.name] = (observer, None, observation.name)
     meters = None
     if has_meter:
         binding = by_kind['meters']
         meter, scope = _meter(config['meter'], binding, definition, resources, used)
         attester = _provider(config['meter_provider'], binding, definition, window_end_ns=scope.finished_ns)
-        if (not _meter_peer_is_distinct(attesters[0], attester)
+        if attesters and (not _meter_peer_is_distinct(attesters[0], attester)
                 or (attester.path == attesters[0].path or attester.source == attesters[0].source)):
             raise ValueError('meter_provider_requires_separate_principal')
         meters = {binding.name:meter}
@@ -321,7 +331,7 @@ def _bound_scope(config, *, clock_id, resources, used):
 
     # The listener never authorizes a workflow operation or produces run evidence.
     bindings = HostBindings(authorize=lambda *_: False,
-                            observers={observation.name:(observer,None,observation.name)}, meters=meters)
+                            observers=observers, meters=meters)
     return selection, requirements, bindings, _name(config['binding_generation']), tuple(attesters)
 
 
@@ -357,7 +367,7 @@ def _reconcile_local(config):
     entries = _scope_entries(config)
     definitions, requirements, generations = [], [], []
     for entry in entries:
-        _fields(entry, _SCOPE_FIELDS, ('meter', 'meter_provider'))
+        _fields(entry, _SCOPE_BASE_FIELDS, _SCOPE_OPTIONAL_FIELDS)
         definition = _definition(entry['definition'])
         if sha256(_canonical(entry['policy'])).hexdigest() != definition.policy_sha256:
             raise ValueError('setup_policy_mismatch')
@@ -388,8 +398,48 @@ def _reconcile_local(config):
                        for name, r in results]}
 
 
+class _UnsupportedScopes(ValueError):
+    def __init__(self, scopes):
+        self.scopes = scopes
+        super().__init__(next(item['code'] for item in scopes if item['status'] == 'unavailable'))
+
+
+def _preflight_scopes(entries):
+    """Report unsupported requested scopes before binding any resources or writing state."""
+    results = []
+    for entry in entries:
+        definition = _definition(entry['definition'])
+        name = _name(definition.name)
+        providers = definition.providers
+        workflow = entry['policy']['workflows'][name]
+        interval = (any(binding.kind == 'custody' or
+                        (binding.kind == 'observers' and binding.capability in
+                         ('interval', 'custody', 'interval-custody')) for binding in providers)
+                    or workflow.get('require_custody') is True or 'custody' in workflow['bindings'])
+        has_observer = 'observer' in entry
+        has_meter = 'meter' in entry
+        allowed = {**({'observers': 'point'} if has_observer else {}),
+                   **({'meters': 'cgroup-v2'} if has_meter else {})}
+        by_kind = {binding.kind: binding.capability for binding in providers}
+        unsupported = (has_observer != ('provider' in entry) or
+                       has_meter != ('meter_provider' in entry) or
+                       len(providers) != len(allowed) or by_kind != allowed)
+        code = ('interval_custody_unsupported' if interval else
+                'unsupported_setup_binding' if unsupported else
+                'independent_attester_unavailable' if not allowed else None)
+        result = {'name': name, 'status': 'unavailable' if code else 'not_checked'}
+        if code:
+            result['code'] = code
+        results.append(result)
+    if len({item['name'] for item in results}) != len(results):
+        raise ValueError('invalid_setup_scopes')
+    if any(item['status'] == 'unavailable' for item in results):
+        raise _UnsupportedScopes(results)
+
+
 def _build(config, resources):
     entries = _scope_entries(config)
+    _preflight_scopes(entries)
 
     clock_id = setup_clock_id()
     used = set()
@@ -462,6 +512,8 @@ def main(argv=None):
         if args.check_bindings:
             result.update(effect='not_attempted', readiness='not_checked',
                           independence='unverified', runtime_evidence='not_requested')
+        if isinstance(exc, _UnsupportedScopes):
+            result.update(scopes=exc.scopes, effect='not_attempted', readiness='not_checked')
         if code == 'interval_custody_unsupported':
             result.update(effect='not_attempted',
                           next_action='Use a separately authorized custody workflow with evidence through cleanup.')

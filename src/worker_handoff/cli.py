@@ -1,9 +1,11 @@
 """WorkerOS: run local jobs and connect approved managed profiles."""
 import argparse
 from io import BytesIO, TextIOWrapper
+from importlib.metadata import PackageNotFoundError, version as package_version
 import json
 import math
 from pathlib import Path
+import re
 import shlex
 import sys
 
@@ -13,6 +15,7 @@ _INPUT_ROLES=frozenset(('preview','apply','grant-preview','grant-apply','grant-c
 _HELP={
  'start': '''WorkerOS
 Run a job. Know how it ended.
+Version: {version}
 
   workeros run -- /usr/bin/printf 'hello\\n'    Run a local job
   workeros help file                           Give a worker an open file
@@ -21,9 +24,17 @@ Run a job. Know how it ended.
   workeros help formats                        Use JSON or YAML role profiles
   workeros managed reconcile                    Check an interrupted setup
 
+First run:
+  $ workeros run -- /usr/bin/printf 'hello\\n'
+  hello
+  job: exited 0
+
 Use wos as a short form. Run workeros help install for packages and platforms,
 workeros help roles for the administrator handoff, or workeros help managed for
-host setup. The controller requires Linux or Ubuntu WSL2 and Python 3.11+.''',
+host setup. The controller requires Linux or Ubuntu WSL2 and Python 3.11+.
+Install and upgrade: https://github.com/thisistuhinsen/workerOS/blob/v0.8.0/docs/install-0.8.0.md
+Upgrade and rollback: https://github.com/thisistuhinsen/workerOS/blob/v0.8.0/docs/install-0.8.0.md#upgrade-and-roll-back
+Recovery: https://github.com/thisistuhinsen/workerOS/blob/v0.8.0/docs/support.md#troubleshooting''',
  'install': '''Install a verified local wheel
 
   python3 -m venv .venv
@@ -35,12 +46,19 @@ hello, then job: exited 0. Python 3.11+ on Linux or Ubuntu WSL2 is supported;
 native Windows and macOS are not supported by the controller. For pip, uv,
 npm, Go, Cargo, Conan and Maven, start with the project install guide and
 choose the instructions for your version:
-https://github.com/thisistuhinsen/workerOS/blob/main/docs/install.md''',
+Stable v0.7.0 guide: https://github.com/thisistuhinsen/workerOS/blob/v0.7.0/docs/install.md
+v0.8.0 instructions (use its release assets after publication): https://github.com/thisistuhinsen/workerOS/blob/v0.8.0/docs/install-0.8.0.md
+Upgrade and rollback: https://github.com/thisistuhinsen/workerOS/blob/v0.8.0/docs/install-0.8.0.md#upgrade-and-roll-back
+For a failed or uncertain job, see https://github.com/thisistuhinsen/workerOS/blob/v0.8.0/docs/support.md#troubleshooting''',
  'run': '''Run a local command
 
   workeros run -- /usr/bin/printf 'hello\\n'
+  workeros run --json -- /usr/bin/printf 'hello\\n'
 
-Expected: hello, then job: exited 0. This starts one trusted local command.
+Expected: hello, then job: exited 0. Add --json before -- for one JSON result.
+The child receives stdin, including piped input. Its stdout and stderr go to
+stderr. The JSON result separates lifecycle and cleanup and leaves effects
+unknown. This starts one trusted local command.
 For the timeout and cleanup example, run workeros demo. A timeout or an unknown
 effect is not proof that nothing happened; check effects before retrying.''',
  'file': '''Give a worker an open file
@@ -74,7 +92,9 @@ draft to an administrator to preview or apply from their trusted installation.
 Preview starts nothing and writes nothing. Apply records a declaration.
 OS access is granted separately. Revocation here affects the declaration.
 Grant operations need an approved role, exact file identity and administrator
-authority. The named-UID ACL backend is not yet qualified on a distinct UID.
+authority. The named-UID ACL backend grants one existing UID access to one exact
+file for future opens only; see
+https://github.com/thisistuhinsen/workerOS/blob/v0.8.0/docs/host-preflight.md#grant-read-access-to-one-linux-file.
 If a result is unknown, use recover on the exact plan; do not repeat the grant.
 Role labels and ACL readback do not qualify an independent observer.
 See docs/host-preflight.md for the schema, limits and next steps.''',
@@ -153,7 +173,7 @@ _ROLE_HELP={
  'show': 'Read a declaration: workeros roles status PROFILE REVISION\nShows configured, expired or revoked declaration state; it does not verify a grant.',
  'revoke': 'Revoke a declaration: workeros roles revoke PROFILE REVISION\nRequires an administrator. Actual host grants need separate revocation.',
  'grant-preview': 'Preview the approved ACL plan: workeros roles grant-preview [--format json|yaml] < grant.json\nNo grant is applied. See docs/host-preflight.md for prerequisites.',
- 'grant-apply': 'Apply an approved ACL plan: workeros roles grant-apply [--format json|yaml] < grant.json\nThis named-UID backend is not yet qualified on a distinct UID. Never retry an unknown effect.',
+ 'grant-apply': 'Apply an approved ACL plan: workeros roles grant-apply [--format json|yaml] < grant.json\nAn administrator grants one existing UID access to one exact file for future opens. Never retry an unknown effect. See docs/host-preflight.md#grant-read-access-to-one-linux-file.',
  'grant-check': 'Reconcile the same ACL plan: workeros roles grant-check [--format json|yaml] < grant.json\nReads recorded state and ACL; it does not repeat the grant.',
  'recover': 'Reconcile the same ACL plan: workeros roles recover [--format json|yaml] < grant.json\nReads recorded state and ACL; it does not repeat the grant.',
  'grant-revoke': 'Remove the recorded ACL entry: workeros roles grant-revoke [--format json|yaml] < grant.json\nRequires the exact approved plan. Existing open descriptors are unaffected.',
@@ -173,9 +193,26 @@ def _yaml_to_json(data):
         text=data.decode('utf-8')
         depth=0
         count=0
+        json_number=re.compile(r'-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?\Z')
         for event in yaml.parse(text,Loader=yaml.SafeLoader):
+            if getattr(event,'tag',None) is not None:
+                raise ValueError('explicit YAML tags unsupported')
             if isinstance(event,yaml.events.AliasEvent) or getattr(event,'anchor',None) is not None:
                 raise ValueError('anchors and aliases unsupported')
+            if isinstance(event,yaml.events.ScalarEvent) and event.style is None:
+                # PyYAML follows YAML 1.1 implicit typing (for example, `on`,
+                # `01`, and dates). Refuse those ambiguous spellings instead
+                # of silently changing a JSON value's type.
+                resolved=yaml.SafeLoader('').resolve(yaml.nodes.ScalarNode,event.value,event.implicit)
+                if resolved in ('tag:yaml.org,2002:bool','tag:yaml.org,2002:null'):
+                    allowed=('true','false') if resolved.endswith(':bool') else ('null',)
+                    if event.value not in allowed: raise ValueError('ambiguous YAML scalar')
+                elif resolved=='tag:yaml.org,2002:int' and not re.fullmatch(r'-?(?:0|[1-9][0-9]*)',event.value):
+                    raise ValueError('non-JSON integer spelling')
+                elif resolved=='tag:yaml.org,2002:timestamp':
+                    raise ValueError('implicit timestamps unsupported')
+                elif resolved=='tag:yaml.org,2002:float' and not json_number.fullmatch(event.value):
+                    raise ValueError('non-JSON number spelling')
             if isinstance(event,(yaml.events.MappingStartEvent,yaml.events.SequenceStartEvent)):
                 depth+=1
                 if depth>64: raise ValueError('document too deep')
@@ -184,6 +221,20 @@ def _yaml_to_json(data):
                 count+=1
                 if count>4096: raise ValueError('document too complex')
         class StrictLoader(yaml.SafeLoader):
+            # Restrict implicit scalar typing to the JSON data model while
+            # retaining the JSON primitive spellings and plain string keys.
+            yaml_implicit_resolvers={key:list(value) for key,value in yaml.SafeLoader.yaml_implicit_resolvers.items()}
+            for _key,_resolvers in tuple(yaml_implicit_resolvers.items()):
+                yaml_implicit_resolvers[_key]=[(tag,regexp) for tag,regexp in _resolvers
+                    if tag not in ('tag:yaml.org,2002:bool','tag:yaml.org,2002:int',
+                                   'tag:yaml.org,2002:float','tag:yaml.org,2002:null',
+                                   'tag:yaml.org,2002:timestamp')]
+            yaml_implicit_resolvers[None]=[
+                ('tag:yaml.org,2002:bool',re.compile(r'^(?:true|false)$')),
+                ('tag:yaml.org,2002:null',re.compile(r'^null$')),
+                ('tag:yaml.org,2002:float',re.compile(r'^-?(?:0|[1-9][0-9]*)(?:\.[0-9]+|[eE][+-]?[0-9]+)(?:[eE][+-]?[0-9]+)?$')),
+                ('tag:yaml.org,2002:int',re.compile(r'^-?(?:0|[1-9][0-9]*)$')),
+            ]
             def construct_mapping(self,node,deep=False):
                 if not isinstance(node,yaml.nodes.MappingNode): raise ValueError('expected mapping')
                 result={}
@@ -220,6 +271,7 @@ def _yaml_to_json(data):
 def _refuse(code):
     advice=('Install the optional PyYAML package in this environment, or use JSON.' if code=='yaml_dependency_missing'
             else 'Run workeros roles guide in a terminal, or use the noninteractive draft command.' if code=='tty_required'
+            else 'Use workeros run -- COMMAND ARG ... for text output; no command was started.' if code=='run_json_unsupported'
             else 'Correct the command or input; no operation was attempted.')
     print(json.dumps({'status':'refused','effect':'not_attempted','code':code,'next_action':advice},separators=(',',':')))
     return 1
@@ -251,7 +303,7 @@ def _guide(args):
     """Collect one draft on a TTY; JSON stdout and instructions on stderr."""
     from . import roles_cli
     if args: return _refuse('invalid_guide')
-    if not sys.stdin.isatty(): return _refuse('tty_required')
+    if not sys.stdin.isatty() or not sys.stdout.isatty(): return _refuse('tty_required')
     fields=(('profile','Profile name'),('revision','Revision'),('role','Role name'),
             ('principal','Existing OS principal'),('scope','Scope name'),('expires_at','Expiry (Unix seconds)'),
             ('operations','Operations, comma-separated [read]'),
@@ -330,20 +382,36 @@ def _roles(args):
         replacement.close()
 
 
+def _installed_version():
+    try:
+        return package_version('workeros')
+    except PackageNotFoundError:
+        return 'development'
+
+
+def _render_help(topic):
+    help_text = _HELP[topic]
+    if topic == 'start':
+        return help_text.replace('{version}', _installed_version())
+    if topic == 'file':
+        example = Path(sys.prefix) / 'share/worker-handoff/examples/run_inherited_fd.py'
+        command = shlex.join([sys.executable, '-I', str(example), '--language', 'python'])
+        return help_text.format(command=command)
+    return help_text
+
+
 def main(argv=None):
     argv=list(sys.argv[1:] if argv is None else argv)
+    if argv==['--version'] or argv==['-V']:
+        print(f'WorkerOS {_installed_version()}')
+        return 0
     if not argv or argv[0] in ('-h','--help'):
-        print(_HELP['start'])
+        print(_render_help('start'))
         return 0
     if argv[0]=='help':
         topic=argv[1] if len(argv)==2 else 'start' if len(argv)==1 else None
         if topic not in _HELP: return _refuse('unknown_help_topic')
-        help_text = _HELP[topic]
-        if topic == 'file':
-            example = Path(sys.prefix) / 'share/worker-handoff/examples/run_inherited_fd.py'
-            command = shlex.join([sys.executable, '-I', str(example), '--language', 'python'])
-            help_text = help_text.format(command=command)
-        print(help_text)
+        print(_render_help(topic))
         return 0
     command,remaining=argv[0],argv[1:]
     if command=='roles' and remaining and remaining[0]=='draft' and ('--help' in remaining or '-h' in remaining):
@@ -356,13 +424,18 @@ def main(argv=None):
     if command in ('roles','managed') and (not remaining or '--help' in remaining or '-h' in remaining):
         if command=='roles' and remaining and remaining[0] in _ROLE_HELP:
             print(_ROLE_HELP[remaining[0]])
-        else: print(_HELP[command])
+        else: print(_render_help(command))
         return 0
     if command=='run' and remaining in (['--help'],['-h']):
-        print(_HELP['run']); return 0
+        print(_render_help('run')); return 0
     if command in ('demo','run'):
         from . import quickstart
         if command=='demo': return quickstart.main(remaining)
+        if remaining and remaining[0]=='--json':
+            if len(remaining)<3 or remaining[1]!='--': return _refuse('json_command_required')
+            return quickstart.run_json(remaining[2:])
+        if remaining and remaining[0] in ('--format=json','--format','--output=json'):
+            return _refuse('run_json_unsupported')
         if remaining and remaining[0]=='--': remaining=remaining[1:]
         if not remaining: return _refuse('command_required')
         return quickstart.main(['--',*remaining])

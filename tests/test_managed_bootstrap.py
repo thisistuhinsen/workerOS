@@ -116,7 +116,7 @@ class InstalledHostTest(unittest.TestCase):
             uid = os.getuid()
             clock_id_raw = monotonic_clock_id() or 'fixture-monotonic'
             expiry = monotonic_ns() + 45_000_000_000
-            names = ('original','named','metered') if multiple else ('workflow',)
+            names = ('original','named','metered','meter-only') if multiple else ('workflow',)
             passed, scopes, appointments, expected = [], [], [], {}
             for name in names:
                 scope_id = f'{name}-scope'
@@ -148,7 +148,7 @@ class InstalledHostTest(unittest.TestCase):
                     registration['observer']['directory'] = inherited_directory
                 operations = ['observe']
                 refs = {'observers':{'slot':'observer'}}
-                if name == 'metered':
+                if name in ('metered', 'meter-only'):
                     try:
                         meter_fd = os.open('/sys/fs/cgroup',os.O_RDONLY|os.O_DIRECTORY)
                     except OSError as exc:
@@ -170,6 +170,11 @@ class InstalledHostTest(unittest.TestCase):
                     registration['meter_provider'] = {'socket':str(root/'meter.sock'),'peer_uid':uid}
                     operations.append('meter')
                     refs['meters'] = {'counter':'meter'}
+                if name == 'meter-only':
+                    bindings.pop(0)
+                    del registration['observer'], registration['provider']
+                    operations.remove('observe')
+                    del refs['observers']
                 policy = {'version':1,'roles':{'operator':{'operations':operations}},
                           'workflows':{name:{'role':'operator','operations':operations,'bindings':refs}}}
                 definition = ProfileDefinition(name,'revision-1','0.8.0',
@@ -220,6 +225,40 @@ class InstalledHostTest(unittest.TestCase):
         self.assertEqual(list(journal.iterdir()),[])
         setup_path.write_text(json.dumps(setup_config))
         if meter:
+            no_provider = json.loads(json.dumps(setup_config))
+            scope = no_provider['scopes'][-1]
+            scope['definition']['providers'] = []
+            del scope['meter'], scope['meter_provider']
+            setup_path.write_text(json.dumps(no_provider))
+            refusal = run('serve-setup', '--check-bindings', passed=passed, code=1)
+            self.assertEqual(refusal['scopes'][-1]['code'], 'independent_attester_unavailable')
+            self.assertEqual(refusal['effect'], 'not_attempted')
+            self.assertEqual(list(journal.iterdir()), [])
+            bad_shape = json.loads(json.dumps(setup_config))
+            del bad_shape['scopes'][-1]['meter_provider']
+            setup_path.write_text(json.dumps(bad_shape))
+            refusal = run('serve-setup', '--check-bindings', passed=passed, code=1)
+            self.assertEqual(refusal['scopes'][-1]['code'], 'unsupported_setup_binding')
+            self.assertEqual(list(journal.iterdir()), [])
+            changed = json.loads(json.dumps(setup_config))
+            changed['scopes'][1]['definition']['providers'][0]['capability'] = 'interval'
+            setup_path.write_text(json.dumps(changed))
+            refusal = run('serve-setup', '--check-bindings', passed=passed, code=1)
+            self.assertEqual(refusal['scopes'], [
+                {'name': appointments[0]['workflow'], 'status': 'not_checked'},
+                {'name': appointments[1]['workflow'], 'status': 'unavailable',
+                 'code': 'interval_custody_unsupported'},
+                {'name': appointments[2]['workflow'], 'status': 'not_checked'},
+                {'name': appointments[3]['workflow'], 'status': 'not_checked'}])
+            self.assertEqual((refusal['effect'], refusal['readiness']), ('not_attempted', 'not_checked'))
+            self.assertEqual(list(journal.iterdir()), [])
+            changed['scopes'][2]['definition']['providers'][0]['capability'] = 'unsupported'
+            setup_path.write_text(json.dumps(changed))
+            refusal = run('serve-setup', '--check-bindings', passed=passed, code=1)
+            self.assertEqual([item.get('code') for item in refusal['scopes']],
+                             [None, 'interval_custody_unsupported', 'unsupported_setup_binding', None])
+            self.assertEqual(list(journal.iterdir()), [])
+            setup_path.write_text(json.dumps(setup_config))
             refusal = run('serve-setup','--describe',passed=passed,code=1,synthetic='same-uid-only')
             self.assertEqual(refusal['code'],'meter_provider_requires_separate_principal')
             for request in ('interval_observer', 'custody_binding', 'custody_policy'):
@@ -255,7 +294,7 @@ class InstalledHostTest(unittest.TestCase):
 
         stop, deny, wrong_generation = Event(), Event(), Event()
         requests, errors = [], []
-        metered_digest = appointments[-1]['definition_sha256'] if meter else None
+        metered_digests = {item['definition_sha256'] for item in appointments[-2:]} if meter else set()
 
         def respond(listener, source):
             while not stop.is_set():
@@ -270,7 +309,7 @@ class InstalledHostTest(unittest.TestCase):
                         request = json.loads(_read_exact(connection,size,deadline))
                         request_id = request.pop('request_id')
                         digest = request['definition_sha256']
-                        if request != expected.get(digest) or listener is meter and digest != metered_digest:
+                        if request != expected.get(digest) or listener is meter and digest not in metered_digests:
                             raise ValueError('synthetic registration does not match request')
                         requests.append(request_id)
                         if not (deny.is_set() and (meter is None or listener is meter)):
@@ -323,6 +362,7 @@ class InstalledHostTest(unittest.TestCase):
                 unavailable = check_bindings('incomplete',code=1)
                 self.assertEqual([scope['name'] for scope in unavailable['scopes']
                                   if scope['status'] != 'bindings_verified'],
+                                 [item['workflow'] for item in appointments[-2:]] if meter else
                                  [appointments[-1]['workflow']])
                 failure.clear()
             self.assertEqual({path.name:path.read_bytes() for path in profile_store.iterdir()},

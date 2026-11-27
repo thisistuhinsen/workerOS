@@ -1,4 +1,5 @@
 """Installed unified entry points; YAML loader is optional and fixture-only."""
+from importlib.metadata import version
 import json
 import os
 from pathlib import Path
@@ -43,12 +44,24 @@ class UnifiedCliTest(unittest.TestCase):
         self.assertIn('workeros roles guide',left.stdout)
         self.assertIn('workeros help formats',left.stdout)
         self.assertIn('workeros managed reconcile',left.stdout)
+        self.assertIn('First run:',left.stdout)
+        self.assertIn(f'Version: {version("workeros")}\n',left.stdout)
+        self.assertIn('  hello\n  job: exited 0',left.stdout)
+        self.assertIn('install-0.8.0.md',left.stdout)
+        self.assertIn('support.md#troubleshooting',left.stdout)
         self.assertNotIn('\x1b',left.stdout)
         self.assertEqual(left.stderr,'')
+        for name in ('workeros','wos'):
+            for args in (('-h',),('--help',),('help',),('help','start')):
+                with self.subTest(name=name,args=args):
+                    result=self.call(name,args,env=environment)
+                    self.assertEqual((result.returncode,result.stdout,result.stderr),(0,left.stdout,''))
 
     def test_topics_and_subcommand_help_are_actionable(self):
         for args,expected in ((['help','install'],'--no-index'),(['help','run'],'workeros run --'),(['help','file'],'run_inherited_fd.py'),(['help','formats'],'duplicate keys'),
-                              (['help','install'],'docs/install.md'),(['help','config'],'#run-a-fileless-worker'),
+                              (['help','install'],'v0.7.0/docs/install.md'),(['help','install'],'use its release assets after publication'),
+                              (['help','install'],'upgrade-and-roll-back'),(['help','install'],'support.md#troubleshooting'),
+                              (['roles','grant-apply','--help'],'grant-read-access-to-one-linux-file'),(['help','config'],'#run-a-fileless-worker'),
                               (['help','formats'],'yaml_dependency_missing'),
                               (['roles','--help'],'grant-check'),(['roles','apply','--help'],'creates no principal'),
                               (['managed','--help'],'reconcile')):
@@ -65,6 +78,56 @@ class UnifiedCliTest(unittest.TestCase):
                           ('workeros-demo',['--','/usr/bin/printf','hello\n'])):
             result=self.call(name,args); self.assertEqual(result.returncode,0,result.stderr); outputs.append(result.stdout)
         self.assertEqual(outputs,['hello\njob: exited 0\n']*3)
+
+    def test_version_flag_and_structured_run_output(self):
+        version=self.call('workeros',['--version'])
+        self.assertEqual(version.returncode,0)
+        self.assertTrue(version.stdout.startswith('WorkerOS 0.8.0'))
+        result=self.call('workeros',['run','--json','--','/usr/bin/printf','hello\n'])
+        self.assertEqual(result.returncode,0,result.stderr)
+        receipt=json.loads(result.stdout)
+        self.assertEqual((receipt['status'],receipt['effect']),('reported','unknown'))
+        self.assertEqual(receipt['result']['terminal']['lifecycle'],'exited')
+        self.assertEqual(receipt['result']['terminal']['returncode'],'0')
+        self.assertEqual(receipt['result']['terminal']['cleanup']['status'],'reaped')
+        self.assertEqual(result.stderr,'hello\n')
+        malformed=self.call('workeros',['run','--json','/usr/bin/printf','must-not-run'])
+        self.assertEqual(malformed.returncode,1)
+        refused=json.loads(malformed.stdout)
+        self.assertEqual((refused['code'],refused['effect']),('json_command_required','not_attempted'))
+        missing=self.call('workeros',['run','--json','--','/definitely/not/a/worker'])
+        self.assertEqual(missing.returncode,1)
+        receipt=json.loads(missing.stdout)
+        self.assertEqual((receipt['code'],receipt['effect']),('command_start_failed','not_attempted'))
+
+    def test_structured_run_timeout_reports_cleanup_separately(self):
+        result=self.call('workeros',['run','--json','--','/usr/bin/sleep','10'])
+        self.assertEqual(result.returncode,1)
+        receipt=json.loads(result.stdout)
+        self.assertEqual((receipt['status'],receipt['effect']),('reported','unknown'))
+        self.assertEqual(receipt['result']['terminal']['lifecycle'],'timed_out')
+        self.assertEqual(receipt['result']['terminal']['cleanup']['status'],'reaped')
+
+    def test_structured_run_passes_piped_stdin_without_mixing_the_receipt(self):
+        data = 'first line\nsecond line\n'
+        result=self.call('workeros',['run','--json','--','/usr/bin/cat'],data=data)
+        self.assertEqual((result.returncode,result.stderr),(0,data))
+        receipt=json.loads(result.stdout)
+        self.assertEqual((receipt['status'],receipt['result']['terminal']['returncode']),('reported','0'))
+
+    def test_tty_guide_refuses_when_output_is_redirected(self):
+        master,slave=pty.openpty()
+        process=subprocess.Popen([str(self.bin/'workeros'),'roles','guide'],stdin=slave,
+                                 stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True)
+        os.close(slave)
+        try:
+            out,err=process.communicate(timeout=3)
+        finally:
+            os.close(master)
+        self.assertEqual(process.returncode,1)
+        receipt=json.loads(out)
+        self.assertEqual((receipt['code'],receipt['effect']),('tty_required','not_attempted'))
+        self.assertEqual(err,'')
 
     def test_fresh_offline_install_first_job(self):
         wheel=os.environ.get('WORKEROS_TEST_WHEEL')
@@ -173,18 +236,28 @@ class UnifiedCliTest(unittest.TestCase):
         self.assertEqual((bad.returncode,json.loads(bad.stdout)['code']),(1,'invalid_draft'))
 
     def guided(self,entries):
-        master,slave=pty.openpty()
+        in_master,in_slave=pty.openpty()
+        out_master,out_slave=pty.openpty()
         try:
-            process=subprocess.Popen([str(self.bin/'workeros'),'roles','guide'],stdin=slave,
-                                     stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True,
+            process=subprocess.Popen([str(self.bin/'workeros'),'roles','guide'],stdin=in_slave,
+                                     stdout=out_slave,stderr=subprocess.PIPE,text=True,
                                      env=dict(os.environ,NO_COLOR='1',TERM='dumb'))
-            os.close(slave); slave=None
-            os.write(master,entries.encode())
-            out,err=process.communicate(timeout=8)
+            os.close(in_slave); in_slave=None
+            os.close(out_slave); out_slave=None
+            os.write(in_master,entries.encode())
+            _,err=process.communicate(timeout=8)
+            chunks=[]
+            while True:
+                try: chunk=os.read(out_master,4096)
+                except OSError: break
+                if not chunk: break
+                chunks.append(chunk)
+            out=b''.join(chunks).decode()
             return process.returncode,out,err
         finally:
-            if slave is not None: os.close(slave)
-            os.close(master)
+            if in_slave is not None: os.close(in_slave)
+            if out_slave is not None: os.close(out_slave)
+            os.close(in_master); os.close(out_master)
 
     def test_tty_guide_back_output_and_runnable_preview(self):
         entries='custom\nv1\noldrole\nback\nreader\n'+self.principal+'\narchive\n4102444800\n\n\n'

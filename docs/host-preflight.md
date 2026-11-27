@@ -302,13 +302,12 @@ An administrator can add a `privileged` array to a role, with entries such as
 `{"capability":"special_resource_access","scope":"reports","approved":true}`.
 Run `workeros roles preview` with the same JSON on standard input to see the
 exact requested principals, operations, scopes and approved capabilities
-without writing anything. This build has **no built-in privileged enforcement
-backend**: preview reports `unsupported` and apply refuses before writing.
-The approval field is a declaration, not a grant. A future supported backend
-must authenticate the administrator, enforce only the approved capability on
-the exact scope, independently read back the grant and its revocation, and
-report uncertainty rather than execute arbitrary host commands. There is no
-fixed vendor role list in this declaration format.
+without writing anything. `roles apply` refuses entries in the `privileged`
+array with `unsupported_privileged_enforcement`. A declaration records the
+administrator's intent. To grant an existing principal read access to one
+approved Linux file, use the separately applied [named-principal file ACL](#grant-read-access-to-one-linux-file).
+Other privileged capabilities require an enforcement backend for the
+specific capability and scope. Choose role names to match your deployment.
 
 Use `workeros roles show reporting v1` for readback. To change a declaration,
 apply a new revision; the same revision cannot be overwritten. Use
@@ -357,7 +356,7 @@ host integration below.
 
 ### Installed no-start host command
 
-#### Package host for approved point observers and optional meters
+#### Package host for approved point observers and meters
 
 The package host can serve one managed setup or readback request for several
 preauthorized workflows. Apply the version 1 profile with its pinned
@@ -404,10 +403,16 @@ Each scope entry has the following fields:
 
 | Fields | Purpose |
 | --- | --- |
-| `definition`, `policy`, `role`, `binding_generation` | Exact `ProfileDefinition` and matching version 1 policy. The policy hash is SHA-256 of compact JSON with sorted keys. A point scope uses `observe` with one `observers` binding of capability `point`. Adding a meter requires the `meter` operation and one `meters` binding of capability `cgroup-v2`. |
-| `observer` | Inherited `original_fd` and `pidfd`, plus the pinned `device`, `inode`, `pid`, `uid`, `slot` and `scope_sha256`. Use `require_readable: true` to refuse metadata-only handles. An optional `directory` object supplies an inherited `directory_fd`, exact directory `device` and `inode`, and a relative `leaf`. |
+| `definition`, `policy`, `role`, `binding_generation` | Exact `ProfileDefinition` and matching version 1 policy. The policy hash is SHA-256 of compact JSON with sorted keys. A point scope uses `observe` with one `observers` binding of capability `point`. A metered scope uses `meter` and one `meters` binding of capability `cgroup-v2`. |
+| `observer` | Required with `provider` for a selected point. Supply inherited `original_fd` and `pidfd`, plus the pinned `device`, `inode`, `pid`, `uid`, `slot` and `scope_sha256`. Use `require_readable: true` to refuse metadata-only handles. An optional `directory` object supplies an inherited `directory_fd`, exact directory `device` and `inode`, and a relative `leaf`. |
 | `provider` | Administrator-pinned absolute Unix `socket` and Linux `peer_uid` for the point attester. The peer UID must differ from the host. Its source name is the point binding's `principal`. |
-| `meter`, `meter_provider` | Version 2 optional pair. The meter takes the inherited cgroup v2 `directory_fd`, pinned `device`, `inode` and `mount_id`, and an exact `EvidenceScope` in `scope`. The meter's scope ID must match the binding. The meter attester has its own `socket`, `peer_uid` and source, distinct from the point attester. |
+| `meter`, `meter_provider` | Version 2 pair for a selected meter, with or without a selected point. The meter takes the inherited cgroup v2 `directory_fd`, pinned `device`, `inode` and `mount_id`, and an exact `EvidenceScope` in `scope`. The meter's scope ID must match the binding. The meter attester has its own `socket`, `peer_uid` and source, distinct from the host and from the point attester when both are selected. |
+
+A version 2 scope may select a point, a meter, or both. A scope with no
+provider can be recorded with `apply-profile`; stock verified setup reports
+`independent_attester_unavailable`. An unsupported scope stops the stock
+setup before any mapping is written. The result names the affected scopes
+and marks the remaining scopes `not_checked`.
 
 For each `ProviderBinding.reference`, hash that binding's compact plan JSON
 with sorted keys, excluding inherited descriptor numbers at every level.
@@ -417,18 +422,18 @@ Use different inherited descriptor numbers for each registered binding.
 to this Linux boot and monotonic time namespace. `definition.expires_ns` and
 provider `valid_until_ns` are absolute monotonic nanoseconds. The declaration's
 `expires_at` is Unix seconds. A meter's nested run clock uses the actual Linux
-clock context. Both attesters must validate the exact definition. A metered
-scope stays unverified if either attester is unavailable, and its verified
-expiry is the earlier of their two deadlines.
+clock context. Each selected attester must validate the exact definition.
+If the scope selects both, it stays unverified if either is unavailable,
+and its verified expiry is the earlier of the two deadlines.
 
-A trusted launcher supplies the observer descriptors and an already listening
+A trusted launcher supplies the selected provider's resource descriptors and an already listening
 Unix stream socket. Run `workeros managed serve-setup --describe` with the
-observer and optional meter descriptors to obtain the adapter identity for
+selected resource descriptors to obtain the adapter identity for
 the client file. Its `binding_check` field supplies the client pins described
 below. To verify the active approval, exact compiled bindings and
 current attester responses before recording setup, run
-`workeros managed serve-setup --check-bindings` with the same observer and
-meter descriptors. This check needs no listener and writes no setup record.
+`workeros managed serve-setup --check-bindings` with the same resource
+descriptors. This check needs no listener and writes no setup record.
 On success it reports `bindings_verified` and the earliest evidence expiry
 across scopes. It intentionally reports `readiness: not_checked` and
 `runtime_evidence: not_requested`. Revalidate at use. An existing trusted
@@ -713,17 +718,31 @@ renew an appointment. Declaration apply and revoke do not apply or revoke a
 real provider appointment, so they are not a complete commissioning journey
 without a separately commissioned host.
 
-### Candidate: one named-principal file ACL
+### Grant read access to one Linux file
 
-The private candidate includes a Linux named-UID read ACL backend in the same
-`workeros roles` command. It has **not yet been qualified on a host with a
-distinct principal**. An administrator declaration must name an existing
-non-root principal, authorize `read`, and bind the named scope to the exact
-decimal `device` and `inode` in that role's `resources` map. The root caller
-submits one JSON plan containing `version`, `profile`, `revision`, `role`,
-`scope`, an absolute `path`, and `exclusive_admin: true` to
-`workeros roles grant-preview` or `grant-apply`; `grant-check` and
-`grant-revoke` use that same plan. The backend accepts only a root-owned `0600`
+From a trusted administrator installation, first record a role that names an
+existing non-root principal and allows `read` on the chosen scope. Bind that
+scope in the role's `resources` map to the file's decimal `device` and `inode`.
+For that active revision, prepare one `grant.json` with `version: 1`, `profile`,
+`revision`, `role`, `scope`, the absolute `path` and `exclusive_admin: true`.
+Run these commands from the administrator's shell:
+
+```sh
+"$ADMIN_WORKEROS" roles grant-preview < grant.json
+"$ADMIN_WORKEROS" roles grant-apply < grant.json
+```
+
+Preview is optional and shows the named principal, exact file identity and
+permission change. Apply verifies the ACL and the journal before reporting
+`acl_entry_verified`. Save the plan to read back and revoke the same grant.
+Use `"$ADMIN_WORKEROS" roles grant-check < grant.json` in a separate process
+to read the retained binding and live ACL without applying anything. The
+designated principal can confirm access with a fresh read-only open in their
+own session. To revoke, use `"$ADMIN_WORKEROS" roles grant-revoke < grant.json`.
+A fresh check should report `acl_entry_removed` and `acl_presence: absent`.
+Grant and revoke do not start a worker.
+
+The backend accepts only a root-owned `0600`
 single-link file without an existing ACL, inside a root-owned `0711` directory
 without access or default ACLs. It refuses unmapped or identical principals,
 changed identities, unsupported ACLs, and unrelated existing ACL grants.
