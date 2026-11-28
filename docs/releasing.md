@@ -6,9 +6,16 @@ The release workflow builds packages with a read-only token. A separate job gets
 
 1. Update the package versions together and review the public source. Copy the candidate's full commit SHA.
 2. On the canonical repository's default `main`, run [GitHub release](https://github.com/thisistuhinsen/workerOS/blob/main/.github/workflows/release.yml) with that SHA, the committed version without `v`, and `publish` unchecked. The workflow records the asset checksums and stores the candidate as a GitHub Actions artifact.
-3. Review the exact artifact, install its packages in fresh consumers, and review the workflow and public documentation again. For a local pass with the same build tools, run `bash scripts/build-release.sh` into an empty directory. The script compares two clean builds and checks packaged entry points. An exact byte comparison assumes the same toolchain versions and `SOURCE_DATE_EPOCH`.
+3. Review the exact artifact, install its packages in fresh consumers, and review the workflow and public documentation again. For a local pass on Linux x86-64 with the same build tools, pick two unused paths and run:
 
-Each release includes the Python wheel and sdist, npm tarball, Maven JAR and POM, Conan recipe archive, and `SHA256SUMS`. Go and Cargo consume the same reviewed source tag. The [Git consumer check](https://github.com/thisistuhinsen/workerOS/blob/main/scripts/check-git-consumers.sh) verifies a disposable tag at the exact candidate commit and launches both external consumers with the built wheel. The GitHub release job publishes the exact tested artifact from its build job.
+   ```sh
+   bash scripts/owned-runtime/produce-owned-bwrap.sh ./reviewed-runtime
+   bash scripts/build-release.sh --owned-runtime-dir ./reviewed-runtime ./release-assets
+   ```
+
+   The producer verifies the pinned upstream source and Ubuntu packages, builds in a network-disabled container and checks the output against the approved ELF and license hashes. The release build compares two clean builds and checks packaged entry points. An exact byte comparison assumes the same packaging toolchain and `SOURCE_DATE_EPOCH`.
+
+The v0.8.0 candidate's manifest covers the plain Python wheel, Linux x86-64 wheel with the owned runtime, Python sdist, npm tarball, Maven JAR and POM, and Conan recipe archive. The Linux wheel includes the upstream Bubblewrap license, the exact libcap notice, and the [source and build provenance](../scripts/owned-runtime/PROVENANCE.md). Go and Cargo consume the same reviewed source tag. The [Git consumer check](https://github.com/thisistuhinsen/workerOS/blob/main/scripts/check-git-consumers.sh) verifies a disposable tag at the exact candidate commit and launches both external consumers with the built wheel. The GitHub release job publishes the exact tested artifact from its build job.
 
 ### Package names in a branded candidate
 

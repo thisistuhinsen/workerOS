@@ -18,6 +18,15 @@ RUNTIME_PATH = 'workeros/_runtime/bwrap'
 RUNTIME_REQUIRED = 'workeros/_runtime/REQUIRED'
 RUNTIME_DESCRIPTION = b'WorkerOS pinned Bubblewrap 0.12.0\n'
 LICENSE_SHA256 = 'dc626520dcd53a22f727af3ee42c770e56c97a64fe3adb063799d8ab032fe551'
+PROVENANCE_DIR = Path(__file__).with_name("owned-runtime")
+PROVENANCE_SHA256 = {
+    'PROVENANCE.md': '10ca30c725a62038a5c41c90af1ec86c83a8beb99498c672fec9dda3d753425f',
+    'build-in-container.sh': 'e8c2cfc7d6e8af147db56190e0d704d15941867081313c90faacb5152fcb12af',
+    'fetch-pinned-inputs.py': 'ded5d1dcbd39a3ac40dfb5cfaa942c09251a988296a32a65bdc0a1c35d83c004',
+    'inputs.lock.tsv': 'c7b3a6d2bd379ec502d35ad36dcc00319c00b21fe3893e056826477b9b9982ff',
+    'libcap-Ubuntu-copyright.txt': 'e60a5642e12e340060e4e519a65b2eb0330be2917854841c644e36268f607d54',
+    'produce-owned-bwrap.sh': 'd0e8f8e4fd4075b854f2ca53cad73043fb144c4004e7851f3a15bc6acb22db25',
+}
 
 
 def digest(body):
@@ -75,12 +84,33 @@ def input_bytes(path):
     return path.read_bytes()
 
 
+def provenance_path(name):
+    if name == 'libcap-Ubuntu-copyright.txt':
+        return 'licenses/Libcap-COPYRIGHT'
+    return 'runtime-provenance/' + name
+
+
+def verify_provenance(read):
+    entries = {}
+    for name, expected in PROVENANCE_SHA256.items():
+        body = read(name)
+        if sha256(body).hexdigest() != expected:
+            raise ValueError(f'managed runtime provenance does not match the reviewed pin: {name}')
+        entries[provenance_path(name)] = body
+    return entries
+
+
+def source_provenance():
+    return verify_provenance(lambda name: input_bytes(PROVENANCE_DIR / name))
+
+
 def verify_ingress(executor, directory):
     if (directory.is_symlink() or not directory.is_dir()
             or {item.name for item in directory.iterdir()} != {'bwrap', 'COPYING'}):
         raise ValueError('expected only bwrap and COPYING in the approved runtime artifact')
     verify_runtime(input_bytes(executor), input_bytes(directory / 'bwrap'),
                    input_bytes(directory / 'COPYING'))
+    source_provenance()
 
 
 def package(wheel, binary, license_file, output):
@@ -103,6 +133,8 @@ def package(wheel, binary, license_file, output):
     extra(RUNTIME_PATH, runtime, 0o755)
     extra(RUNTIME_REQUIRED, RUNTIME_DESCRIPTION, 0o644)
     extra(info + 'licenses/Bubblewrap-COPYING', license_text, 0o644)
+    for path, data in source_provenance().items():
+        extra(info + path, data, 0o644)
     record_path = info + 'RECORD'
     record_info, _ = entries.pop(record_path)
     record = StringIO(newline='')
@@ -126,6 +158,7 @@ def verify(wheel, platform_wheel):
     wheel_path, record_path = info + 'WHEEL', info + 'RECORD'
     license_path = info + 'licenses/Bubblewrap-COPYING'
     added = {RUNTIME_PATH: 0o755, RUNTIME_REQUIRED: 0o644, license_path: 0o644}
+    added.update((info + provenance_path(name), 0o644) for name in PROVENANCE_SHA256)
     if set(plain) & added.keys() or set(platform) != set(plain) | added.keys():
         raise ValueError('unexpected owned runtime wheel inventory')
     for path, (original, contents) in plain.items():
@@ -142,6 +175,7 @@ def verify(wheel, platform_wheel):
     if platform[RUNTIME_REQUIRED][1] != RUNTIME_DESCRIPTION:
         raise ValueError('unexpected owned-runtime marker')
     verify_inputs(plain, platform[RUNTIME_PATH][1], platform[license_path][1])
+    verify_provenance(lambda name: platform[info + provenance_path(name)][1])
     reader = csv.reader(StringIO(platform[record_path][1].decode(), newline=''))
     rows = [tuple(row) for row in reader]
     expected = {(path, digest(data), str(len(data))) for path, (_, data) in platform.items() if path != record_path}

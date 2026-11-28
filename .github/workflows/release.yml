@@ -54,26 +54,8 @@ jobs:
           REQUESTED_PUBLISH: ${{ inputs.publish }}
           BEFORE_SHA: ${{ github.event.before }}
         run: bash scripts/release-target.sh
-      - name: Resolve the reviewed owned runtime artifact
-        id: runtime
-        run: |
-          set -euo pipefail
-          source=.github/owned-runtime-artifact
-          if [[ ! -f "$source" || -L "$source" ]]; then
-            printf 'Commit the reviewed producer run ID and artifact ID in %s.\n' "$source" >&2
-            exit 1
-          fi
-          read -r run_id artifact_id extra < "$source"
-          [[ "$run_id" =~ ^[1-9][0-9]{0,14}$ && "$artifact_id" =~ ^[1-9][0-9]{0,14}$ && -z "$extra" ]]
-          cmp -- "$source" <(printf '%s %s\n' "$run_id" "$artifact_id")
-          printf 'run_id=%s\nartifact_id=%s\n' "$run_id" "$artifact_id" >> "$GITHUB_OUTPUT"
-      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
-        with:
-          artifact-ids: ${{ steps.runtime.outputs.artifact_id }}
-          run-id: ${{ steps.runtime.outputs.run_id }}
-          repository: ${{ github.repository }}
-          github-token: ${{ github.token }}
-          path: ${{ runner.temp }}/owned-runtime/
+      - name: Reproduce the reviewed owned runtime
+        run: bash scripts/owned-runtime/produce-owned-bwrap.sh "$RUNNER_TEMP/owned-runtime"
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version: '24.22.3'

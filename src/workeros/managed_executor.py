@@ -441,6 +441,8 @@ def _registered_launch(request_id, workflow, readback):
                     'profile_revoked', 'manager_selection_denied', 'role_appointment_unverified',
                     'role_appointment_mismatch', 'commissioned_mapping_mismatch')):
             code = str(exc)
+        if readback:
+            return launch_result('unknown', 'unknown', code, request_id=request_id)
         return launch_result('refused', 'not_attempted', code)
 
 

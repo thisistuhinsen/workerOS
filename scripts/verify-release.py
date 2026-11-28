@@ -29,7 +29,11 @@ PUBLIC_DOCS = {
     "go/README.md", "java/README.md", "native/README.md", "node/README.md", "rust/README.md",
     "native/tests/c/CMakeLists.txt", "native/tests/c/conanfile.txt", "native/tests/c/read_input.c",
     "native/tests/cpp/CMakeLists.txt", "native/tests/cpp/conanfile.txt", "native/tests/cpp/read_input.cpp",
-    "scripts/check-strict-custody-linux.py",
+    "scripts/check-strict-custody-linux.py", "scripts/package-owned-bwrap.py",
+    *(f"scripts/owned-runtime/{name}" for name in (
+        "PROVENANCE.md", "build-in-container.sh", "fetch-pinned-inputs.py",
+        "inputs.lock.tsv", "libcap-Ubuntu-copyright.txt", "produce-owned-bwrap.sh",
+    )),
     "docs/brand/README.md", "docs/brand/workeros-banner.png", "docs/brand/workeros-mark.png", "docs/brand/workeros-social.png",
     *(f"docs/brand/language-{language}.png" for language in ("python", "node", "c", "cpp", "go", "rust", "java")),
     *(f"docs/brand/manager-{manager}.png" for manager in ("pip", "uv", "npm", "conan", "go", "cargo", "maven")),

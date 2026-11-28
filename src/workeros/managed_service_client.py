@@ -250,8 +250,10 @@ def request_service(workflow, request_id, *, readback=False, revision=None, summ
         return launch_result('refused', 'not_attempted', 'invalid_service_request')
     try:
         config = _client_registration()
-        pin = config['workflows'][workflow] if revision is None else None
+        pin = config['workflows'].get(workflow) if revision is None else None
         if revision is None:
+            if pin is None:
+                return _service_unavailable('service_caller_denied', request_id, readback=readback)
             _digest(pin)
     except (OSError, ValueError, KeyError, TypeError):
         return _service_unavailable('service_client_registration_unavailable', request_id, readback=readback)
@@ -410,7 +412,7 @@ def _handle(request, caller_uid, deadline, *, originals=None):
             return retain_history(request, caller_uid, readers,
                                   _selected_outcome(outcome, policy, scope, authority, sampled_after))
     except (ExecutorRefusal, managed_service.ServiceRefusal) as exc:
-        if str(exc) == 'launch_executor_registration_missing':
+        if str(exc) in ('launch_executor_registration_missing', 'service_caller_denied'):
             return _service_unavailable(str(exc), request_id, readback=request['operation'] == 'readback')
         return launch_result('refused', 'not_attempted', str(exc))
     except (OSError, KeyError, TypeError, ValueError, VerificationError, RecordError):
@@ -439,8 +441,8 @@ def _selected_outcome(outcome, policy, scope, authority, sampled_after):
     return result
 
 
-def serve_connection(connection, *, deadline=None, commissioned=None, originals=None, history_only=False,
-                     accept_deadline=None):
+def serve_connection(connection, *, deadline=None, commissioned=None, pending_runs=None, originals=None,
+                     history_only=False, accept_deadline=None):
     if os.getresuid() != (managed_cli._TRUSTED_UID,) * 3:
         raise ExecutorRefusal('administrator_required')
     if deadline is None:
@@ -466,32 +468,43 @@ def serve_connection(connection, *, deadline=None, commissioned=None, originals=
             raise ExecutorRefusal('invalid_service_request')
         for identifier in request['summary_ids']:
             _digest(identifier)
+    workflow, operation = request['workflow'], request['operation']
+    if accept_deadline is not None and operation != 'run':
+        deadline = min(deadline, accept_deadline)
+    lookup_answered = False
     token = managed_cli._CHECK_WORK_DEADLINE.set(deadline)
     try:
         _remaining(deadline)
-        workflow, operation = request['workflow'], request['operation']
         if history_only and operation != 'history':
             result = launch_result('refused', 'not_attempted', 'service_history_only')
         elif commissioned is not None and workflow not in commissioned:
-            result = launch_result('refused', 'not_attempted', 'service_workflow_unavailable')
+            if operation == 'history':
+                result = launch_result('unknown', 'unknown', 'service_history_unavailable')
+            else:
+                result = _service_unavailable('service_caller_denied', request['request_id'],
+                                              readback=operation == 'readback')
         elif commissioned is not None and operation != 'history':
             admission = commissioned[workflow]
             if caller_uid not in admission[operation]:
-                result = launch_result('refused', 'not_attempted', 'service_caller_denied')
+                result = _service_unavailable('service_caller_denied', request['request_id'],
+                                              readback=operation == 'readback')
             elif any(request[field] != admission[field] for field in ('profile', 'revision', 'policy_sha256')):
                 result = _service_unavailable('service_registration_mismatch', request['request_id'],
                                               readback=operation == 'readback')
+            elif operation == 'run' and workflow not in pending_runs:
+                result = launch_result('refused', 'not_attempted', 'service_workflow_unavailable')
             else:
-                del commissioned[workflow]
+                if operation == 'run':
+                    pending_runs.remove(workflow)
                 result = _handle(request, caller_uid, deadline, originals=originals)
+                lookup_answered = operation == 'readback' and 'selection' in result
         else:
             result = _handle(request, caller_uid, deadline, originals=originals)
-            if commissioned is not None and result.get('history', {}).get('status') == 'recorded':
-                # Archived results carry their own reader rights and revision.
-                del commissioned[workflow]
+            lookup_answered = operation == 'history' and result.get('history', {}).get('status') == 'recorded'
     finally:
         managed_cli._CHECK_WORK_DEADLINE.reset(token)
     _frame_write(connection, {'version': 1, 'nonce': request['nonce'], 'result': result}, deadline)
+    return lookup_answered
 
 
 def _commissioned_listener(workflows):
@@ -503,7 +516,7 @@ def _commissioned_listener(workflows):
             executor['profile'], executor['revision'])):
         raise ValueError('service_registration_mismatch')
     require_pinned_pair(executor, required=True, readback=True)
-    allowed, originals, endpoints = set(), set(), {config['socket']}
+    originals, endpoints = set(), {config['socket']}
     admissions = {}
     for workflow in workflows:
         _name(workflow)
@@ -522,12 +535,11 @@ def _commissioned_listener(workflows):
                 raise ValueError('service_overlap_requires_distinct_originals')
             originals |= identities
         endpoints |= sockets
-        allowed.update(selected['run_uids'] + selected['result_uids'])
         admissions[workflow] = {'run': frozenset(selected['run_uids']),
                                 'readback': frozenset(selected['result_uids']),
                                 'profile': config['profile'], 'revision': config['revision'],
                                 'policy_sha256': config['workflows'][workflow]}
-    return registered_listener(config['socket'], managed_cli._TRUSTED_UID, public=True), frozenset(allowed), admissions
+    return registered_listener(config['socket'], managed_cli._TRUSTED_UID, public=True), admissions
 
 
 def serve_main(argv):
@@ -538,7 +550,7 @@ def serve_main(argv):
     mode.add_argument('--history', action='store_true',
                       help='Serve one read-only archived lookup on the protected client socket')
     mode.add_argument('--commissioned', action='append', metavar='WORKFLOW',
-                      help='add a distinct approved workflow and one request to the batch limit')
+                      help='add a distinct approved workflow and one run to the finite batch')
     args = parser.parse_args(argv)
     workflows = None if args.commissioned is None else frozenset(args.commissioned)
     if workflows is not None and len(workflows) != len(args.commissioned):
@@ -550,13 +562,15 @@ def serve_main(argv):
             raise ExecutorRefusal('administrator_required')
         originals = (activation_descriptors(frozenset(), ORIGINALS) if args.commissioned is not None else None)
         commissioned = None
+        pending_runs = None
         if args.commissioned is not None:
-            endpoint, allowed, commissioned = _commissioned_listener(workflows)
+            endpoint, commissioned = _commissioned_listener(workflows)
+            pending_runs = set(commissioned)
         elif args.history:
             config = _client_registration()
-            endpoint, allowed = registered_listener(config['socket'], managed_cli._TRUSTED_UID, public=True), None
+            endpoint = registered_listener(config['socket'], managed_cli._TRUSTED_UID, public=True)
         else:
-            endpoint, allowed = socket.socket(fileno=os.dup(args.listen_fd)), None
+            endpoint = socket.socket(fileno=os.dup(args.listen_fd))
         with endpoint as listener:
             if (listener.family != socket.AF_UNIX
                     or listener.getsockopt(socket.SOL_SOCKET, socket.SO_TYPE) != socket.SOCK_STREAM
@@ -564,21 +578,25 @@ def serve_main(argv):
                     or _peer(listener) != managed_cli._TRUSTED_UID):
                 raise ExecutorRefusal('service_listener_untrusted')
             accept_deadline = monotonic() + managed_cli._TIMEOUT
-            while commissioned is None or commissioned:
-                listener.settimeout(_remaining(accept_deadline))
-                client, _ = listener.accept()
+            lookup_answered = False
+            while pending_runs is None or pending_runs:
+                try:
+                    listener.settimeout(_remaining(accept_deadline))
+                    client, _ = listener.accept()
+                except TimeoutError:
+                    if lookup_answered and not received:
+                        break
+                    raise
                 with client:
-                    if allowed is not None and _peer(client) not in allowed:
-                        continue
-                    slots = len(commissioned) if commissioned is not None else None
+                    slots = len(pending_runs) if pending_runs is not None else None
                     reply_failed = False
                     try:
-                        serve_connection(client, commissioned=commissioned, originals=originals,
-                                         history_only=args.history,
-                                         accept_deadline=accept_deadline if commissioned is not None else None)
+                        lookup_answered |= serve_connection(
+                            client, commissioned=commissioned, pending_runs=pending_runs, originals=originals,
+                            history_only=args.history, accept_deadline=accept_deadline if commissioned is not None else None)
                     except (OSError, ValueError, EOFError, TypeError, KeyError):
                         reply_failed = True
-                    if slots is None or len(commissioned) < slots:
+                    if slots is None or len(pending_runs) < slots:
                         received = True
                         unconfirmed |= reply_failed
                     if commissioned is None:

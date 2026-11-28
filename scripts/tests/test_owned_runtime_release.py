@@ -3,6 +3,7 @@
 from hashlib import sha256
 from pathlib import Path
 import runpy
+import shutil
 import stat
 import subprocess
 from tempfile import TemporaryDirectory
@@ -47,6 +48,8 @@ class OwnedRuntimeReleaseTest(unittest.TestCase):
             runtime = wheel.getinfo("workeros/_runtime/bwrap")
             self.assertEqual(runtime.external_attr >> 16, stat.S_IFREG | 0o755)
             self.assertEqual(wheel.read(runtime), self.binary.read_bytes())
+            for path, data in packer.source_provenance().items():
+                self.assertEqual(wheel.read(self.prefix + path), data)
 
     def test_missing_and_nonmatching_inputs_do_not_publish_wheel(self):
         self.binary.unlink()
@@ -61,6 +64,21 @@ class OwnedRuntimeReleaseTest(unittest.TestCase):
         self.license.write_bytes(b"different license fixture")
         with self.assertRaisesRegex(ValueError, "license does not match the reviewed pin"):
             self.package(self.root)
+
+    def test_missing_and_changed_provenance_leaves_no_output_wheel(self):
+        for name in ("libcap-Ubuntu-copyright.txt", "inputs.lock.tsv"):
+            with self.subTest(name=name):
+                directory = Path(self.enterContext(TemporaryDirectory())) / "owned-runtime"
+                shutil.copytree(packer.PROVENANCE_DIR, directory)
+                member = directory / name
+                with patch.dict(packer.verify_inputs.__globals__, {"PROVENANCE_DIR": directory}):
+                    member.unlink()
+                    with self.assertRaisesRegex(ValueError, "not a regular file"):
+                        self.package(self.root)
+                    member.write_bytes(b"ordinary unrelated fixture")
+                    with self.assertRaisesRegex(ValueError, "provenance does not match the reviewed pin"):
+                        self.package(self.root)
+                self.assertEqual(list(self.root.glob("*linux*.whl")), [])
 
     def test_ingress_binds_the_checked_out_pin_and_exact_two_file_artifact(self):
         runtime = self.root / "approved"
@@ -98,6 +116,29 @@ class OwnedRuntimeReleaseTest(unittest.TestCase):
                         wheel.writestr(info, contents)
                 with self.assertRaisesRegex(ValueError, match):
                     packer.verify(self.base, changed)
+
+    def test_platform_verifier_rejects_missing_or_changed_runtime_inputs(self):
+        candidate = self.package(self.root)
+        for name, message in (
+            (self.prefix + "licenses/Bubblewrap-COPYING", "license does not match"),
+            (self.prefix + "licenses/Libcap-COPYRIGHT", "provenance does not match"),
+            (self.prefix + "runtime-provenance/inputs.lock.tsv", "provenance does not match"),
+            ("workeros/_runtime/bwrap", "runtime does not match"),
+        ):
+            for skip_member in (False, True):
+                with self.subTest(name=name, missing=skip_member):
+                    peer = Path(self.enterContext(TemporaryDirectory()))
+                    changed = peer / candidate.name
+                    with ZipFile(candidate) as original, ZipFile(changed, "w") as wheel:
+                        for info in original.infolist():
+                            if info.filename != name:
+                                wheel.writestr(info, original.read(info))
+                            elif not skip_member:
+                                wheel.writestr(info, b"ordinary unrelated fixture")
+                    with self.assertRaisesRegex(
+                        ValueError, "unexpected owned runtime wheel inventory" if skip_member else message
+                    ):
+                        packer.verify(self.base, changed)
 
     def test_release_script_refuses_requested_missing_inputs_before_build(self):
         output = self.root / "not-created"

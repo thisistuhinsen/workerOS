@@ -273,7 +273,7 @@ class HolderOverlapTest(TestCase):
             lifecycle = result['provider_report']['service']['lifecycle']
             self.assertEqual(lifecycle['cgroup']['inode'], 100 + names.index(name))
             self.assertLess(lifecycle['empty_ns'], lifecycle['retired_ns'])
-        self.assertEqual(readbacks.result(timeout=2), 0)
+        self.assertEqual(readbacks.result(timeout=managed_cli._TIMEOUT + 2), 0)
         for task in holder_tasks + guards:
             task.result(timeout=4)
         self.assertEqual(set(reaped), set(names))

@@ -74,9 +74,19 @@ class StockExecutorRegistrationTest(TestCase):
         self.fixture.write_files()
         self.assert_run_refused('managed_registration_drift')
         with patch.object(managed_executor, '_read_historical_launch') as read:
-            refused = managed_executor.registered_launch(self.request, readback=True)
-            self.assertEqual((refused['code'], refused['effect']), ('managed_registration_drift', 'not_attempted'))
+            observed = managed_executor.registered_launch(self.request, readback=True)
+            self.assertEqual((observed['status'], observed['effect'], observed['request_id'], observed['code']),
+                             ('unknown', 'unknown', self.request, 'managed_registration_drift'))
             read.assert_not_called()
+
+    def test_lookup_without_executor_configuration_remains_unknown(self):
+        (self.fixture.config / 'launch-executor.json').unlink()
+        self.assert_run_refused('launch_executor_registration_missing')
+        with patch.object(managed_executor, '_read_historical_launch') as read:
+            observed = managed_executor.registered_launch(self.request, readback=True)
+        self.assertEqual((observed['status'], observed['effect'], observed['request_id'], observed['code']),
+                         ('unknown', 'unknown', self.request, 'launch_executor_registration_missing'))
+        read.assert_not_called()
 
     def test_stock_live_rejects_unpinned_expired_or_revoked_approval(self):
         self.assert_run_refused('managed_registration_unpinned')

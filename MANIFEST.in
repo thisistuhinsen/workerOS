@@ -14,3 +14,5 @@ include go/README.md java/README.md native/README.md node/README.md rust/README.
 include native/tests/c/CMakeLists.txt native/tests/c/conanfile.txt native/tests/c/read_input.c
 include native/tests/cpp/CMakeLists.txt native/tests/cpp/conanfile.txt native/tests/cpp/read_input.cpp
 include scripts/check-strict-custody-linux.py
+include scripts/package-owned-bwrap.py
+recursive-include scripts/owned-runtime *.sh *.py *.tsv *.txt *.md

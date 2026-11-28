@@ -390,6 +390,13 @@ result right, even if the role has since been revoked.
 A caller with run rights only receives no effective-state or cleanup
 receipt from the run command. An approved result reader retrieves it.
 
+An unavailable workflow and a caller without its operation rights receive
+the same opaque disposition for that operation. A failed status or history
+transport leaves the original effect `unknown` under the retained ID.
+Within a commissioned listener's finite window, an authorized lookup does
+not spend a workflow's run slot. The listener closes when the run batch
+finishes or its existing window expires.
+
 An approved result reader receives the selected workflow, role, and
 registered scopes in `selection`. A pending guarded invocation can also
 include a `phase_observation` with the invocation, clock, cgroup, monotonic
@@ -471,8 +478,11 @@ Add `--summary-id` for each other request to include, or supply
 `summary_ids` in JSON/YAML or Python. The count covers that explicit set
 and the primary request, once per ID. If any requested record is unavailable
 to the caller or belongs to a different role or resource selection, the
-count is unavailable. Archived evidence describes an already verified
-outcome and carries no current activity claim.
+count is unavailable. Archived evidence carries no current activity claim. An approved guard-only
+record may describe exit and cleanup while the effect stays `unknown`.
+Counts cover only the explicit, authorized archive set and report categories
+without coverage as unavailable. They do not show current activity across
+other workflows or workers.
 
 ### Verify an independent result for a guarded workflow
 

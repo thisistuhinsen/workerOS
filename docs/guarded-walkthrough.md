@@ -274,6 +274,8 @@ wait_socket "$p/guard/guard.sock"
 listener=$!
 wait_socket "$p/client/launch.sock"
 runuser -u wo-demo-caller -- "$wos" managed launch-status --workflow "$workflow" --request-id "$id"
+# The status lookup leaves the run slot unused. The listener closes
+# when its finite window expires after serving the authorized status.
 wait "$listener"
 "$wos" managed revoke-profile "$profile" "$revision"
 for service in "$unit" workeros-demo-holder.service workeros-demo-witness.service workeros-demo-readback.service; do

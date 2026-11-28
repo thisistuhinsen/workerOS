@@ -129,6 +129,7 @@ class ManagedServiceClientTest(TestCase):
 
     def test_commissioned_slots_require_exact_workflow_and_operation_entitlement(self):
         other = 'inventory-audit'
+        unknown = 'unregistered-workflow'
         self.client['workflows'][other] = '4' * 64
         self.write_config()
         common = {field: self.client[field] for field in ('profile', 'revision')}
@@ -136,7 +137,7 @@ class ManagedServiceClientTest(TestCase):
             self.workflow: {**common, 'policy_sha256': self.client['workflows'][self.workflow],
                             'run': {self.uid}, 'readback': {self.other_uid}},
             other: {**common, 'policy_sha256': self.client['workflows'][other],
-                    'run': {self.other_uid}, 'readback': {self.uid}},
+                    'run': {self.uid}, 'readback': {self.uid}},
         }
 
         def query(workflow, **kwargs):
@@ -152,27 +153,35 @@ class ManagedServiceClientTest(TestCase):
             listener.bind(self.endpoint)
             listener.listen()
             with patch.object(managed_service_client, '_commissioned_listener',
-                              return_value=(listener, {self.uid, self.other_uid}, commissioned)), patch.object(
+                              return_value=(listener, commissioned)), patch.object(
                     managed_service_client, 'activation_descriptors', return_value={}), patch.object(
                     managed_service_client, '_handle', side_effect=handle) as dispatch:
                 future = server.submit(managed_service_client.serve_main,
                                        ['--commissioned', self.workflow, '--commissioned', other])
                 with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as incomplete:
                     incomplete.connect(self.endpoint)
-                self.assertEqual(query(self.workflow, readback=True)['code'], 'service_caller_denied')
-                self.assertEqual(query(other)['code'], 'service_caller_denied')
+                denied = query(self.workflow, readback=True)
+                self.assertEqual(denied, query(unknown, readback=True))
+                self.assertEqual(denied, {'status': 'unknown', 'effect': 'unknown', 'code': 'service_caller_denied',
+                                          'request_id': self.request_id})
+                self.client['workflows'][unknown] = '6' * 64
+                self.write_config()
+                self.assertEqual(denied, query(unknown, readback=True))
                 self.client['workflows'][other] = '5' * 64
                 self.write_config()
                 self.assertEqual(query(other, readback=True)['code'], 'service_registration_mismatch')
                 self.client['workflows'][other] = '4' * 64
                 self.write_config()
                 self.assertEqual(query(other, readback=True, revision='old')['code'], 'service_history_unavailable')
-                self.assertEqual(query(self.workflow)['code'], 'fixture_no_effect')
-                self.assertEqual(query(self.workflow)['code'], 'service_workflow_unavailable')
                 self.assertEqual(query(other, readback=True)['code'], 'fixture_no_effect')
+                self.assertEqual(query(other)['code'], 'fixture_no_effect')
+                self.assertEqual(query(other, readback=True)['code'], 'fixture_no_effect')
+                self.assertEqual(query(other)['code'], 'service_workflow_unavailable')
+                self.assertEqual(query(self.workflow)['code'], 'fixture_no_effect')
                 self.assertEqual(future.result(timeout=4), 0)
         self.assertEqual([(call.args[0]['workflow'], call.args[0]['operation']) for call in dispatch.call_args_list],
-                         [(other, 'history'), (self.workflow, 'run'), (other, 'readback')])
+                         [(other, 'history'), (other, 'readback'), (other, 'run'), (other, 'readback'),
+                          (self.workflow, 'run')])
 
     def test_lost_reply_after_real_request_preserves_unknown(self):
         def discard_reply(connection):
@@ -213,6 +222,7 @@ class ManagedServiceClientTest(TestCase):
                 managed_service_client.managed_service, 'prepare') as prepare:
             result, _ = self.exchange(managed_service_client.serve_connection)
             self.assertEqual(result['code'], 'service_caller_denied')
+            self.assertEqual(result, managed_service_client.request_service('unregistered-workflow', self.request_id))
             historical.assert_not_called()
             verify.assert_not_called()
             observed, _ = self.exchange(managed_service_client.serve_connection, readback=True)
@@ -882,9 +892,13 @@ class ManagedServiceClientTest(TestCase):
             self.assertEqual(guard_only['activity'], {'state': 'unknown', 'basis': 'guard_terminal'})
             key = guard_only['request_id']
             call_count = len(calls)
-            archived, _ = self.exchange(lambda connection: managed_service_client.serve_connection(
-                connection, history_only=True), invoke=lambda: managed_executor.registered_launch(
+            pending_runs = {self.workflow}
+            archived, answered = self.exchange(lambda connection: managed_service_client.serve_connection(
+                connection, commissioned={self.workflow: {}}, pending_runs=pending_runs),
+                invoke=lambda: managed_executor.registered_launch(
                     key, workflow=self.workflow, revision=old_revision, readback=True, summary_ids=[key]))
+            self.assertTrue(answered)
+            self.assertEqual(pending_runs, {self.workflow})
             self.assertEqual(archived['provider_report'], guard_only['provider_report'])
             self.assertEqual((archived['status'], archived['effect']), ('unknown', 'unknown'))
             self.assertEqual(archived['summary']['verified_count'], 0)
