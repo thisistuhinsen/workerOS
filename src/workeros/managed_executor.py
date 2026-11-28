@@ -523,9 +523,9 @@ def main(operation, argv):
                          help='Read version, request_id and optional workflow and report from standard input')
     parser.add_argument('--workflow', help='Select an approved managed service workflow')
     if operation == 'launch-status':
-        parser.add_argument('--revision', help='Read a verified archived result for this exact revision')
+        parser.add_argument('--revision', help='Read an authorized archived result for this exact revision')
         parser.add_argument('--summary-id', action='append', metavar='ID',
-                            help='Include another authorized archived request in the same scope count')
+                            help='Count another authorized archived request in the same scope')
     parser.add_argument('--report', metavar='FILE', help='Write a copy to a new file as the unprivileged caller')
     parser.add_argument('--input', metavar='FILE', help='Read the JSON or YAML request from this file')
     workflow = None

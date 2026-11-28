@@ -62,6 +62,27 @@ class OwnedRuntimeReleaseTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "license does not match the reviewed pin"):
             self.package(self.root)
 
+    def test_ingress_binds_the_checked_out_pin_and_exact_two_file_artifact(self):
+        runtime = self.root / "approved"
+        runtime.mkdir()
+        for member in (self.binary, self.license):
+            (runtime / member.name).write_bytes(member.read_bytes())
+        executor = self.root / "managed_executor.py"
+        with ZipFile(self.base) as wheel:
+            executor.write_bytes(wheel.read("workeros/managed_executor.py"))
+        packer.verify_ingress(executor, runtime)
+        (runtime / "extra").touch()
+        with self.assertRaisesRegex(ValueError, "expected only bwrap and COPYING"):
+            packer.verify_ingress(executor, runtime)
+        (runtime / "extra").unlink()
+        (runtime / "bwrap").write_bytes(b"not the approved executable")
+        with self.assertRaisesRegex(ValueError, "does not match the reviewed pin"):
+            packer.verify_ingress(executor, runtime)
+        (runtime / "bwrap").unlink()
+        (runtime / "bwrap").symlink_to(self.binary)
+        with self.assertRaisesRegex(ValueError, "not a regular file"):
+            packer.verify_ingress(executor, runtime)
+
     def test_platform_verifier_rejects_metadata_and_record_changes(self):
         candidate = self.package(self.root)
         for name, match in (
@@ -86,4 +107,18 @@ class OwnedRuntimeReleaseTest(unittest.TestCase):
         )
         self.assertEqual(result.returncode, 1)
         self.assertIn("Missing reviewed regular managed runtime file", result.stderr)
+        self.assertFalse(output.exists())
+
+    def test_release_script_refuses_requested_off_pin_inputs_before_build(self):
+        runtime = self.root / "artifact"
+        runtime.mkdir()
+        for member in (self.binary, self.license):
+            (runtime / member.name).write_bytes(member.read_bytes())
+        output = self.root / "not-created"
+        result = subprocess.run(
+            ["bash", str(SCRIPTS / "build-release.sh"), "--build-only", "--owned-runtime-dir",
+             str(runtime), str(output)], capture_output=True, text=True, check=False,
+        )
+        self.assertEqual(result.returncode, 1, result)
+        self.assertIn("does not match the reviewed pin", result.stderr)
         self.assertFalse(output.exists())

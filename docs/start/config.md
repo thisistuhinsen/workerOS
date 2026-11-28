@@ -178,6 +178,48 @@ cleanup `reaped`. If a check reports `yaml_dependency_missing`, install
 PyYAML in the environment shown above or use JSON. Any pinned policy
 checksum covers the exact bytes on disk, not a converted copy.
 
+## Submit an approved workflow from JSON or YAML
+
+These **v0.8.0 candidate** calls use the administrator's registered workflow
+and the same request ID as the [terminal example](terminal.md#run-and-check-an-approved-worker).
+They carry a request, while the configuration examples above describe an
+ordinary job policy. Prepare the shell variables there and submit using
+only one format. You can use either format for readback.
+
+**JSON**
+
+```sh
+"$WORKEROS_BIN" managed run-approved --format json <<JSON
+{"version":1,"workflow":"$WORKEROS_WORKFLOW","request_id":"$WORKEROS_REQUEST_ID"}
+JSON
+
+"$WORKEROS_BIN" managed launch-status --format json <<JSON
+{"version":1,"workflow":"$WORKEROS_WORKFLOW","request_id":"$WORKEROS_REQUEST_ID"}
+JSON
+```
+
+**YAML** needs the [optional parser](#run-from-yaml) in the caller install.
+The result still uses JSON.
+
+```sh
+"$WORKEROS_BIN" managed run-approved --format yaml <<YAML
+version: 1
+workflow: "$WORKEROS_WORKFLOW"
+request_id: "$WORKEROS_REQUEST_ID"
+YAML
+
+"$WORKEROS_BIN" managed launch-status --format yaml <<YAML
+version: 1
+workflow: "$WORKEROS_WORKFLOW"
+request_id: "$WORKEROS_REQUEST_ID"
+YAML
+```
+
+For a caller-owned copy, add `--report ./result.json` to the status command
+and choose a new name. An export error can happen after the result was
+received. Read back the same request if you need another copy. See
+[report path precedence](../host-preflight.md#save-a-caller-owned-copy-of-the-result).
+
 ## Preview with YAML
 
 **v0.8.0 candidate.** A role profile is separate from the job policy

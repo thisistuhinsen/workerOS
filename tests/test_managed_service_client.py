@@ -97,8 +97,82 @@ class ManagedServiceClientTest(TestCase):
         with patch.multiple(managed_cli, _TRUSTED_UID=self.other_uid), patch.object(
                 managed_cli, '_read_admin_json', return_value=self.client):
             result, request = self.exchange(lambda connection: connection.recv(1))
+            lookup, lookup_request = self.exchange(lambda connection: connection.recv(1), readback=True)
         self.assertEqual(request, b'')
+        self.assertEqual(lookup_request, b'')
         self.assertEqual(result, {'status': 'refused', 'effect': 'not_attempted', 'code': 'service_peer_untrusted'})
+        self.assertEqual(lookup, {'status': 'unknown', 'effect': 'unknown', 'code': 'service_peer_untrusted',
+                                  'request_id': self.request_id})
+
+    def test_missing_lookup_configuration_or_endpoint_keeps_prior_effect_unknown(self):
+        for configuration_available in (False, True):
+            if configuration_available:
+                self.write_config()
+            code = ('service_endpoint_unavailable' if configuration_available else
+                    'service_client_registration_unavailable')
+            submit = managed_service_client.request_service(self.workflow, self.request_id)
+            self.assertEqual(submit, {'status': 'refused', 'effect': 'not_attempted', 'code': code})
+            for revision in (None, 'review-1'):
+                with self.subTest(code=code, revision=revision):
+                    lookup = managed_service_client.request_service(self.workflow, self.request_id,
+                                                                     readback=True, revision=revision)
+                    self.assertEqual(lookup, {'status': 'unknown', 'effect': 'unknown', 'code': code,
+                                              'request_id': self.request_id})
+
+        def with_missing_executor_file(connection):
+            (self.directory / 'launch-executor.json').unlink()
+            return managed_service_client.serve_connection(connection)
+
+        result, _ = self.exchange(with_missing_executor_file, readback=True)
+        self.assertEqual(result, {'status': 'unknown', 'effect': 'unknown',
+                                  'code': 'launch_executor_registration_missing', 'request_id': self.request_id})
+
+    def test_commissioned_slots_require_exact_workflow_and_operation_entitlement(self):
+        other = 'inventory-audit'
+        self.client['workflows'][other] = '4' * 64
+        self.write_config()
+        common = {field: self.client[field] for field in ('profile', 'revision')}
+        commissioned = {
+            self.workflow: {**common, 'policy_sha256': self.client['workflows'][self.workflow],
+                            'run': {self.uid}, 'readback': {self.other_uid}},
+            other: {**common, 'policy_sha256': self.client['workflows'][other],
+                    'run': {self.other_uid}, 'readback': {self.uid}},
+        }
+
+        def query(workflow, **kwargs):
+            return managed_service_client.request_service(workflow, self.request_id, **kwargs)
+
+        def handle(request, caller_uid, _deadline, *, originals):
+            self.assertEqual(caller_uid, self.uid)
+            code = ('service_history_unavailable' if request['operation'] == 'history' else
+                    'fixture_no_effect')
+            return {'status': 'unknown', 'effect': 'unknown', 'code': code}
+
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as listener, ThreadPoolExecutor(1) as server:
+            listener.bind(self.endpoint)
+            listener.listen()
+            with patch.object(managed_service_client, '_commissioned_listener',
+                              return_value=(listener, {self.uid, self.other_uid}, commissioned)), patch.object(
+                    managed_service_client, 'activation_descriptors', return_value={}), patch.object(
+                    managed_service_client, '_handle', side_effect=handle) as dispatch:
+                future = server.submit(managed_service_client.serve_main,
+                                       ['--commissioned', self.workflow, '--commissioned', other])
+                with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as incomplete:
+                    incomplete.connect(self.endpoint)
+                self.assertEqual(query(self.workflow, readback=True)['code'], 'service_caller_denied')
+                self.assertEqual(query(other)['code'], 'service_caller_denied')
+                self.client['workflows'][other] = '5' * 64
+                self.write_config()
+                self.assertEqual(query(other, readback=True)['code'], 'service_registration_mismatch')
+                self.client['workflows'][other] = '4' * 64
+                self.write_config()
+                self.assertEqual(query(other, readback=True, revision='old')['code'], 'service_history_unavailable')
+                self.assertEqual(query(self.workflow)['code'], 'fixture_no_effect')
+                self.assertEqual(query(self.workflow)['code'], 'service_workflow_unavailable')
+                self.assertEqual(query(other, readback=True)['code'], 'fixture_no_effect')
+                self.assertEqual(future.result(timeout=4), 0)
+        self.assertEqual([(call.args[0]['workflow'], call.args[0]['operation']) for call in dispatch.call_args_list],
+                         [(other, 'history'), (self.workflow, 'run'), (other, 'readback')])
 
     def test_lost_reply_after_real_request_preserves_unknown(self):
         def discard_reply(connection):
@@ -143,8 +217,9 @@ class ManagedServiceClientTest(TestCase):
             verify.assert_not_called()
             observed, _ = self.exchange(managed_service_client.serve_connection, readback=True)
             self.assertEqual(observed, {**receipt, 'selection': {
-                'workflow': self.workflow, 'role': 'write-role', 'scope_sha256': scope.digest,
-                'resource_scopes': []}})
+                'workflow': self.workflow, 'role': 'write-role', 'worker': 'worker',
+                'scope_sha256': scope.digest, 'resource_scopes': []},
+                'activity': {'state': 'unknown', 'basis': 'managed_result'}})
             historical.assert_called_once()
             prepare.assert_not_called()
 
@@ -189,28 +264,42 @@ class ManagedServiceClientTest(TestCase):
         scope = ServiceScope(**entry['service'])
         key = 'b'*64
         now = monotonic_ns()
-        phase = ServicePhaseObservation(key, 'clock', scope.digest, {'device': 7, 'inode': 200, 'mount_id': 25},
-                                        now - 1, now, True)
+        populated, stale = True, False
 
         def scoped_history(registration, _profile, _revision, request_id, _deadline):
             owner = registration.readback.__self__
             self.assertIsInstance(owner, GuardedServiceAuthority)
+            tick = now if stale else monotonic_ns()
+            phase = ServicePhaseObservation(key, 'clock', scope.digest,
+                                            {'device': 7, 'inode': 200, 'mount_id': 25}, now - 1, tick, populated)
             owner.phase_observation = asdict(phase)
             return {'status': 'unknown', 'effect': 'unknown', 'code': 'launch_readback_unconfirmed',
                     'request_id': request_id, 'invocation_key': key}
 
-        with patch('workeros.managed_registration.require_pinned_pair', return_value=None), patch.object(
+        with patch('workeros.managed_registration.require_pinned_pair', return_value=None) as pinned, patch.object(
                 managed_service_client, 'verify_install'), patch.object(
                 managed_service_client, '_read_historical_launch', side_effect=scoped_history) as history:
             refused, _ = self.exchange(managed_service_client.serve_connection, readback=True)
             self.assertEqual(refused['code'], 'service_caller_denied')
             self.assertNotIn('phase_observation', refused)
+            self.assertNotIn('activity', refused)
+            pinned.assert_not_called()
             history.assert_not_called()
             entry['result_uids'] = [self.uid]
+            for populated, state in ((True, 'active'), (False, 'settling')):
+                observed, _ = self.exchange(managed_service_client.serve_connection, readback=True)
+                self.assertEqual((observed['status'], observed['effect']), ('unknown', 'unknown'))
+                phase = observed['phase_observation']
+                self.assertEqual(phase['populated'], populated)
+                self.assertEqual(observed['selection']['scope_sha256'], scope.digest)
+                self.assertEqual(observed['selection']['worker'], 'worker')
+                self.assertEqual(observed['activity'], {
+                    'state': state, 'basis': 'guard_cgroup_sample', 'clock_id': 'clock',
+                    'observed_ns': phase['observed_ns']})
+            stale = True
             observed, _ = self.exchange(managed_service_client.serve_connection, readback=True)
-        self.assertEqual((observed['status'], observed['effect']), ('unknown', 'unknown'))
-        self.assertEqual(observed['phase_observation'], asdict(phase))
-        self.assertEqual(observed['selection']['scope_sha256'], phase.scope_sha256)
+            self.assertNotIn('phase_observation', observed)
+            self.assertEqual(observed['activity'], {'state': 'unknown', 'basis': 'managed_result'})
 
     def test_stock_authentication_and_parent_read_do_not_reserve_or_submit_without_a_guard(self):
         host = {'profile': self.server['profile'], 'revision': self.server['revision'],
@@ -774,15 +863,38 @@ class ManagedServiceClientTest(TestCase):
             self.assertEqual(len(calls), cutoff)
             self.assertEqual(calls.count('submit_service'), 1)
             self.assertEqual({path: path.read_bytes() for path in store.rglob('*') if path.is_file()}, before)
-            # The alternate attestation fixtures above all target one logical
-            # attempt. Commit only the final verified result before switching
-            # the installed client to a different revision and removing its witness.
+            # A retired guard record is useful while the witness is absent.
+            # It does not prove the effect or prevent later independent
+            # evidence from superseding its historical response.
             retain.side_effect = retain_history
-            mode = 'split'
             retired.return_value = True
+            old_revision = self.client['revision']
+            mode = 'missing'
+            guard_only, _ = self.exchange(managed_service_client.serve_connection,
+                                           invoke=lambda: invoke('python', 1, readback=True))
+            self.assertEqual((guard_only['status'], guard_only['effect'], guard_only['code']),
+                             ('unknown', 'unknown', 'service_terminal_reported'))
+            self.assertEqual(guard_only['history']['status'], 'recorded')
+            life = guard_only['provider_report']['service']['lifecycle']
+            self.assertEqual((life['terminal_status'], life['terminal_disposition']), (0, 'exited'))
+            self.assertLess(life['empty_ns'], life['retired_ns'])
+            self.assertNotIn('observer_result', guard_only)
+            self.assertEqual(guard_only['activity'], {'state': 'unknown', 'basis': 'guard_terminal'})
+            key = guard_only['request_id']
+            call_count = len(calls)
+            archived, _ = self.exchange(lambda connection: managed_service_client.serve_connection(
+                connection, history_only=True), invoke=lambda: managed_executor.registered_launch(
+                    key, workflow=self.workflow, revision=old_revision, readback=True, summary_ids=[key]))
+            self.assertEqual(archived['provider_report'], guard_only['provider_report'])
+            self.assertEqual((archived['status'], archived['effect']), ('unknown', 'unknown'))
+            self.assertEqual(archived['summary']['verified_count'], 0)
+            self.assertEqual(archived['summary']['counts']['unknown'], 1)
+            self.assertIsNone(archived['summary']['counts']['active'])
+            self.assertEqual(len(calls), call_count)
+
+            mode = 'split'
             verified, _ = self.exchange(managed_service_client.serve_connection,
                                          invoke=lambda: invoke('python', 1, readback=True))
-            old_revision = self.client['revision']
             self.assertEqual(verified['history'], {'status': 'recorded', 'revision': old_revision,
                                                    'profile': self.client['profile']})
             request = {'profile': self.client['profile'], 'revision': old_revision,

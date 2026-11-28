@@ -1,8 +1,9 @@
 # Use WorkerOS in code
 
 Start a job from Python, or add a reader to a worker that needs an open
-file. **Python starts jobs.** Node.js, C, C++, Go, Rust and Java can read
-inputs a launcher passes to them; those libraries aren't launchers.
+file. The Node.js, C, C++, Go, Rust and Java packages read inputs a
+launcher passes to them. Applications in those languages can also call
+the installed `workeros` executable as a separate process.
 
 ## Run hello from Python
 
@@ -95,3 +96,176 @@ and the [troubleshooting guide](../support.md#troubleshooting).
 [Install a v0.8.0 reader](../install-0.8.0.md#package-manager-quick-reference) ·
 [Pass a file from your own Python app](../workers.md#python-apis) ·
 [Back to first run](../../README.md#install-and-run)
+
+## Call an approved workflow from code
+
+These **v0.8.0 candidate** examples operate as the caller's ordinary OS
+account. First follow [managed terminal setup](terminal.md#run-and-check-an-approved-worker)
+to get the verified local executable, enrolled workflow, and retained
+request ID. For an invocation from another interface, use its original ID.
+
+Each example defaults to readback. Use `run` once, with an ID retained for
+that submission, if you intend to launch and have run rights. Keep the
+same ID for readback and do not resubmit to recover an unknown result.
+Run rights and result rights can be granted separately. The operator may
+need to provide a fresh connection to the finite local listener for readback.
+
+Python uses the candidate's API. The other six examples invoke the installed
+executable without a shell, preserve its JSON stdout and diagnostic stderr,
+and return its exit code. They use only their standard libraries, with no
+separate managed client or worker reader package required. Parse stdout even
+on nonzero exit and check `status`, `effect`, and `code` before interpreting
+the receipt. An unknown or unavailable result supplies no proof of an effect.
+
+### Python
+
+Save as `request.py`. Run with `.venv-0.8.0/bin/python request.py` to check
+status or `.venv-0.8.0/bin/python request.py run` for the one submission.
+
+```python
+import json
+import os
+import sys
+from workeros.managed_executor import registered_launch
+
+if sys.argv[1:] not in ([], ["run"]):
+    raise SystemExit("usage: request.py [run]")
+result = registered_launch(
+    os.environ["WORKEROS_REQUEST_ID"],
+    workflow=os.environ["WORKEROS_WORKFLOW"],
+    readback=sys.argv[1:] != ["run"],
+)
+print(json.dumps(result))
+raise SystemExit(0 if result["status"] in ("started", "terminal", "not_started") else 1)
+```
+
+### Node.js
+
+Save as `request.cjs`. Use `node request.cjs` or `node request.cjs run`.
+
+```javascript
+const { spawnSync } = require("node:child_process");
+const args = process.argv.slice(2);
+const { WORKEROS_BIN: bin, WORKEROS_WORKFLOW: flow, WORKEROS_REQUEST_ID: id } = process.env;
+if (!bin || !flow || !id || args.length > 1 || (args.length && args[0] !== "run")) {
+  throw new Error("set WORKEROS_BIN, WORKEROS_WORKFLOW and WORKEROS_REQUEST_ID; use request.cjs [run]");
+}
+const op = args.length ? "run-approved" : "launch-status";
+const child = spawnSync(bin, ["managed", op, "--workflow", flow, "--request-id", id],
+                        { stdio: ["ignore", "inherit", "inherit"] });
+if (child.error) throw child.error;
+process.exitCode = child.status ?? 1;
+```
+
+### Go
+
+Save as `request.go`. Build with `go build -o request-go request.go`,
+then use `./request-go` or `./request-go run`.
+
+```go
+package main
+
+import (
+    "fmt"
+    "os"
+    "os/exec"
+)
+
+func main() {
+    bin := os.Getenv("WORKEROS_BIN")
+    flow := os.Getenv("WORKEROS_WORKFLOW")
+    id := os.Getenv("WORKEROS_REQUEST_ID")
+    args := os.Args[1:]
+    op := "launch-status"
+    if len(args) == 1 && args[0] == "run" {
+        op = "run-approved"
+    } else if len(args) != 0 {
+        fmt.Fprintln(os.Stderr, "usage: request-go [run]")
+        os.Exit(2)
+    }
+    cmd := exec.Command(bin, "managed", op, "--workflow", flow, "--request-id", id)
+    cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
+    if err := cmd.Run(); err != nil {
+        if exit, ok := err.(*exec.ExitError); ok && exit.ExitCode() >= 0 {
+            os.Exit(exit.ExitCode())
+        }
+        fmt.Fprintln(os.Stderr, err)
+        os.Exit(1)
+    }
+}
+```
+
+### Java
+
+Save as `Request.java`. With a JDK that supports source-file launch, use
+`java Request.java` or `java Request.java run`.
+
+```java
+import java.util.Objects;
+
+class Request {
+    public static void main(String[] args) throws Exception {
+        String op = "launch-status";
+        if (args.length == 1 && args[0].equals("run")) op = "run-approved";
+        else if (args.length != 0) throw new IllegalArgumentException("usage: Request.java [run]");
+        var child = new ProcessBuilder(
+            Objects.requireNonNull(System.getenv("WORKEROS_BIN")), "managed", op,
+            "--workflow", Objects.requireNonNull(System.getenv("WORKEROS_WORKFLOW")),
+            "--request-id", Objects.requireNonNull(System.getenv("WORKEROS_REQUEST_ID"))
+        ).inheritIO().start();
+        System.exit(child.waitFor());
+    }
+}
+```
+
+### C and C++
+
+Save as `request.c`. Build with `cc -o request-c request.c` for C or
+`c++ -x c++ -o request-cpp request.c` for C++. Use the resulting executable
+with no arguments for readback, or with `run` for the submission. The
+POSIX `execl` call replaces this short adapter with WorkerOS.
+
+```c
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+
+int main(int argc, char **argv) {
+    const char *bin = getenv("WORKEROS_BIN");
+    const char *flow = getenv("WORKEROS_WORKFLOW");
+    const char *id = getenv("WORKEROS_REQUEST_ID");
+    if (!bin || !flow || !id || argc > 2 || (argc == 2 && strcmp(argv[1], "run"))) {
+        fputs("set WORKEROS_BIN, WORKEROS_WORKFLOW and WORKEROS_REQUEST_ID; use [run]\n", stderr);
+        return 2;
+    }
+    const char *op = argc == 2 ? "run-approved" : "launch-status";
+    execl(bin, bin, "managed", op, "--workflow", flow, "--request-id", id, (char *)NULL);
+    perror("workeros");
+    return 127;
+}
+```
+
+### Rust
+
+Save as `request.rs`. Build with `rustc -o request-rust request.rs`,
+then use `./request-rust` or `./request-rust run`.
+
+```rust
+use std::{env, process::{self, Command}};
+
+fn main() {
+    let args: Vec<_> = env::args().skip(1).collect();
+    let op = match args.as_slice() {
+        [] => "launch-status",
+        [arg] if arg == "run" => "run-approved",
+        _ => { eprintln!("usage: request-rust [run]"); process::exit(2); }
+    };
+    let flow = env::var("WORKEROS_WORKFLOW").expect("WORKEROS_WORKFLOW");
+    let id = env::var("WORKEROS_REQUEST_ID").expect("WORKEROS_REQUEST_ID");
+    let exit = Command::new(env::var_os("WORKEROS_BIN").expect("WORKEROS_BIN"))
+        .args(["managed", op, "--workflow", &flow, "--request-id", &id])
+        .status().expect("start WorkerOS");
+    process::exit(exit.code().unwrap_or(1));
+}
+```

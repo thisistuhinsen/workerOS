@@ -158,7 +158,7 @@ def require_empty_output(directory):
     ), "output directory must be empty")
 
 
-def verify_public_release(version, revision, expected_dir, output_dir, *, opener=None):
+def verify_public_release(version, revision, expected_dir, output_dir, *, require_owned_runtime=False, opener=None):
     require(re.fullmatch(r"(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)", version),
             "expected a three-part package version without v")
     require(re.fullmatch(r"[a-f0-9]{40}", revision), "expected an exact lowercase commit SHA")
@@ -167,8 +167,11 @@ def verify_public_release(version, revision, expected_dir, output_dir, *, opener
     require(expected_dir.resolve() not in output_dir.resolve().parents,
             "output must be separate from the staged assets")
     platform = expected_dir / f"workeros-{version}-py3-none-linux_x86_64.whl"
+    if require_owned_runtime:
+        require(platform.is_file() and not platform.is_symlink(),
+                "the staged release is missing its regular Linux x86-64 platform wheel")
     expected = staged_assets(expected_dir, package_names(
-        version, owned_runtime=platform.exists() or platform.is_symlink()))
+        version, owned_runtime=require_owned_runtime or platform.exists() or platform.is_symlink()))
     opener = build_opener(PublicRedirects()) if opener is None else opener
     tag = f"v{version}"
     release = verify_metadata(opener, tag, revision, expected)
@@ -188,17 +191,19 @@ def verify_public_release(version, revision, expected_dir, output_dir, *, opener
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--require-owned-runtime", action="store_true")
     parser.add_argument("version")
     parser.add_argument("revision")
     parser.add_argument("expected_dir", metavar="EXPECTED_ASSETS_DIR", type=Path)
     parser.add_argument("output_dir", metavar="OUTPUT_DIR", type=Path)
     args = parser.parse_args()
     try:
-        verify_public_release(args.version, args.revision, args.expected_dir, args.output_dir)
+        verify_public_release(args.version, args.revision, args.expected_dir, args.output_dir,
+                              require_owned_runtime=args.require_owned_runtime)
     except (OSError, ValueError) as exc:
         print(f"Public release verification failed: {exc}", file=sys.stderr)
         return 1
-    print(f"Verified anonymous release v{args.version} at {args.revision} (seven assets)")
+    print(f"Verified anonymous release v{args.version} at {args.revision}")
     return 0
 
 

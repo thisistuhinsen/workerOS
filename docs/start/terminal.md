@@ -32,13 +32,71 @@ For local machine mode, choose a working directory or capture child output
 in new files:
 
 ```sh
-.venv-0.8.0/bin/workeros run --json --cwd . --stdout job.out --stderr job.err -- /usr/bin/printf 'hello\n'
+.venv-0.8.0/bin/workeros run --json --cwd . --stdout job.out --stderr job.err --report job.json -- /usr/bin/printf 'hello\n'
 ```
 
 Relative capture paths use your current directory, even when the child
 runs in a different one. Use an existing directory you own and fresh
 filenames. Capture files contain raw workload output. The JSON result
 reports the child's outcome and cleanup separately.
+The receipt's `attempt_id` identifies the direct run. Save stdout or use
+`--report` to keep a caller-owned copy. Direct runs have no stored receipt
+to look up later. If export fails, save the receipt from stdout without
+rerunning the job.
+
+## Run and check an approved worker
+
+Use this **v0.8.0 candidate** path after your administrator gives your
+Linux account a commissioned workflow name and publishes its local client
+routing. Ordinary jobs above need no such setup. For a disposable managed
+host, follow the [administrator walkthrough](../guarded-walkthrough.md).
+It commissions `write-health-record` and shows which account can call it.
+
+The guarded walkthrough uses the approved Linux x86-64 platform wheel
+with glibc 2.38 or newer. It needs a supported system-level `systemd`
+guard, a delegated cgroup v2 scope and usable Linux namespaces. The
+administrator pins the executable, ordinary worker identity, matching file
+descriptors and allowed operations. Requests use the registered local Unix
+socket and its authorized caller UID. Preview alone grants no authority.
+
+Use the verified caller installation from your ordinary account. Replace
+`write-health-record` if your administrator gave you a different name.
+Generate a request ID once and keep it before launching. The examples in
+the other guides use the same shell variables.
+
+```sh
+export WORKEROS_BIN="$PWD/.venv-0.8.0/bin/workeros"
+export WORKEROS_WORKFLOW=write-health-record
+WORKEROS_REQUEST_ID=$(.venv-0.8.0/bin/python -I -c \
+  'from workeros.managed_launch import new_launch_request; print(new_launch_request())') &&
+export WORKEROS_REQUEST_ID
+```
+
+Choose **one** interface for the launch. This submits the approved workflow
+once. There is no per-call command, filename, account or capability override.
+
+```sh
+"$WORKEROS_BIN" managed run-approved --workflow "$WORKEROS_WORKFLOW" \
+  --request-id "$WORKEROS_REQUEST_ID"
+```
+
+An authorized reader checks the **same ID** without submitting another job.
+Keep the ID if a reply is lost or the result is unknown. The operator may
+need to make the finite local listener available for the status request.
+
+```sh
+"$WORKEROS_BIN" managed launch-status --workflow "$WORKEROS_WORKFLOW" \
+  --request-id "$WORKEROS_REQUEST_ID"
+```
+
+Read the versioned JSON on stdout and handle a nonzero exit. A refused
+request carries its reason. An unknown effect stays unknown until supported
+readback establishes more. A guarded terminal receipt can describe the
+child's exit and cleanup while independent evidence of the effect is still
+unavailable. A point observation describes only its sampled moment.
+[Host and transport requirements](../host-preflight.md#register-a-named-systemd-workflow) ·
+[JSON and YAML](config.md#submit-an-approved-workflow-from-json-or-yaml) ·
+[Python and other languages](code.md#call-an-approved-workflow-from-code)
 
 ## See a timeout
 

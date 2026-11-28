@@ -59,7 +59,7 @@ For a failed or uncertain job, see https://github.com/thisistuhinsen/workerOS/bl
 
   workeros run -- /usr/bin/printf 'hello\\n'
   workeros run --json -- /usr/bin/printf 'hello\\n'
-  workeros run --json --cwd DIR --stdout FILE --stderr FILE -- COMMAND
+  workeros run --json --cwd DIR --stdout FILE --stderr FILE --report FILE -- COMMAND
 
 Expected: hello, then job: exited 0. Add --json before -- for one JSON result.
 The child receives stdin, including piped input. JSON mode discards the child's
@@ -67,7 +67,9 @@ stdout and stderr by default. Capture either stream to a new file in a directory
 you own that other users cannot write. Relative paths use your current
 directory, including with --cwd. Capture never replaces a file. This starts one
 trusted local command.
-The versioned result separates lifecycle and cleanup and leaves effects unknown.
+The versioned result includes an attempt ID and separates lifecycle and cleanup.
+Use --report to save a caller-owned copy. Local runs have no status lookup.
+If exporting fails, keep stdout and save that receipt without running again.
 For the timeout and cleanup example, run workeros demo. A timeout or an unknown
 effect is not proof that nothing happened; check effects before retrying.''',
  'file': '''Use WorkerOS from code

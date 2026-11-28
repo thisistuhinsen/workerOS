@@ -52,7 +52,7 @@ jobs:
           distribution: temurin
           java-version: '25'
       - name: Test installed wheel and all seven examples
-        run: bash -c "$WORKEROS_CI_CHECK"
+        run: bash scripts/run-ordinary-ci.sh /bin/bash -c "$WORKEROS_CI_CHECK"
       - name: Test the release gates with inert fixtures
         if: matrix.runner == 'ubuntu-24.04' && matrix.python == '3.12'
         run: python -I -m unittest discover -s scripts/tests -v

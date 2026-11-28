@@ -9,9 +9,10 @@ from pathlib import Path
 import subprocess
 import sys
 from time import monotonic_ns
+from uuid import uuid4
 
 from .supervisor import CleanupStatus, DirectChildSupervisor, LifecycleStatus, SupervisionStartError
-from .result_export import RESULT_VERSION, _open_directory, can_export, report_path
+from .result_export import RESULT_VERSION, _open_directory, can_export, export_report, report_path
 
 
 SECOND = 1_000_000_000
@@ -81,28 +82,41 @@ def main(argv=None):
     return int(slow is None or slow[:2] != (LifecycleStatus.TIMED_OUT, CleanupStatus.REAPED))
 
 
-def _emit_result(result):
-    print(json.dumps({'version': RESULT_VERSION, **result}, separators=(',', ':')))
+def _emit_result(result, *, attempt_id, destination=None):
+    receipt = {'version': RESULT_VERSION, 'attempt_id': attempt_id,
+               'persistence': 'not_recorded', **result}
+    exported = None
+    if destination is not None:
+        exported = export_report(destination, receipt)
+        if exported['status'] != 'written':
+            exported['next_action'] = 'save_this_receipt_without_rerunning'
+        receipt['export'] = exported
+    print(json.dumps(receipt, separators=(',', ':')))
+    return exported is None or exported['status'] == 'written'
 
 
 def run_json_main(args):
     """Parse local machine-mode options before a literal command separator."""
+    attempt_id = 'attempt-' + uuid4().hex
     split = args.index('--') if '--' in args else len(args)
     if split >= len(args) - 1:
-        _emit_result({"status": "refused", "effect": "not_attempted", "code": "json_command_required"})
+        _emit_result({"status": "refused", "effect": "not_attempted", "code": "json_command_required"},
+                     attempt_id=attempt_id)
         return 1
     parser = argparse.ArgumentParser(add_help=False, allow_abbrev=False, exit_on_error=False)
-    for flag, dest in (('--cwd', 'cwd'), ('--stdout', 'stdout_path'), ('--stderr', 'stderr_path')):
+    for flag, dest in (('--cwd', 'cwd'), ('--stdout', 'stdout_path'), ('--stderr', 'stderr_path'),
+                       ('--report', 'report')):
         parser.add_argument(flag, dest=dest, action='append', default=[])
     try:
         values, unknown = parser.parse_known_args(args[:split])
         if unknown or any(len(entries) > 1 for entries in vars(values).values()):
             raise ValueError('invalid local run options')
     except (argparse.ArgumentError, ValueError):
-        _emit_result({"status": "refused", "effect": "not_attempted", "code": "invalid_local_run_options"})
+        _emit_result({"status": "refused", "effect": "not_attempted", "code": "invalid_local_run_options"},
+                     attempt_id=attempt_id)
         return 1
-    return run_json(args[split + 1:], **{key: entries[0] if entries else None
-                                        for key, entries in vars(values).items()})
+    return _run_json(args[split + 1:], attempt_id, **{key: entries[0] if entries else None
+                                                     for key, entries in vars(values).items()})
 
 
 class _LocalDestinationError(ValueError):
@@ -188,13 +202,28 @@ def _start_options(cwd, stdout_path, stderr_path):
             discard.pop_all()
 
 
-def run_json(argv, *, wait_seconds=5, cwd=None, stdout_path=None, stderr_path=None):
+def run_json(argv, *, wait_seconds=5, cwd=None, stdout_path=None, stderr_path=None, report=None):
     """Run one direct child and emit one structured, effect-cautious result."""
+    return _run_json(argv, 'attempt-' + uuid4().hex, wait_seconds=wait_seconds, cwd=cwd,
+                     stdout_path=stdout_path, stderr_path=stderr_path, report=report)
+
+
+def _run_json(argv, attempt_id, *, wait_seconds=5, cwd=None, stdout_path=None, stderr_path=None, report=None):
     from .configuration import _clean, _terminal, _wire
     from .supervisor import CleanupResult, SupervisionResult
 
+    try:
+        destination = report_path(report) if report is not None else None
+    except ValueError:
+        _emit_result({"status": "refused", "effect": "not_attempted", "code": "invalid_report_destination"},
+                     attempt_id=attempt_id)
+        return 1
+
+    def emit(result):
+        return _emit_result(result, attempt_id=attempt_id, destination=destination)
+
     if not argv or any(type(arg) is not str or "\x00" in arg for arg in argv):
-        _emit_result({"status": "refused", "effect": "not_attempted",
+        emit({"status": "refused", "effect": "not_attempted",
                       "code": "command_required"})
         return 1
     due_ns = monotonic_ns() + wait_seconds * SECOND
@@ -207,11 +236,11 @@ def run_json(argv, *, wait_seconds=5, cwd=None, stdout_path=None, stderr_path=No
             supervisor.start_executable("run", "command", argv, due_ns=due_ns, **options)
             started = True
     except _LocalDestinationError as exc:
-        _emit_result({"status": "refused", "effect": "not_attempted", "code": str(exc)})
+        emit({"status": "refused", "effect": "not_attempted", "code": str(exc)})
         return 1
     except KeyboardInterrupt as exc:
         if not started:
-            _emit_result({"status": "unavailable", "effect": "unknown", "code": "launch_interrupted"})
+            emit({"status": "unavailable", "effect": "unknown", "code": "launch_interrupted"})
             return 1
         interrupted = exc
     except SupervisionStartError as exc:
@@ -232,10 +261,10 @@ def run_json(argv, *, wait_seconds=5, cwd=None, stdout_path=None, stderr_path=No
             exc.__cause__ if isinstance(exc.__cause__, OSError) else None)))
         reply = {"status": "unavailable", "effect": "unknown",
                  "code": "supervision_pin_unavailable", "result": {"terminal": terminal}}
-        _emit_result(reply)
+        emit(reply)
         return 1
     except (OSError, RuntimeError, ValueError):
-        _emit_result({"status": "refused", "effect": "not_attempted",
+        emit({"status": "refused", "effect": "not_attempted",
                       "code": "command_start_failed"})
         return 1
 
@@ -266,6 +295,6 @@ def run_json(argv, *, wait_seconds=5, cwd=None, stdout_path=None, stderr_path=No
     reply = {"status": status, "effect": "unknown", "result": {"terminal": terminal}}
     if status == "unavailable":
         reply["code"] = "terminal_result_unavailable"
-    _emit_result(reply)
+    exported = emit(reply)
     return int(not (lifecycle == LifecycleStatus.EXITED.value and result.returncode == 0
-                    and cleanup.status is CleanupStatus.REAPED and status == "reported"))
+                    and cleanup.status is CleanupStatus.REAPED and status == "reported" and exported))

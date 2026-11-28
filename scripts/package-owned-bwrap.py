@@ -42,8 +42,8 @@ def read_entries(wheel):
     return entries
 
 
-def verify_inputs(entries, runtime, license_text):
-    manifest = ast.parse(entries['workeros/managed_executor.py'][1])
+def verify_runtime(source, runtime, license_text):
+    manifest = ast.parse(source)
     pins = [ast.literal_eval(node.value) for node in manifest.body if isinstance(node, ast.Assign)
             and any(isinstance(key, ast.Name) and key.id == '_OWNED_BWRAP_SHA256' for key in node.targets)]
     if len(pins) != 1:
@@ -58,6 +58,10 @@ def verify_inputs(entries, runtime, license_text):
         raise ValueError('upstream Bubblewrap license does not match the reviewed pin')
 
 
+def verify_inputs(entries, runtime, license_text):
+    verify_runtime(entries['workeros/managed_executor.py'][1], runtime, license_text)
+
+
 def platform_metadata(body):
     marker = f'Tag: {PLAIN_TAG}\n'.encode()
     if body.count(marker) != 1 or body.count(b'Tag: ') != 1:
@@ -69,6 +73,14 @@ def input_bytes(path):
     if path.is_symlink() or not path.is_file():
         raise ValueError(f'required managed runtime input is not a regular file: {path.name}')
     return path.read_bytes()
+
+
+def verify_ingress(executor, directory):
+    if (directory.is_symlink() or not directory.is_dir()
+            or {item.name for item in directory.iterdir()} != {'bwrap', 'COPYING'}):
+        raise ValueError('expected only bwrap and COPYING in the approved runtime artifact')
+    verify_runtime(input_bytes(executor), input_bytes(directory / 'bwrap'),
+                   input_bytes(directory / 'COPYING'))
 
 
 def package(wheel, binary, license_file, output):
@@ -140,7 +152,12 @@ def verify(wheel, platform_wheel):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
-    if sys.argv[1:2] == ['--verify']:
+    if sys.argv[1:2] == ['--verify-ingress']:
+        parser.add_argument('executor', type=Path)
+        parser.add_argument('runtime_dir', type=Path)
+        args = parser.parse_args(sys.argv[2:])
+        verify_ingress(args.executor, args.runtime_dir)
+    elif sys.argv[1:2] == ['--verify']:
         parser.add_argument('wheel', type=Path)
         parser.add_argument('platform_wheel', type=Path)
         args = parser.parse_args(sys.argv[2:])

@@ -7,6 +7,8 @@ import json
 import os
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
+import subprocess
+import sys
 from tempfile import TemporaryDirectory
 import unittest
 from unittest.mock import patch
@@ -39,6 +41,20 @@ class ResultExportTest(unittest.TestCase):
         return status, json.loads(output.getvalue()), diagnostics.getvalue()
 
     def test_flags_json_yaml_and_python_copy_the_same_result(self):
+        yaml_python = os.environ.get('WORKEROS_YAML_PYTHON')
+        if yaml_python and Path(yaml_python).absolute() != Path(sys.executable).absolute():
+            # The main CI test environment intentionally has no PyYAML.
+            # Run this complete parity assertion in the same installed
+            # optional environment used by the other YAML integration tests.
+            child = subprocess.run([
+                yaml_python, '-I', '-c',
+                'import sys, unittest; sys.path.insert(0, sys.argv[1]); '
+                'unittest.main(module="test_result_export", argv=["unittest", sys.argv[2]])',
+                str(Path(__file__).resolve().parent),
+                'ResultExportTest.test_flags_json_yaml_and_python_copy_the_same_result',
+            ], capture_output=True, text=True, timeout=12)
+            self.assertEqual(child.returncode, 0, child.stderr)
+            return
         keys = {'version': 1, 'workflow': self.workflow, 'request_id': self.request_id}
         flags = ('--workflow', self.workflow, '--request-id', self.request_id)
         body = json.dumps({**keys, 'report': 'évidence one.json'}).encode()

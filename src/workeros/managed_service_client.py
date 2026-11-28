@@ -56,7 +56,7 @@ def _frame_write(connection, payload, deadline):
 def _response(result, request):
     _fields(result, ('status', 'effect', 'code'),
             ('request_id', 'invocation_key', 'receipt_sha256', 'service', 'cleanup', 'provider_report', 'unreleased',
-             'observer_result', 'terminal_source', 'selection', 'phase_observation', 'history', 'summary'))
+             'observer_result', 'terminal_source', 'selection', 'phase_observation', 'activity', 'history', 'summary'))
     if (result['status'], result['effect']) not in (
             ('not_started', 'not_attempted'), ('refused', 'not_attempted'), ('unknown', 'unknown'),
             ('started', 'dispatched'), ('terminal', 'dispatched')) or not _name(result['code']):
@@ -68,9 +68,11 @@ def _response(result, request):
             _digest(result[name])
     if 'selection' in result:
         selection = result['selection']
-        _fields(selection, ('workflow', 'role', 'scope_sha256', 'resource_scopes'))
+        _fields(selection, ('workflow', 'role', 'scope_sha256', 'resource_scopes'), ('worker',))
         _name(selection['workflow'])
         _name(selection['role'])
+        if 'worker' in selection:
+            _name(selection['worker'])
         _digest(selection['scope_sha256'])
         scopes = selection['resource_scopes']
         if (selection['workflow'] != request['workflow'] or type(scopes) is not list
@@ -94,6 +96,8 @@ def _response(result, request):
                 or proof.unit != f"workeros-{result['invocation_key']}.service"
                 or 'provider_report' in result):
             raise ValueError('unbound service unreleased readback')
+    if ('provider_report' in result) != (result['code'] == 'service_terminal_reported'):
+        raise ValueError('unexpected service provider report')
     if 'provider_report' in result:
         reported = result['provider_report']
         _fields(reported, ('receipt_sha256', 'service'))
@@ -104,6 +108,8 @@ def _response(result, request):
                 or report.unit != f"workeros-{result['invocation_key']}.service"
                 or report.lifecycle is None or report.lifecycle.retired_ns is None):
             raise ValueError('unbound service provider report')
+        if 'selection' in result and report.scope_sha256 != result['selection']['scope_sha256']:
+            raise ValueError('unbound service provider scope')
         service_cleanup(report, 'terminal')
     observed = result['code'] == 'independent_service_result_verified'
     if observed != ('observer_result' in result):
@@ -111,23 +117,36 @@ def _response(result, request):
     if 'history' in result:
         history = result['history']
         _fields(history, ('status', 'profile', 'revision'))
-        if (not observed or history['status'] not in ('recorded', 'unconfirmed')
+        if ((not observed and 'provider_report' not in result) or history['status'] not in ('recorded', 'unconfirmed')
                 or any(history[field] != request[field] for field in ('profile', 'revision'))
                 or 'selection' not in result):
             raise ValueError('unbound service history')
     if 'summary' in result:
         summary = result['summary']
-        _fields(summary, ('version', 'basis', 'liveness', 'status', 'code', 'verified_count'))
+        _fields(summary, ('version', 'basis', 'liveness', 'status', 'code', 'verified_count'), ('counts',))
         count = summary['verified_count']
         if ('summary_ids' not in request or result.get('history', {}).get('status') != 'recorded'
                 or type(summary['version']) is not int or summary['version'] != 1
                 or (summary['basis'], summary['liveness']) != ('verified_archived_requests', 'unavailable')):
             raise ValueError('unbound historical summary')
+        requested = len({request['request_id'], *request['summary_ids']})
         if (summary['status'], summary['code']) == ('reported', 'verified_archive_count'):
-            if type(count) is not int or not 1 <= count <= len({request['request_id'], *request['summary_ids']}):
+            if type(count) is not int or not (0 if 'counts' in summary else 1) <= count <= requested:
                 raise ValueError('invalid historical count')
         elif (summary['status'], summary['code'], count) != ('unavailable', 'verified_archive_unavailable', None):
             raise ValueError('invalid historical summary')
+        if 'counts' in summary:
+            coverage = summary['counts']
+            _fields(coverage, ('active', 'settling', 'completed', 'refused', 'failed', 'unknown'))
+            recorded = tuple(coverage[key] for key in ('completed', 'failed', 'unknown'))
+            if any(coverage[key] is not None for key in ('active', 'settling', 'refused')):
+                raise ValueError('archive has no current or refused coverage')
+            if summary['status'] == 'reported':
+                if (any(type(number) is not int or number < 0 for number in recorded)
+                        or recorded[0] != count or sum(recorded) != requested):
+                    raise ValueError('invalid historical coverage')
+            elif any(number is not None for number in recorded):
+                raise ValueError('unavailable archive coverage')
     split = 'terminal_source' in result
     if split and not observed:
         raise ValueError('unexpected terminal provenance')
@@ -174,6 +193,11 @@ def _response(result, request):
             raise ValueError('unbound service response')
     elif result.keys() & {'service', 'cleanup', 'receipt_sha256'}:
         raise ValueError('unexpected service evidence')
+    if 'activity' in result:
+        from .result_summary import scoped_activity
+
+        if 'selection' not in result or result['activity'] != scoped_activity(result):
+            raise ValueError('unbound service activity')
     return result
 
 
@@ -202,6 +226,12 @@ def _client_registration():
     return _validate_client_registration(config)
 
 
+def _service_unavailable(code, request_id, *, readback):
+    if readback:
+        return launch_result('unknown', 'unknown', code, request_id=request_id)
+    return launch_result('refused', 'not_attempted', code)
+
+
 def request_service(workflow, request_id, *, readback=False, revision=None, summary_ids=None):
     """Request only a pinned name and opaque key, with no live credentials from the caller."""
     try:
@@ -224,7 +254,7 @@ def request_service(workflow, request_id, *, readback=False, revision=None, summ
         if revision is None:
             _digest(pin)
     except (OSError, ValueError, KeyError, TypeError):
-        return launch_result('refused', 'not_attempted', 'service_client_registration_unavailable')
+        return _service_unavailable('service_client_registration_unavailable', request_id, readback=readback)
     operation = 'history' if revision is not None else 'readback' if readback else 'run'
     request = {'version': 1, 'nonce': uuid4().hex, 'operation': operation,
                'profile': config['profile'], 'revision': revision or config['revision'], 'workflow': workflow,
@@ -238,7 +268,7 @@ def request_service(workflow, request_id, *, readback=False, revision=None, summ
             connection.settimeout(_remaining(deadline))
             connection.connect(config['socket'])
             if _peer(connection) != config['peer_uid']:
-                return launch_result('refused', 'not_attempted', 'service_peer_untrusted')
+                return _service_unavailable('service_peer_untrusted', request_id, readback=readback)
             sent = True
             _frame_write(connection, request, deadline)
             reply = _frame_read(connection, deadline)
@@ -249,35 +279,35 @@ def request_service(workflow, request_id, *, readback=False, revision=None, summ
     except (OSError, EOFError, TypeError, KeyError, ValueError):
         if sent:
             return launch_result('unknown', 'unknown', 'service_reply_unconfirmed', request_id=request_id)
-        return launch_result('refused', 'not_attempted', 'service_endpoint_unavailable')
+        return _service_unavailable('service_endpoint_unavailable', request_id, readback=readback)
 
 
 def _selection(request, caller_uid, *, originals=None, resources=None, deadline=None):
     config = _read_registration()
+    slots = config.get('workflows')
+    entry = slots.get(request['workflow']) if type(slots) is dict else None
+    rights = 'run_uids' if request['operation'] == 'run' else 'result_uids'
+    if type(entry) is not dict or type(entry.get(rights)) is not list or caller_uid not in entry[rights]:
+        raise ExecutorRefusal('service_caller_denied')
     _fields(config, ('version', 'profile', 'revision', 'wheel_path', 'wheel_sha256', 'workflows'))
     if type(config['version']) is not int or config['version'] != 2 or (config['profile'], config['revision']) != (
             request['profile'], request['revision']):
         raise ExecutorRefusal('service_registration_mismatch')
-    slots = config['workflows']
-    if type(slots) is not dict or not 1 <= len(slots) <= 8 or request['workflow'] not in slots:
+    if not 1 <= len(slots) <= 8:
         raise ExecutorRefusal('service_workflow_unavailable')
-    entry = slots[request['workflow']]
     _fields(entry, ('policy', 'authority', 'service', 'run_uids', 'result_uids'), ('result_observer', 'holder'))
-    endpoint = entry['authority']
-    _fields(endpoint, ('socket', 'uid'), ('enforcement',))
-    from .managed_registration import require_pinned_pair
-
-    host = require_pinned_pair(config, required=endpoint.get('enforcement') == GUARDED_SERVICE,
-                               readback=request['operation'] == 'readback')
     for field in ('run_uids', 'result_uids'):
         allowed = entry[field]
         if type(allowed) is not list or len(allowed) > 64:
             raise ExecutorRefusal('service_caller_registration_invalid')
         for uid in allowed:
             _uid(uid)
-    rights = 'run_uids' if request['operation'] == 'run' else 'result_uids'
-    if caller_uid not in entry[rights]:
-        raise ExecutorRefusal('service_caller_denied')
+    endpoint = entry['authority']
+    _fields(endpoint, ('socket', 'uid'), ('enforcement',))
+    from .managed_registration import require_pinned_pair
+
+    host = require_pinned_pair(config, required=endpoint.get('enforcement') == GUARDED_SERVICE,
+                               readback=request['operation'] == 'readback')
     policy = LaunchRolePolicy(**entry['policy'])
     if policy.workflow != request['workflow'] or launch_policy_sha256(policy) != request['policy_sha256']:
         raise ExecutorRefusal('service_registration_mismatch')
@@ -336,7 +366,7 @@ def _handle(request, caller_uid, deadline, *, originals=None):
         if request['operation'] == 'readback':
             verify_install(config['wheel_path'], config['wheel_sha256'])
             if guarded:
-                prior = read_history(request, caller_uid)
+                prior = read_history(request, caller_uid, independent_only=True)
                 if 'history' in prior:
                     return prior
             enforcement = GUARDED_SERVICE if guarded else None
@@ -346,11 +376,13 @@ def _handle(request, caller_uid, deadline, *, originals=None):
                                               require_ticket_claim=enforcement == GUARDED_SERVICE,
                                               observe_result=observe_result)
             native_deadline = int(deadline * 1_000_000_000)
+            sampled_after = monotonic_ns()
             report = _read_historical_launch(registration, config['profile'], config['revision'], request_id,
                                              native_deadline)
             outcome = managed_service.verify_native_readback(scope.parent, report, native_deadline,
                                                              guarded=guarded)
-            return retain_history(request, caller_uid, readers, _selected_outcome(outcome, policy, scope, authority))
+            return retain_history(request, caller_uid, readers,
+                                  _selected_outcome(outcome, policy, scope, authority, sampled_after))
         if host is None:
             host = managed_cli._read_admin_json(managed_bootstrap._CONFIG_FILE)
         if (host['profile'], host['revision'], host['wheel_path']) != (
@@ -368,44 +400,53 @@ def _handle(request, caller_uid, deadline, *, originals=None):
                 {**host, 'scopes': matches}, registration, executable_argv=(scope.executable,),
                 require_launch_resource=True, launch_service=scope))
             entered = True
+            sampled_after = monotonic_ns()
             outcome = adapter.launch_approved(request_id=request_id)
             if not may_read:
                 return launch_result('unknown', 'unknown', 'service_result_not_granted', request_id=request_id)
             if registration.service_enforcement == GUARDED_SERVICE:
                 outcome = managed_service.verify_native_readback(
                     scope.parent, outcome, int(deadline * 1_000_000_000), guarded=True)
-            return retain_history(request, caller_uid, readers, _selected_outcome(outcome, policy, scope, authority))
+            return retain_history(request, caller_uid, readers,
+                                  _selected_outcome(outcome, policy, scope, authority, sampled_after))
     except (ExecutorRefusal, managed_service.ServiceRefusal) as exc:
+        if str(exc) == 'launch_executor_registration_missing':
+            return _service_unavailable(str(exc), request_id, readback=request['operation'] == 'readback')
         return launch_result('refused', 'not_attempted', str(exc))
     except (OSError, KeyError, TypeError, ValueError, VerificationError, RecordError):
         if entered:
             return launch_result('unknown', 'unknown', 'service_reply_unconfirmed', request_id=request_id)
-        return launch_result('refused', 'not_attempted', 'service_binding_unavailable')
+        return _service_unavailable('service_binding_unavailable', request_id,
+                                    readback=request['operation'] == 'readback')
     finally:
         holders.close()
 
 
-def _selected_outcome(outcome, policy, scope, authority):
+def _selected_outcome(outcome, policy, scope, authority, sampled_after):
     """Attach the selection only after the caller's result rights are checked."""
+    from .result_summary import scoped_activity
+
     resources = sorted({item.scope for item in scope.descriptors}) if type(scope) is ServiceBundle else []
     result = {**outcome, 'selection': {'workflow': policy.workflow, 'role': policy.role,
+                                      'worker': policy.principal,
                                       'scope_sha256': scope.digest, 'resource_scopes': resources}}
     phase = authority.phase_observation if type(authority) is GuardedServiceAuthority else None
     if (phase is not None and result['status'] == 'unknown' and 'provider_report' not in result
-            and phase['invocation_key'] == result.get('invocation_key')):
+            and phase['invocation_key'] == result.get('invocation_key')
+            and sampled_after <= phase['observed_ns'] <= monotonic_ns()):
         result['phase_observation'] = phase
+    result['activity'] = scoped_activity(result)
     return result
 
 
-def serve_connection(connection, *, deadline=None, commissioned=None, originals=None, history_only=False):
+def serve_connection(connection, *, deadline=None, commissioned=None, originals=None, history_only=False,
+                     accept_deadline=None):
     if os.getresuid() != (managed_cli._TRUSTED_UID,) * 3:
         raise ExecutorRefusal('administrator_required')
     if deadline is None:
         deadline = monotonic() + managed_cli._TIMEOUT
-    if type(commissioned) is str:
-        commissioned = (commissioned,)
     caller_uid = _peer(connection)
-    request = _frame_read(connection, deadline)
+    request = _frame_read(connection, deadline if accept_deadline is None else min(deadline, accept_deadline))
     _fields(request, ('version', 'nonce', 'operation', 'profile', 'revision', 'workflow', 'policy_sha256', 'request_id'),
             ('summary_ids',))
     if (type(request['version']) is not int or request['version'] != 1
@@ -428,12 +469,26 @@ def serve_connection(connection, *, deadline=None, commissioned=None, originals=
     token = managed_cli._CHECK_WORK_DEADLINE.set(deadline)
     try:
         _remaining(deadline)
-        if history_only and request['operation'] != 'history':
+        workflow, operation = request['workflow'], request['operation']
+        if history_only and operation != 'history':
             result = launch_result('refused', 'not_attempted', 'service_history_only')
-        elif commissioned is not None and request['workflow'] not in commissioned:
+        elif commissioned is not None and workflow not in commissioned:
             result = launch_result('refused', 'not_attempted', 'service_workflow_unavailable')
+        elif commissioned is not None and operation != 'history':
+            admission = commissioned[workflow]
+            if caller_uid not in admission[operation]:
+                result = launch_result('refused', 'not_attempted', 'service_caller_denied')
+            elif any(request[field] != admission[field] for field in ('profile', 'revision', 'policy_sha256')):
+                result = _service_unavailable('service_registration_mismatch', request['request_id'],
+                                              readback=operation == 'readback')
+            else:
+                del commissioned[workflow]
+                result = _handle(request, caller_uid, deadline, originals=originals)
         else:
             result = _handle(request, caller_uid, deadline, originals=originals)
+            if commissioned is not None and result.get('history', {}).get('status') == 'recorded':
+                # Archived results carry their own reader rights and revision.
+                del commissioned[workflow]
     finally:
         managed_cli._CHECK_WORK_DEADLINE.reset(token)
     _frame_write(connection, {'version': 1, 'nonce': request['nonce'], 'result': result}, deadline)
@@ -449,6 +504,7 @@ def _commissioned_listener(workflows):
         raise ValueError('service_registration_mismatch')
     require_pinned_pair(executor, required=True, readback=True)
     allowed, originals, endpoints = set(), set(), {config['socket']}
+    admissions = {}
     for workflow in workflows:
         _name(workflow)
         selected = executor['workflows'][workflow]
@@ -467,7 +523,11 @@ def _commissioned_listener(workflows):
             originals |= identities
         endpoints |= sockets
         allowed.update(selected['run_uids'] + selected['result_uids'])
-    return registered_listener(config['socket'], managed_cli._TRUSTED_UID, public=True), frozenset(allowed)
+        admissions[workflow] = {'run': frozenset(selected['run_uids']),
+                                'readback': frozenset(selected['result_uids']),
+                                'profile': config['profile'], 'revision': config['revision'],
+                                'policy_sha256': config['workflows'][workflow]}
+    return registered_listener(config['socket'], managed_cli._TRUSTED_UID, public=True), frozenset(allowed), admissions
 
 
 def serve_main(argv):
@@ -489,8 +549,9 @@ def serve_main(argv):
         if os.getresuid() != (managed_cli._TRUSTED_UID,) * 3 or (args.listen_fd is not None and args.listen_fd < 3):
             raise ExecutorRefusal('administrator_required')
         originals = (activation_descriptors(frozenset(), ORIGINALS) if args.commissioned is not None else None)
+        commissioned = None
         if args.commissioned is not None:
-            endpoint, allowed = _commissioned_listener(workflows)
+            endpoint, allowed, commissioned = _commissioned_listener(workflows)
         elif args.history:
             config = _client_registration()
             endpoint, allowed = registered_listener(config['socket'], managed_cli._TRUSTED_UID, public=True), None
@@ -503,19 +564,25 @@ def serve_main(argv):
                     or _peer(listener) != managed_cli._TRUSTED_UID):
                 raise ExecutorRefusal('service_listener_untrusted')
             accept_deadline = monotonic() + managed_cli._TIMEOUT
-            remaining = len(workflows) if workflows is not None else 1
-            while remaining:
+            while commissioned is None or commissioned:
                 listener.settimeout(_remaining(accept_deadline))
                 client, _ = listener.accept()
                 with client:
                     if allowed is not None and _peer(client) not in allowed:
                         continue
-                    received = True
-                    remaining -= 1
+                    slots = len(commissioned) if commissioned is not None else None
+                    reply_failed = False
                     try:
-                        serve_connection(client, commissioned=workflows, originals=originals, history_only=args.history)
+                        serve_connection(client, commissioned=commissioned, originals=originals,
+                                         history_only=args.history,
+                                         accept_deadline=accept_deadline if commissioned is not None else None)
                     except (OSError, ValueError, EOFError, TypeError, KeyError):
-                        unconfirmed = True
+                        reply_failed = True
+                    if slots is None or len(commissioned) < slots:
+                        received = True
+                        unconfirmed |= reply_failed
+                    if commissioned is None:
+                        break
             if unconfirmed:
                 raise OSError('service_request_unconfirmed')
     except (OSError, ValueError, EOFError, TypeError, KeyError):

@@ -54,6 +54,7 @@ if [[ -n "$runtime_dir" ]]; then
             exit 1
         fi
     done
+    "$python" -I "$runtime_packer" --verify-ingress "$root/src/workeros/managed_executor.py" "$runtime_dir"
     runtime_dir=$(cd -- "$runtime_dir" && pwd)
     assets+=("$platform_wheel")
 elif [[ "$mode" == verify || "$mode" == public ]]; then
@@ -263,6 +264,17 @@ verify_owned_runtime() {
     installed_python "$environment/bin/python"
     "$environment/bin/python" -I -m workeros.verify_install \
         "$output/$platform_wheel" --sha256 "$(asset_hash "$platform_wheel")"
+    "$environment/bin/python" -I - <<'PY'
+import subprocess
+
+from workeros.managed_executor import _OWNED_BWRAP
+
+result = subprocess.run([str(_OWNED_BWRAP), "--version"], env={}, capture_output=True,
+                        check=True, timeout=5)
+if result.stdout != b"bubblewrap 0.12.0\n":
+    raise SystemExit("Installed managed runtime did not report the approved version.")
+print("Installed owned runtime starts on the release host and reports Bubblewrap 0.12.0.")
+PY
 }
 
 verify_release() {

@@ -114,6 +114,24 @@ class PublicReleaseTest(unittest.TestCase):
         self.verify()
         self.assertEqual({path.name: path.read_bytes() for path in self.output.iterdir()}, self.files)
 
+    def test_workflow_requires_owned_runtime_before_anonymous_network_io(self):
+        def verify():
+            gate.verify_public_release(VERSION, COMMIT, self.expected, self.output,
+                                       require_owned_runtime=True, opener=self.fixture)
+
+        with self.assertRaisesRegex(gate.VerificationError, "missing its regular Linux x86-64"):
+            verify()
+        self.assertEqual(self.fixture.requests, [])
+        name = f"workeros-{VERSION}-py3-none-linux_x86_64.whl"
+        data = b"exact owned runtime wheel fixture"
+        self.files[name] = data
+        self.files["SHA256SUMS"] += f"{sha256(data).hexdigest()}  {name}\n".encode("ascii")
+        (self.expected / name).write_bytes(data)
+        (self.expected / "SHA256SUMS").write_bytes(self.files["SHA256SUMS"])
+        self.fixture = PublicFixture(self.files)
+        verify()
+        self.assertEqual((self.output / name).read_bytes(), data)
+
     def test_different_platform_is_refused_before_network_io(self):
         (self.expected / f"workeros-{VERSION}-py3-none-linux_aarch64.whl").write_bytes(b"foreign fixture")
         with self.assertRaisesRegex(gate.VerificationError, "unexpected staged asset set"):

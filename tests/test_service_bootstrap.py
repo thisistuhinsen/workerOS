@@ -16,6 +16,29 @@ from workeros.service_deadline import ArmedServiceWindow
 
 
 class TrustedBootstrapTest(TestCase):
+    def open_inert_sandbox(self):
+        directory = Path(self.enterContext(TemporaryDirectory()))
+        source = directory / 'inert-sandbox.c'
+        executable = directory / 'inert-sandbox'
+        # The gate fixes argv[0] to "bwrap". A BusyBox applet selects
+        # its command from argv[0], so echo/true are not portable stand-ins.
+        source.write_text(r'''
+#include <stdio.h>
+int main(int argc, char **argv) {
+    for (int index = 1; index < argc; ++index) {
+        if (index > 1 && putchar(' ') == EOF)
+            return 1;
+        if (fputs(argv[index], stdout) == EOF)
+            return 1;
+    }
+    return puts("") == EOF || fflush(stdout) == EOF;
+}
+''')
+        subprocess.run(['cc', str(source), '-o', str(executable)], check=True, timeout=10)
+        fd = os.open(executable, os.O_RDONLY | os.O_CLOEXEC)
+        self.addCleanup(os.close, fd)
+        return fd
+
     def window(self):
         now = monotonic_ns()
         window = ServiceWindow(now + 2_000_000_000, now + 3_000_000_000)
@@ -78,8 +101,7 @@ class TrustedBootstrapTest(TestCase):
         window, timers = self.window()
         path = Path(self.enterContext(TemporaryDirectory())) / 'preheld-original'
         path.write_bytes(b'exact read-only input')
-        launcher = os.open('/bin/true', os.O_RDONLY | os.O_CLOEXEC)
-        self.addCleanup(os.close, launcher)
+        launcher = self.open_inert_sandbox()
         launch = subprocess.Popen
         with path.open('rb') as original, path.open('rb') as inert_image, patch(
                 'workeros.service_bootstrap.subprocess.Popen', wraps=launch) as spawn:
@@ -90,7 +112,7 @@ class TrustedBootstrapTest(TestCase):
                 self.assertEqual(len(passed), 2)
                 self.assertEqual(set(passed).intersection(handles), set())
                 self.assertIsNone(os.waitid(os.P_PIDFD, child.pidfd, os.WEXITED | os.WNOHANG | os.WNOWAIT))
-                # True is a harmless inert stand-in for the sandbox binary.
+                # The inert sandbox stand-in writes only to its stdout.
                 # This exercises actual descriptor delivery and kernel exec;
                 # it claims no cgroup placement or worker confinement.
                 child.release(handles, window.active_until_ns)
@@ -98,8 +120,9 @@ class TrustedBootstrapTest(TestCase):
                     child.release(handles, window.active_until_ns)
                 self.assertTrue(timers.wait_for_child(child.pidfd))
                 event = os.waitid(os.P_PIDFD, child.pidfd, os.WEXITED | os.WNOHANG)
-                self.assertEqual((event.si_pid, event.si_code, event.si_status), (pid, os.CLD_EXITED, 0))
+                self.assertIsNotNone(event)
                 child.observe_reap(event)
+                self.assertEqual((event.si_pid, event.si_code, event.si_status), (pid, os.CLD_EXITED, 0))
                 self.assertLess(child.reaped_ns, window.cleanup_until_ns)
             self.assert_reaped(pid)
         self.assertEqual(path.read_bytes(), b'exact read-only input')
@@ -120,9 +143,8 @@ class TrustedBootstrapTest(TestCase):
         image = root / 'inert-image'
         image.write_bytes(b'not a worker image')
         output = root / 'selected-output'
-        launcher = os.open('/bin/echo', os.O_RDONLY | os.O_CLOEXEC)
-        self.addCleanup(os.close, launcher)
-        # The inert echo process observes the exact stdout mapping. This
+        launcher = self.open_inert_sandbox()
+        # The inert fixture observes the exact stdout mapping. This
         # validates the physical gate only; there is no claimed cgroup run.
         with image.open('rb') as executable, output.open('wb') as stream:
             descriptors = launcher, executable.fileno(), None, stream.fileno(), None

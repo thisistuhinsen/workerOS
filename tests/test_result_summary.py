@@ -7,6 +7,7 @@ from workeros.result_summary import summarize_archived_results
 
 SELECTION = {'workflow': 'audit', 'role': 'auditor', 'scope_sha256': 'a' * 64}
 PROFILE = {'profile': 'reports', 'revision': 'review-1'}
+UNAVAILABLE_COUNTS = dict.fromkeys(('active', 'settling', 'completed', 'refused', 'failed', 'unknown'))
 
 
 def archived(request, invocation, receipt, *, selection=SELECTION, profile=PROFILE):
@@ -32,7 +33,21 @@ class ResultSummaryTest(TestCase):
         self.assertEqual(
             self.summarize([one, again, two, other_role, other_scope, other_workflow, other_rev, other_profile]),
             {'version': 1, 'basis': 'verified_archived_requests', 'status': 'reported',
-             'code': 'verified_archive_count', 'verified_count': 2, 'liveness': 'unavailable'})
+             'code': 'verified_archive_count', 'verified_count': 2, 'liveness': 'unavailable',
+             'counts': {**UNAVAILABLE_COUNTS, 'completed': 2, 'failed': 0, 'unknown': 0}})
+
+    def test_guard_only_outcomes_count_known_failure_and_unknown_effect(self):
+        verified = archived('1', '2', '3')
+        unmatched = []
+        for request, invocation, receipt, status in (('4', '5', '6', 0), ('7', '8', '9', 7)):
+            result = archived(request, invocation, receipt)
+            result.pop('observer_result')
+            unmatched.append({**result, 'status': 'unknown', 'effect': 'unknown', 'code': 'service_terminal_reported',
+                              'provider_report': {'receipt_sha256': receipt * 64, 'service': {'lifecycle': {
+                                  'terminal_disposition': 'exited', 'terminal_status': status}}}})
+        summary = self.summarize([verified, *unmatched, unmatched[0]])
+        self.assertEqual(summary['verified_count'], 1)
+        self.assertEqual(summary['counts'], {**UNAVAILABLE_COUNTS, 'completed': 1, 'failed': 1, 'unknown': 1})
 
     def test_absent_or_unverified_history_has_no_count(self):
         record = archived('1', '2', '3')
@@ -41,7 +56,8 @@ class ResultSummaryTest(TestCase):
         unfinished = {**record, 'cleanup': 'unconfirmed'}
         foreign = {**record, 'selection': {**SELECTION, 'role': 'other'}}
         unavailable = {'version': 1, 'basis': 'verified_archived_requests', 'status': 'unavailable',
-                       'code': 'verified_archive_unavailable', 'verified_count': None, 'liveness': 'unavailable'}
+                       'code': 'verified_archive_unavailable', 'verified_count': None, 'liveness': 'unavailable',
+                       'counts': UNAVAILABLE_COUNTS}
         for result in (None, [], [unarchived], [unknown], [unfinished], [foreign]):
             self.assertEqual(self.summarize(result), unavailable)
 

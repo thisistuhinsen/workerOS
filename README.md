@@ -74,6 +74,11 @@ package-manager guide](docs/install-0.8.0.md) is version-pinned; use a verified
 offline bundle or its GitHub release assets after publication. Both Python
 installers create the same `.venv-0.7.0`; choose one in a fresh folder.
 
+**Have an approved managed workflow?** With a verified v0.8.0 candidate,
+[submit and check it](docs/start/terminal.md#run-and-check-an-approved-worker)
+from your ordinary account. The administrator uses the separate
+[guarded setup walkthrough](docs/guarded-walkthrough.md).
+
 <a name="try-a-timeout"></a>
 <a name="configure-a-workflow-once"></a>
 <a name="run-an-inherited-fd-example"></a>

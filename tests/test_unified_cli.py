@@ -100,6 +100,8 @@ class UnifiedCliTest(unittest.TestCase):
         self.assertEqual(result.returncode,0,result.stderr)
         receipt=json.loads(result.stdout)
         self.assertEqual(receipt['version'],1)
+        self.assertRegex(receipt['attempt_id'], r'^attempt-[0-9a-f]{32}$')
+        self.assertEqual(receipt['persistence'], 'not_recorded')
         self.assertEqual((receipt['status'],receipt['effect']),('reported','unknown'))
         self.assertEqual(receipt['result']['terminal']['lifecycle'],'exited')
         self.assertEqual(receipt['result']['terminal']['returncode'],'0')
@@ -114,6 +116,29 @@ class UnifiedCliTest(unittest.TestCase):
         self.assertEqual(missing.returncode,1)
         receipt=json.loads(missing.stdout)
         self.assertEqual((receipt['code'],receipt['effect']),('command_start_failed','not_attempted'))
+
+    def test_local_json_report_keeps_same_attempt_and_terminal_on_export_failure(self):
+        if not self.local_paths_authorized():
+            return
+        report = self.root / 'job é.json'
+        command = [sys.executable, '-c', 'print("child payload")']
+        args = ['run', '--json', '--report', report.name, '--', *command]
+        saved = self.call('workeros', args, cwd=self.root)
+        receipt = json.loads(saved.stdout)
+        self.assertEqual((saved.returncode, saved.stderr, receipt.pop('export')['status']), (0, '', 'written'))
+        self.assertEqual(json.loads(report.read_bytes()), receipt)
+        self.assertNotIn('child payload', saved.stdout)
+        self.assertEqual(receipt['persistence'], 'not_recorded')
+        blocked = self.call('wos', args, cwd=self.root)
+        failure = json.loads(blocked.stdout)
+        self.assertEqual((blocked.returncode, blocked.stderr), (1, ''))
+        self.assertEqual(failure['export'], {
+            'status': 'failed', 'code': 'report_destination_exists',
+            'next_action': 'save_this_receipt_without_rerunning',
+        })
+        self.assertEqual(failure['result'], receipt['result'])
+        self.assertNotEqual(failure['attempt_id'], receipt['attempt_id'])
+        self.assertEqual(json.loads(report.read_bytes()), receipt)
 
     def test_structured_run_timeout_reports_cleanup_separately(self):
         command = shutil.which('sleep')

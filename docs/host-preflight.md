@@ -286,6 +286,12 @@ are gone, use the approved authority's historical store for that key.
 
 #### Register a named systemd workflow
 
+For first use with an approved v0.8.0 candidate, see the
+[administrator walkthrough](guarded-walkthrough.md) and the short
+[caller example](start/terminal.md#run-and-check-an-approved-worker).
+The caller example links to matching JSON, YAML and code calls. Use this
+reference to enroll or verify a deployment's role and scope.
+
 An administrator can enroll a named workflow for several preheld
 regular files with exact mode `read`, `write` or `read-write`.
 Each selected file has its own resource and mapped owner. The
