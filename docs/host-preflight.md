@@ -748,6 +748,119 @@ without a separately commissioned host.
 
 ### Grant read access to one Linux file
 
+#### Apply a profile and verify a file grant
+
+An administrator can use one approved profile document to record a custom
+role and apply one `named_uid_read_acl` without starting a worker. Use
+`workeros managed apply-profile --preview < profile.json` to verify the exact
+plan without writing. Run `workeros managed apply-profile < profile.json`
+to record and apply it. Both accept JSON or `--format yaml` with PyYAML.
+
+Declare the capability under the role's `privileged` field and pin
+its enforcement in the top-level `grant` field. Set the expiry to
+your approved future Unix timestamp, the principal and numeric UID to the
+same existing account, and the device and inode to the exact approved file.
+Use only a regular, single-link, administrator-owned `0600` file with no ACL
+in a protected administrator-owned `0711` parent directory.
+
+```json
+{
+  "version": 1,
+  "profile": "reports",
+  "revision": "review-1",
+  "roles": [{
+    "name": "report-reviewer",
+    "principal": "existing-reviewer",
+    "operations": ["read"],
+    "scopes": ["final-report"],
+    "expires_at": 1796000000,
+    "resources": {"final-report": {"device": "100", "inode": "200"}},
+    "privileged": [{
+      "capability": "named_uid_read_acl", "scope": "final-report", "approved": true
+    }]
+  }],
+  "grant": {
+    "capability": "named_uid_read_acl",
+    "role": "report-reviewer",
+    "scope": "final-report",
+    "path": "/approved/reports/final.txt",
+    "principal_uid": 1234,
+    "exclusive_admin": true
+  }
+}
+```
+
+Preview shows the held file identity, pinned UID and exact mode change.
+`file_acl_verified` records an exact ACL and mode readback from the kernel.
+Verify path traversal and any other access controls separately as the
+appointed principal. This command starts no worker and leaves readiness
+`not_checked` and independence `unverified`. A declaration without
+`grant` still needs no independent attester to be recorded. Requests for a
+different grant capability or an independent observer on this grant must
+use an authorized backend and the required separate provider evidence;
+WorkerOS refuses those inputs here before applying an ACL.
+
+Keep the original document and the returned `grant_plan`. When the same
+profile receipt already exists, an exact repeat checks the grant read-only.
+It never repeats a possibly interrupted ACL write. A changed input conflicts
+with that revision. For a separate readback, save only `grant_plan` to
+`grant.json` and use `workeros roles grant-check < grant.json`. If the
+interrupted reply was lost, retain the original profile and check
+`workeros managed profile-status reports review-1`; reconstruct the exact
+grant plan from the original approval if necessary. A lost or incomplete
+result can leave the declaration recorded and access unknown. Preserve the
+journal and reconcile before any new grant.
+
+Use `workeros roles grant-revoke < grant.json` for explicit cleanup, and
+verify the resulting absence using `roles grant-check`. Profile expiry,
+declaration revocation, and package uninstall do not remove an ACL. Revoke
+file access before uninstalling the trusted CLI when no other administrator
+cleanup route is in place. Revocation applies to future opens; it does not
+close an already-open descriptor.
+
+#### Register a native file capability
+
+Trusted administrator-owned Python code can register a custom operation with
+the same no-start apply entry. The supplied adapter targets Linux named-user
+data ACLs. It supports read (4), write (2), or read and write (6). These are
+file access permissions, so a write registration cannot promise append-only
+access. No registration starts a command or creates a principal.
+
+An adapter declares the capability name, operation name and access mask. An
+administrator supplies a ceiling for that capability with an exact profile,
+revision, role, scope, numeric UID, absolute path, device, inode and expiry.
+For example, an approved host integration can pass a registration to the
+same installed parser:
+
+```python
+from workeros.delegated_acl import FileAclCapability, FileAclRegistration
+from workeros.managed_cli import main
+
+capability = FileAclCapability("report-data-write", "replace-report-data", 2)
+registration = FileAclRegistration(
+    capability=capability, profile="reports", revision="review-1",
+    role="report-editor", scope="final-report",
+    principal_uid=approved_uid, path=approved_path,
+    device=approved_device, inode=approved_inode,
+    maximum_access=2, expires_at=approved_expiry,
+)
+exit_code = main(["apply-profile", "--preview"], acl_registrations=(registration,))
+```
+
+Take every `approved_*` value from the host's administrator-controlled policy.
+The document on standard input selects `report-data-write` in both capability
+fields and lists `replace-report-data` as an operation on the single approved
+scope. Its pinned values and expiry must fit the registration. Remove
+`--preview` only after approval. The stock CLI does not load adapter code or
+registrations from a document. Without the trusted registration it refuses the
+custom grant. A host supplying a registry must authorize every grant through
+that registry, including the stock read capability if the host wants it.
+The existing `roles grant-check` and `roles grant-revoke`
+commands consume the returned `grant_plan` and verify the original capability,
+mask and file against the protected journal.
+
+#### Apply an explicitly approved access plan
+
 From a trusted administrator installation, first record a role that names an
 existing non-root principal and allows `read` on the chosen scope. Bind that
 scope in the role's `resources` map to the file's decimal `device` and `inode`.

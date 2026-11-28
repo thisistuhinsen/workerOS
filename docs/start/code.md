@@ -58,6 +58,9 @@ PY
 ```
 
 Look for `hello` followed by `exited 0`.
+The worker text and Python result are separate observations; an exit does not
+prove what the command changed. If you lose the result or it is uncertain,
+follow the [recovery guide](../support.md#troubleshooting) before retrying.
 
 ## Give a worker a file you already opened
 
@@ -88,6 +91,7 @@ If either sample is missing, check that you're in the folder where you
 installed that version. If the reader reports `FAILED`, see its printed reason
 and the [troubleshooting guide](../support.md#troubleshooting).
 
-[Install a reader for another language](install.md#reader-packages) ·
+[Install a v0.7.0 reader](install.md#reader-packages) ·
+[Install a v0.8.0 reader](../install-0.8.0.md#package-manager-quick-reference) ·
 [Pass a file from your own Python app](../workers.md#python-apis) ·
 [Back to first run](../../README.md#install-and-run)

@@ -104,7 +104,9 @@ JSON
 ```
 
 Look for `result.terminal.lifecycle: "exited"`, return code `"0"`, and
-cleanup `"reaped"`.
+cleanup `"reaped"`. If the reply is `unavailable`, or a reported write has
+unknown effect, don't replay automatically. Follow the
+[recovery guide](../support.md#troubleshooting) and inspect possible effects.
 
 ## Run from YAML
 

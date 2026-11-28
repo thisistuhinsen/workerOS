@@ -67,6 +67,9 @@ class UnifiedCliTest(unittest.TestCase):
                               (['help','config'],'docs/start/config.md#run-from-yaml'),
                               (['help','formats'],'yaml_dependency_missing'),
                               (['roles','--help'],'grant-check'),(['roles','apply','--help'],'creates no principal'),
+                              (['help','managed'],'named_uid_read_acl'),
+                              (['help','managed'],'apply-a-profile-and-verify-a-file-grant'),
+                              (['help','managed'],'does not replay it'),
                               (['managed','--help'],'reconcile')):
             with self.subTest(args=args):
                 result=self.call('workeros',args)
@@ -314,7 +317,9 @@ workflows:
             os.close(in_slave); in_slave=None
             os.close(out_slave); out_slave=None
             os.write(in_master,entries.encode())
-            _,err=process.communicate(timeout=8)
+            try: _,err=process.communicate(timeout=8)
+            except subprocess.TimeoutExpired:
+                process.kill(); process.communicate(); raise
             chunks=[]
             while True:
                 try: chunk=os.read(out_master,4096)
@@ -329,7 +334,7 @@ workflows:
             os.close(in_master); os.close(out_master)
 
     def test_tty_guide_back_output_and_runnable_preview(self):
-        entries='custom\nv1\noldrole\nback\nreader\n'+self.principal+'\narchive\n4102444800\n\n\n'
+        entries='custom\nv1\noldrole\nback\nreader\n'+self.principal+'\narchive\n4102444800\n\n\nn\n'
         code,out,err=self.guided(entries)
         self.assertEqual(code,0,err)
         self.assertEqual(json.loads(out),self.document)
@@ -348,11 +353,41 @@ workflows:
     def test_tty_guide_custom_operations(self):
         other=pwd.getpwnam('nobody')
         if other.pw_uid == os.getuid(): self.skipTest('distinct fixture principal unavailable')
-        entries='custom\nv1\nreader\n'+self.principal+'\narchive\n4102444800\nread,write,observe\nnobody\n'
+        entries='custom\nv1\nreader\n'+self.principal+'\narchive\n4102444800\nread,write,observe\nnobody\nn\n'
         code,out,err=self.guided(entries)
         self.assertEqual(code,0,err)
         self.assertEqual(json.loads(out)['roles'][0]['operations'],['read','write','observe'])
         self.assertEqual(json.loads(out)['roles'][0]['independent_of'],'nobody')
+        self.assertFalse((self.root/'workeros').exists())
+
+    def test_tty_guide_multiple_roles_human_expiry_and_validation(self):
+        entries=('custom\nv2\nreader\nmissing-worker\n'+self.principal+'\narchive, reports\n'
+                 '2099-12-31\nread,observe\n\ny\nwriter\n'+self.principal+'\narchive\n'
+                 '+30d\nwrite\n\nn\n')
+        code,out,err=self.guided(entries)
+        self.assertEqual(code,0,err)
+        document=json.loads(out)
+        self.assertEqual([role['name'] for role in document['roles']],['reader','writer'])
+        self.assertEqual([role['principal'] for role in document['roles']],[self.principal,self.principal])
+        self.assertIn(f'reader (account {self.principal}):',err)
+        self.assertIn(f'writer (account {self.principal}):',err)
+        self.assertEqual(document['roles'][0]['scopes'],['archive','reports'])
+        self.assertEqual(document['roles'][0]['expires_at'],4102444800)
+        self.assertGreater(document['roles'][1]['expires_at'],int(__import__('time').time())+29*86400)
+        self.assertIn('That account does not exist',err)
+        self.assertIn('expires 2100-01-01 00:00 UTC',err)
+        self.assertIn('no record, grant, or worker is created',err)
+        self.assertFalse((self.root/'workeros').exists())
+
+    def test_tty_guide_large_future_timestamp_and_invalid_answer_reprompt(self):
+        timestamp=2**52
+        entries=f'custom\nv3\nreader\n{self.principal}\narchive\n{timestamp}\nread\n\nmaybe\nn\n'
+        code,out,err=self.guided(entries)
+        self.assertEqual(code,0,err)
+        self.assertEqual(json.loads(out)['roles'][0]['expires_at'],timestamp)
+        self.assertIn(f'Unix {timestamp} seconds (outside calendar display range)',err)
+        self.assertEqual(err.count('Add another role?'),2)
+        self.assertIn('Answer y or n, back, or cancel.',err)
         self.assertFalse((self.root/'workeros').exists())
 
     def test_tty_guide_cancel_and_non_tty_refusal(self):

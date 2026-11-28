@@ -5,14 +5,16 @@
 Run a local command on Linux or WSL2. See whether it finished, timed out,
 or still needs checking before you try again.
 
-<details open>
-<summary>Terminal comic</summary>
+**[Install and run](#install-and-run)**
 
-[![WorkerOS terminal comic: Everything is green. Read the transcript.](docs/media/one-small-ticket.gif)](docs/media/README.md#everything-is-green)
+[Read the terminal comic transcript](docs/media/README.md#everything-is-green)
+
+<details open>
+<summary>Show or hide the terminal comic</summary>
+
+![WorkerOS terminal comic: A green dashboard misses that a job timed out.](docs/media/one-small-ticket.gif)
 
 </details>
-
-**[Install and run](#install-and-run)**
 
 <a name="run-one-worker"></a>
 <a name="run-a-job"></a>
@@ -46,21 +48,31 @@ job: exited 0
 If Python or `venv` is missing, install your distribution's Python 3.11+
 and venv package. If you're in PowerShell or Command Prompt, open Ubuntu
 in WSL2 first. If the install reports a checksum mismatch, stop; don't
-drop the digest to force it. [Other install help](docs/support.md#windows-and-macos)
+drop the digest to force it. [Other install help](docs/support.md#windows-and-macos).
+If a job times out or its effect is unclear, read
+[the recovery steps](docs/support.md#troubleshooting) before retrying. For
+package upgrades, use the [versioned install reference](docs/install.md).
+
+Use ordinary subprocess when its result is enough. Keep scheduling and retries
+in your queue; WorkerOS supervises the local command and reports what it saw.
 
 ## What would you like to do next?
 
 | | Start here |
 | --- | --- |
-| **Terminal** | [Run a job from a terminal](docs/start/terminal.md) |
-| **Config** | [Run from JSON](docs/start/config.md#run-from-json) or [run from YAML](docs/start/config.md#run-from-yaml) (v0.8.0 candidate) |
-| **Code** | [Run from Python or give a worker a file](docs/start/code.md) |
+| **Terminal** | [Run a job](docs/start/terminal.md) · [v0.8.0 structured result](docs/start/terminal.md#run-a-job-from-terminal-v080) |
+| **Config** | [Published v0.7.0 JSON](docs/start/config.md#run-from-json) · [v0.8.0 JSON](docs/start/config.md#run-from-json-v080) · [v0.8.0 YAML](docs/start/config.md#run-from-yaml) |
+| **Code** | [Python hello](docs/start/code.md#run-hello-from-python) · [v0.8.0 Python hello](docs/start/code.md#run-hello-from-python-v080) · [v0.8.0 named-file handoff](docs/start/code.md#give-a-worker-an-open-file-v080) |
 
 <a name="packages"></a>
 <a name="language-packages"></a>
 <a name="write-a-worker"></a>
 
-**Install for your language:** [pip, uv, npm, Conan, Go, Cargo and Maven](docs/start/install.md). Both Python install routes create the same `.venv-0.7.0`; pick one in a fresh folder.
+**Install for your language:** use the [published v0.7.0 package-manager
+steps](docs/start/install.md) for the stable release. The [v0.8.0
+package-manager guide](docs/install-0.8.0.md) is version-pinned; use a verified
+offline bundle or its GitHub release assets after publication. Both Python
+installers create the same `.venv-0.7.0`; choose one in a fresh folder.
 
 <a name="try-a-timeout"></a>
 <a name="configure-a-workflow-once"></a>
@@ -69,15 +81,18 @@ drop the digest to force it. [Other install help](docs/support.md#windows-and-ma
 
 ## Guides and reference
 
-The [first-use guides above](#what-would-you-like-to-do-next) use v0.7.0.
+The [first-use guides above](#what-would-you-like-to-do-next) default to
+published v0.7.0. The version-pinned v0.8.0 links form a parallel candidate
+path; use them with a verified offline bundle or after the matching release.
 For production integrations: [Python API](docs/api.md) · [configuration
 reference](docs/configuration.md) · [worker API](docs/workers.md) ·
 [authorized host setup](docs/host-preflight.md) ·
 [agent skill](skills/workeros/SKILL.md).
 
-For upgrades or offline installs, see [installation reference](docs/install.md).
-The [v0.8.0 candidate guide](docs/install-0.8.0.md) is separate; it is not the
-published install.
+For v0.7.0 upgrades or offline installs, see the [stable installation
+reference](docs/install.md). The [v0.8.0 candidate guide](docs/install-0.8.0.md)
+is separate; use it with a verified offline bundle or after the matching
+release is published.
 
 ## Verify and contribute
 

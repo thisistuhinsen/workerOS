@@ -10,13 +10,34 @@ If the shell cannot find the command, return to that folder first.
 
 Look for `hello` and `job: exited 0`. After `--`, pass your own command
 and arguments. WorkerOS starts it as you; this doesn't grant extra rights.
-With the [v0.8.0 candidate](../install-0.8.0.md#offline-install), the same
-command starts with `.venv-0.8.0/bin/workeros run --` instead.
+For v0.8.0, use a verified offline bundle or wait for publication, then try
+the same job with the candidate's structured result:
+
+<a name="run-a-job-from-terminal-v080"></a>
+
+```sh
+.venv-0.8.0/bin/workeros run --json -- /usr/bin/printf 'hello\n'
+```
+
+The child prints `hello` to stderr; stdout contains one JSON object. Look for
+`status: reported` and `result.terminal` with `lifecycle: exited`,
+`returncode: "0"`, and `cleanup.status: reaped`. `effect` remains `unknown`: a successful exit does
+not prove what a command changed. See the [v0.8.0 install instructions](../install-0.8.0.md#offline-install).
+If the reply is unavailable or cleanup is not confirmed, don't replay
+automatically; follow the [recovery steps](../support.md#troubleshooting).
 
 ## See a timeout
 
+**Published v0.7.0**
+
 ```sh
 .venv-0.7.0/bin/workeros-demo
+```
+
+**Verified v0.8.0 candidate**
+
+```sh
+.venv-0.8.0/bin/workeros demo
 ```
 
 This runs a disk-space report and a second job that outlasts the wait.
@@ -33,4 +54,7 @@ means WorkerOS collected the stopped child's exit. A timeout cannot undo
 a file write or message the job already made. If cleanup isn't confirmed,
 [check what happened before retrying](../support.md#troubleshooting).
 
-[Run a job from JSON](config.md#run-from-json) · [Back to first run](../../README.md#install-and-run)
+[Run from v0.7.0 JSON](config.md#run-from-json) ·
+[Run from v0.8.0 JSON](config.md#run-from-json-v080) or [YAML](config.md#run-from-yaml) ·
+[Try the v0.8.0 named-file example](code.md#give-a-worker-an-open-file-v080) ·
+[Back to first run](../../README.md#install-and-run)

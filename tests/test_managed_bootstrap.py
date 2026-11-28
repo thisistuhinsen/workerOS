@@ -27,7 +27,7 @@ from workeros.roles_cli import _canonical
 
 
 ENTRY = """
-import os, runpy, sys
+import json, os, runpy, sys
 from workeros import managed_bootstrap, managed_cli, roles_cli, scope_meter
 roles_cli._PARENT = managed_cli._CONFIG_PARENT = sys.argv[1]
 roles_cli._UID = managed_cli._TRUSTED_UID = os.getuid()
@@ -46,9 +46,59 @@ if sys.argv[3]:
     managed_bootstrap.setup_clock_id = lambda: fixture_clock
     managed_bootstrap.monotonic_clock_id = scope_meter.monotonic_clock_id = lambda: 'fixture-monotonic'
 fixture_clock = sys.argv[3]
-sys.argv = sys.argv[4:]
+if sys.argv[4] == 'client-config-pipe':
+    client_config = json.load(sys.stdin)
+    read_admin_json = managed_cli._read_admin_json
+    def read_fixture_json(filename):
+        if filename == 'managed-host.json':
+            return client_config
+        return read_admin_json(filename)
+    managed_cli._read_admin_json = read_fixture_json
+sys.argv = sys.argv[5:]
 runpy.run_path(sys.argv[0],run_name='__main__')
 """
+
+
+class OrdinaryProfileBoundaryTest(unittest.TestCase):
+    def test_no_attester_and_other_unsupported_scopes_are_reported_before_binding(self):
+        from unittest.mock import patch
+        from workeros.managed_bootstrap import _build, _UnsupportedScopes
+
+        def entry(name, providers):
+            definition = ProfileDefinition(name, 'revision-1', '0.8.0', 'a'*64, 'b'*64,
+                                           'manager', name, 'clock', monotonic_ns()+1_000_000_000,
+                                           tuple(providers))
+            return {'definition': asdict(definition), 'policy': {'workflows': {
+                name: {'bindings': {}}}}, 'role': 'role', 'binding_generation': 'generation'}
+
+        interval = ProviderBinding('witness', 'reference', 'interval-scope', 'interval',
+                                   'provider', 'observers', 'writer')
+        scopes = [entry('ordinary-scope', ()), entry('interval-scope', (interval,))]
+        config = {'version': 2, 'profile': 'profile', 'revision': 'revision-1',
+                  'operation_key': 'c'*64, 'authorized_uids': [os.getuid()],
+                  'wheel_path': 'unused', 'journal_directory': 'unused',
+                  'local_approval': {}, 'scopes': scopes}
+        with ExitStack() as resources, \
+             patch('workeros.managed_bootstrap.setup_clock_id') as clock, \
+             patch('workeros.managed_bootstrap.ManagedJournal') as journal, \
+             patch('workeros.managed_bootstrap._bound_scope') as bind:
+            with self.assertRaises(_UnsupportedScopes) as caught:
+                _build(config, resources)
+        clock.assert_not_called()
+        journal.assert_not_called()
+        bind.assert_not_called()
+        self.assertEqual(caught.exception.scopes, [
+            {'name': 'ordinary-scope', 'status': 'unavailable',
+             'code': 'independent_attester_unavailable'},
+            {'name': 'interval-scope', 'status': 'unavailable',
+             'code': 'interval_custody_unsupported'},
+        ])
+
+    def test_empty_operation_set_cannot_be_compiled_as_authorized_workflow(self):
+        from workeros.configuration import ConfigurationError
+        from workeros.enrollment import _operations
+        with self.assertRaisesRegex(ConfigurationError, '^invalid_operation_list$'):
+            _operations([])
 
 
 class InstalledHostTest(unittest.TestCase):
@@ -102,12 +152,16 @@ class InstalledHostTest(unittest.TestCase):
             # and host share this synthetic clock label only for conformance.
             clock_id = fixture_clock = 'f'*64
 
-        def command(*args, synthetic=True):
+        def command(*args, synthetic=True, client_config=False):
             return [sys.executable, '-I', '-c', ENTRY, str(root), ('synthetic' if synthetic is True else synthetic) or '',
-                    fixture_clock, executable, 'managed', *args]
+                    fixture_clock, 'client-config-pipe' if client_config else '', executable, 'managed', *args]
 
-        def run(*args, data=None, passed=(), code=0, synthetic=True):
-            result = subprocess.run(command(*args, synthetic=synthetic), input=data, pass_fds=passed,
+        def run(*args, data=None, passed=(), code=0, synthetic=True, client_config=None):
+            if client_config is not None:
+                self.assertIsNone(data)
+                data = json.dumps(client_config)
+            result = subprocess.run(command(*args, synthetic=synthetic, client_config=client_config is not None),
+                                    input=data, pass_fds=passed,
                                     capture_output=True, text=True, timeout=8, cwd=root)
             self.assertEqual(result.returncode, code, result.stdout + result.stderr)
             return json.loads(result.stdout)
@@ -237,7 +291,7 @@ class InstalledHostTest(unittest.TestCase):
         refused = run('serve-setup','--describe',passed=passed,code=1,synthetic=False)
         self.assertEqual((refused['status'],refused['code']),('unavailable','provider_requires_distinct_uid'))
         if stock_provider:
-            self.check_stock_provider(root, config_dir, journal, passed, server, provider, command, run,
+            self.check_stock_provider(root, journal, passed, server, provider, command, run,
                                       setup_config, scopes[0], uid, stock_provider == 'interrupt-before-finish')
             return
         interval = json.loads(json.dumps(setup_config))
@@ -312,10 +366,12 @@ class InstalledHostTest(unittest.TestCase):
                 os.close(metadata_fd)
             setup_path.write_text(json.dumps(setup_config))
         metadata = run('serve-setup','--describe',passed=passed)
-        (config_dir/'managed-host.json').write_text(json.dumps({
+        # The client receives synthetic correlation values through a pipe.
+        # The owned configuration file checks live in test_managed_cli.
+        client_config = {
             'version':1,'socket':str(root/'host.sock'),'peer_uid':uid,'profile':'fixture',
             'scopes':[item['workflow'] for item in appointments],'identity':metadata['identity'],'operation_key':'b'*64,
-        }))
+        }
 
         stop, deny, wrong_generation = Event(), Event(), Event()
         requests, errors = [], []
@@ -397,7 +453,7 @@ class InstalledHostTest(unittest.TestCase):
                 host = subprocess.Popen(command('serve-setup','--listen-fd',str(server.fileno())),
                     pass_fds=(*passed,server.fileno()), stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
                 try:
-                    receipt = run(operation,code=code)
+                    receipt = run(operation,code=code,client_config=client_config)
                     out, err = host.communicate(timeout=8)
                     self.assertEqual(host.returncode,0,out+err)
                     return receipt
@@ -427,6 +483,7 @@ class InstalledHostTest(unittest.TestCase):
             for worker in threads:
                 worker.join(5)
         self.assertFalse(errors)
+        self.assertFalse((config_dir/'managed-host.json').exists())
         self.assertGreaterEqual(len(requests),4)
         self.assertEqual(len(requests),len(set(requests)))
 
@@ -503,15 +560,15 @@ class InstalledHostTest(unittest.TestCase):
                 self.assertEqual(result['scopes'][0]['code'], expected_code)
                 self.assertEqual(result['status'], 'incomplete' if changes else 'bindings_verified')
 
-    def check_stock_provider(self, root, config_dir, journal, passed, server, provider, command, run,
+    def check_stock_provider(self, root, journal, passed, server, provider, command, run,
                              setup_config, scope, uid, interrupt):
         metadata = run('serve-setup', '--describe', passed=passed)
-        (config_dir/'managed-host.json').write_text(json.dumps({
+        client_config = {
             'version': 1, 'socket': str(root/'host.sock'), 'peer_uid': uid,
             'profile': setup_config['profile'], 'scopes': metadata['scopes'],
             'identity': metadata['identity'], 'operation_key': setup_config['operation_key'],
             'binding_check': metadata['binding_check'],
-        }))
+        }
         binding = ProviderBinding(**scope['definition']['providers'][0])
         definition = ProfileDefinition(**{**scope['definition'], 'providers': (binding,)})
         registration = {'host_uid': uid, 'provider_uid': uid, 'observer': scope['observer'],
@@ -536,7 +593,7 @@ class InstalledHostTest(unittest.TestCase):
                                   pass_fds=(*passed, server.fileno()), stdout=subprocess.PIPE,
                                   stderr=subprocess.PIPE, text=True) as host:
                 try:
-                    receipt = run(operation, code=1 if interrupt else 0)
+                    receipt = run(operation, code=1 if interrupt else 0, client_config=client_config)
                     out, err = host.communicate(timeout=7)
                     self.assertEqual(host.returncode, 81 if interrupt else 0, out + err)
                     return receipt

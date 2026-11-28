@@ -45,7 +45,7 @@ def _fields(value, required, optional=()):
         raise Refusal('invalid_fields')
 
 
-def _validate(data, *, resolve_principals=True):
+def _validate(data, *, resolve_principals=True, check_operations=True):
     try: document = _decode_json(data)
     except ValueError: raise Refusal('invalid_document') from None
     _fields(document,('version','profile','revision','roles'))
@@ -70,7 +70,8 @@ def _validate(data, *, resolve_principals=True):
             if type(values) is not list or not 1 <= len(values) <= 64: raise Refusal('invalid_'+field)
             for value in values: _name(value)
             if len(set(values)) != len(values): raise Refusal('duplicate_'+field)
-        if not set(role['operations']) <= _OPTIONS.keys(): raise Refusal('unsupported_operation')
+        if check_operations and not set(role['operations']) <= _OPTIONS.keys():
+            raise Refusal('unsupported_operation')
         resources=role.get('resources',{})
         if type(resources) is not dict or not set(resources) <= set(role['scopes']): raise Refusal('invalid_resources')
         for scope, resource in resources.items():
@@ -145,9 +146,20 @@ def _store(*, create):
     finally: os.close(parent)
 
 
-def _check_applicable(document):
-    if any(role.get('privileged') for role in document['roles']):
+def _check_applicable(document, *, grant=None, capability=None):
+    requested = [(role['name'], request['scope'], request['capability'])
+                 for role in document['roles'] for request in role.get('privileged', ())]
+    supported = [] if grant is None else [(grant['role'], grant['scope'], grant['capability'])]
+    if requested != supported:
         raise Refusal('unsupported_privileged_enforcement')
+    for role in document['roles']:
+        allowed = set(_OPTIONS)
+        if capability is not None and role['name'] == grant['role']:
+            if capability.operation not in role['operations']:
+                raise Refusal('grant_operation_missing')
+            allowed.add(capability.operation)
+        if not set(role['operations']) <= allowed:
+            raise Refusal('unsupported_operation')
     if any(role['expires_at'] <= time() for role in document['roles']):
         raise Refusal('role_expired')
 
@@ -156,8 +168,8 @@ def _canonical(document):
     return json.dumps(document, sort_keys=True, separators=(',', ':'), ensure_ascii=True).encode('ascii')
 
 
-def _apply_declaration(store, document, canonical):
-    _check_applicable(document)
+def _apply_declaration(store, document, canonical, *, grant=None, capability=None):
+    _check_applicable(document, grant=grant, capability=capability)
     profile, revision = document['profile'], document['revision']
     if _read(store, _key(profile, revision, 'revoke')) is not None:
         raise Refusal('revision_revoked')
@@ -186,7 +198,7 @@ def _inspect_store(store,profile,revision):
     data=_read(store,_key(profile,revision,'profile'))
     if data is None: raise Refusal('revision_missing')
     revoked=_read(store,_key(profile,revision,'revoke')) is not None
-    document=_validate(data,resolve_principals=False)
+    document=_validate(data,resolve_principals=False,check_operations=False)
     if (document['profile'], document['revision']) != (profile, revision):
         raise Refusal('declaration_identity_mismatch', uncertain=True)
     expired=[role['name'] for role in document['roles'] if role['expires_at'] <= time()]
@@ -252,11 +264,92 @@ def commission(profile, revision, declaration_sha256, intent_sha256):
         return _commission_store(store, receipt)
 
 
-def commission_apply(data, *, input_sha256, preview=False):
-    """Record an approved declaration and its exact input digest under one lock."""
+def _grant_plan(document, grant, registrations):
+    from . import delegated_acl
+
+    _fields(grant, ('capability', 'role', 'scope', 'path', 'principal_uid', 'exclusive_admin'))
+    uid = grant['principal_uid']
+    if type(uid) is not int or not 0 <= uid < 2**32 - 1:
+        raise Refusal('invalid_principal_uid')
+    plan = {'version': 1, 'profile': document['profile'], 'revision': document['revision'],
+            **{key: grant[key] for key in ('role', 'scope', 'path', 'exclusive_admin')}}
+    capability = delegated_acl._BUILTIN
+    if registrations is not None or grant['capability'] != capability.name:
+        plan['capability'] = grant['capability']
+        named = [registration for registration in registrations or ()
+                 if registration.capability.name == grant['capability']]
+        if not named:
+            raise Refusal('unsupported_privileged_enforcement')
+        capability = named[0].capability
+        if any(entry.capability != capability for entry in named[1:]):
+            raise Refusal('ambiguous_native_capability')
+        if capability.name == delegated_acl.CAPABILITY and capability != delegated_acl._BUILTIN:
+            raise Refusal('reserved_native_capability')
+    try:
+        delegated_acl._document(_canonical(plan))
+    except delegated_acl.Refusal as exc:
+        raise Refusal(str(exc)) from exc
+    _check_applicable(document, grant=grant, capability=capability)
+    role = next(role for role in document['roles'] if role['name'] == grant['role'])
+    if 'independent_of' in role:
+        raise Refusal('independent_appointment_required')
+    if _principal(role['principal']).pw_uid != uid:
+        raise Refusal('principal_uid_mismatch')
+    if 'capability' in plan:
+        if role['scopes'] != [grant['scope']] or not any(entry.permits(plan, role, uid) for entry in named):
+            raise Refusal('native_grant_outside_approval')
+    return plan, capability
+
+
+def _preview_profile_grant(plan, document, digest, uid, capability):
+    from . import delegated_acl
+
+    try:
+        return delegated_acl.preview_approved(
+            plan, {**document, 'status': 'configured', 'digest': digest}, expected_uid=uid, capability=capability,
+        )
+    except delegated_acl.Refusal as exc:
+        raise Refusal(str(exc)) from exc
+
+
+def _finish_profile_grant(store, result, plan, uid, capability, *, repeat):
+    from . import delegated_acl
+
+    try:
+        grant = (delegated_acl._recover('check', plan, store) if repeat else
+                 delegated_acl._run_locked('apply', plan, store, expected_uid=uid, capability=capability))
+    except delegated_acl.Refusal as exc:
+        grant = {'status': 'unknown' if repeat else 'refused',
+                 'effect': 'not_attempted', 'code': str(exc)}
+    except (OSError, RecordError):
+        grant = {'status': 'unknown', 'effect': 'not_attempted' if repeat else 'unknown',
+                 'code': 'grant_state_unconfirmed'}
+    if grant['status'] == 'acl_entry_verified' and (
+            grant.get('principal_uid'), grant.get('access_mask'), grant.get('operation')) != (
+                uid, capability.access, capability.operation):
+        grant = {'status': 'unknown', 'effect': 'not_attempted', 'code': 'grant_readback_mismatch'}
+    status = {'acl_entry_verified': 'file_acl_verified', 'unknown': 'unknown'}.get(grant['status'], 'incomplete')
+    return {**result, 'status': status,
+            'effect': grant['effect'] if grant['effect'] != 'not_attempted' else result['effect'],
+            'declaration_effect': result['declaration_effect'], 'grant_effect': grant['effect'],
+            'grant': grant, 'grant_plan': plan}
+
+
+def commission_apply(data, *, input_sha256, preview=False, acl_registrations=None):
+    """Record intent and optionally apply one approved ACL without starting work.
+
+    Trusted host code can pass immutable FileAclRegistration objects.
+    JSON and YAML can select a registered capability but cannot register one.
+    """
     if os.geteuid() != _UID:
         raise Refusal('administrator_required')
-    from . import appointment_registry
+    from . import appointment_registry, delegated_acl
+
+    if acl_registrations is not None and (type(acl_registrations) is not tuple or any(
+            type(entry) is not delegated_acl.FileAclRegistration
+            or type(entry.capability) is not delegated_acl.FileAclCapability
+            for entry in acl_registrations)):
+        raise Refusal('invalid_native_acl_registration')
 
     try:
         requested = _decode_json(data)
@@ -264,8 +357,12 @@ def commission_apply(data, *, input_sha256, preview=False):
         raise Refusal('invalid_document') from exc
     has_appointments = type(requested) is dict and 'appointments' in requested
     appointments = requested.pop('appointments') if has_appointments else None
-    document = _validate(_canonical(requested) if has_appointments else data)
-    _check_applicable(document)
+    has_grant = type(requested) is dict and 'grant' in requested
+    grant = requested.pop('grant') if has_grant else None
+    document = _validate(_canonical(requested) if has_appointments or has_grant else data,
+                         check_operations=not has_grant)
+    plan, capability = _grant_plan(document, grant, acl_registrations) if has_grant else (None, None)
+    _check_applicable(document, grant=grant, capability=capability)
     profile, revision = document['profile'], document['revision']
     canonical = _canonical(document)
     receipt = _commission_receipt(profile, revision, sha256(canonical).hexdigest(), input_sha256)
@@ -278,6 +375,11 @@ def commission_apply(data, *, input_sha256, preview=False):
         receipt['appointments_sha256'] = sha256(_canonical(registry)).hexdigest()
     if preview:
         fields = {'appointments': registry['appointments']} if registry is not None else {}
+        if plan is not None:
+            fields['grant_plan'] = plan
+            fields['grant'] = _preview_profile_grant(
+                plan, document, receipt['declaration_sha256'], grant['principal_uid'], capability,
+            )
         return _commission_result('preview', 'not_attempted', **receipt, **fields)
     with _store(create=True) as store:
         if registry is not None:
@@ -288,8 +390,24 @@ def commission_apply(data, *, input_sha256, preview=False):
                                           code='appointment_state_unconfirmed', **receipt)
             if prior_registry is not None and prior_registry != _canonical(registry):
                 raise Refusal('appointment_registration_conflict')
-        result = _commission_apply_store(store, document, canonical, receipt)
-        if registry is None or result['status'] != 'configured':
+        repeat = False
+        if plan is not None:
+            try:
+                prior = _read(store, _key(profile, revision, 'commission'))
+            except (OSError, RecordError):
+                return _commission_result('unknown', 'not_attempted', code='commission_state_unconfirmed',
+                                          grant_plan=plan, **receipt)
+            repeat = prior is not None
+            if not repeat:
+                _preview_profile_grant(plan, document, receipt['declaration_sha256'], grant['principal_uid'], capability)
+        result = _commission_apply_store(store, document, canonical, receipt, grant=grant, capability=capability)
+        if plan is not None:
+            result = {**result, 'grant_plan': plan, 'grant_effect': 'not_attempted'}
+        if result['status'] != 'configured':
+            return result
+        if registry is None:
+            if plan is not None:
+                return _finish_profile_grant(store, result, plan, grant['principal_uid'], capability, repeat=repeat)
             return result
         try:
             declaration = _inspect_store(store, profile, revision)
@@ -304,11 +422,14 @@ def commission_apply(data, *, input_sha256, preview=False):
                     'commission_effect': result['effect'],
                     'appointment_effect': 'unknown'}
         status = 'expired' if any(role['expires_at'] <= time() for role in declaration['roles']) else 'configured'
-    return {**result, 'status': status, 'effect': 'recorded' if effect == 'recorded' else result['effect'],
-            'appointment_effect': effect, 'appointment_status': 'registered'}
+        result = {**result, 'status': status, 'effect': 'recorded' if effect == 'recorded' else result['effect'],
+                  'appointment_effect': effect, 'appointment_status': 'registered'}
+        if plan is not None and status == 'configured':
+            return _finish_profile_grant(store, result, plan, grant['principal_uid'], capability, repeat=repeat)
+        return result
 
 
-def _commission_apply_store(store, document, canonical, receipt):
+def _commission_apply_store(store, document, canonical, receipt, *, grant=None, capability=None):
     profile, revision = receipt['profile'], receipt['revision']
     # An unresolved existing receipt blocks any new write. An exact receipt
     # must still reference the original declaration, even on a repeat.
@@ -322,7 +443,7 @@ def _commission_apply_store(store, document, canonical, receipt):
             raise Refusal('commission_intent_conflict')
         return {**_commission_store(store, receipt), 'declaration_effect': 'unchanged'}
     try:
-        declaration_effect = _apply_declaration(store, document, canonical)
+        declaration_effect = _apply_declaration(store, document, canonical, grant=grant, capability=capability)
     except Refusal as exc:
         if not exc.uncertain:
             raise
@@ -437,7 +558,7 @@ def main(argv=None):
                 result={'status':'unsupported' if unsupported else 'preview','effect':'not_attempted',
                         'profile':document['profile'],'revision':document['revision'],'roles':document['roles'],
                         'enforcement':'not_commissioned','independence':'unverified',
-                        'next_action':'No built-in privileged enforcement backend is available.' if unsupported else
+                        'next_action':'Use managed apply-profile with an explicit supported grant, or ask the host administrator about this capability.' if unsupported else
                                       'Apply the declaration, then commission and verify host enforcement.'}
                 if unsupported: result['code']='unsupported_privileged_enforcement'
             else: result=apply(data)

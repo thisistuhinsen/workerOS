@@ -371,7 +371,7 @@ def serve_listener_once(listener, *, authorized_uids, adapter, accept_timeout=5.
         listener.settimeout(original_timeout)
 
 
-def _commission_document(argv):
+def _commission_document(argv, *, acl_registrations):
     from hashlib import sha256
 
     from . import roles_cli
@@ -379,7 +379,7 @@ def _commission_document(argv):
     from .recording import RecordError
 
     parser = argparse.ArgumentParser(prog='workeros managed apply-profile',
-                                     description='Apply and read back an approved local profile.')
+                                     description='Apply and read back an approved profile and any explicitly approved file grant.')
     parser.add_argument('--format', choices=('json', 'yaml'), default='json')
     parser.add_argument('--preview', action='store_true', help='validate and show digests without writing')
     args = parser.parse_args(argv)
@@ -394,7 +394,8 @@ def _commission_document(argv):
         result = roles_cli._commission_result('refused', 'not_attempted', code='input_unavailable')
     else:
         try:
-            result = roles_cli.commission_apply(data, input_sha256=sha256(raw).hexdigest(), preview=args.preview)
+            result = roles_cli.commission_apply(data, input_sha256=sha256(raw).hexdigest(),
+                                                preview=args.preview, acl_registrations=acl_registrations)
         except roles_cli.Refusal as exc:
             result = roles_cli._commission_result('unknown' if exc.uncertain else 'refused',
                                                   'unknown' if exc.uncertain else 'not_attempted', code=str(exc))
@@ -403,18 +404,25 @@ def _commission_document(argv):
                                                   code='commission_state_unconfirmed')
         except ValueError:
             result = roles_cli._commission_result('refused', 'not_attempted', code='invalid_profile')
-    if result['status'] == 'configured':
+    if result['status'] == 'file_acl_verified':
+        result['next_action'] = ('Keep grant_plan. Use roles grant-check to read the ACL or '
+                                 'roles grant-revoke to remove it before expiry or uninstall.')
+    elif result['status'] == 'configured':
         result['next_action'] = (
             'Use the managed host to verify live bindings and independent provider evidence.'
             if result.get('appointment_status') == 'registered' else
             'Ask the host administrator to register and verify any providers required by the workflow.'
         )
     elif result['status'] in ('incomplete', 'unknown'):
-        result['next_action'] = 'Check commission-status for this profile and revision before running another apply.'
+        result['next_action'] = (
+            'Use roles grant-check with grant_plan and inspect profile-status. Do not repeat an uncertain grant.'
+            if 'grant_plan' in result else
+            'Check profile-status (alias commission-status) for this profile and revision before running another apply.'
+        )
     elif result.get('code') == 'yaml_dependency_missing':
         result['next_action'] = 'Install optional PyYAML in the trusted WorkerOS environment or use JSON.'
     print(json.dumps(result, separators=(',', ':'), sort_keys=True))
-    return 0 if result['status'] in ('configured', 'preview') else 1
+    return 0 if result['status'] in ('configured', 'preview', 'file_acl_verified') else 1
 
 
 def _local_commission(argv):
@@ -457,7 +465,7 @@ def _local_commission(argv):
     return 0 if result['status'] == 'configured' else 1
 
 
-def main(argv=None):
+def main(argv=None, *, acl_registrations=None):
     argv = list(sys.argv[1:] if argv is None else argv)
     if argv and argv[0] == 'serve-setup':
         from . import managed_bootstrap
@@ -469,7 +477,7 @@ def main(argv=None):
         from . import appointment_registry
         return appointment_registry.main(argv[0], argv[1:])
     if argv and argv[0] in ('apply-profile', 'commission-apply'):
-        return _commission_document(argv[1:])
+        return _commission_document(argv[1:], acl_registrations=acl_registrations)
     if argv and argv[0] in _LOCAL_OPERATIONS:
         return _local_commission(argv)
     parser = argparse.ArgumentParser(description=__doc__)

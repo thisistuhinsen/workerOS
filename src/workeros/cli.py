@@ -1,6 +1,7 @@
 """WorkerOS: run local jobs and connect approved managed profiles."""
 import argparse
 from io import BytesIO, TextIOWrapper
+from datetime import date, datetime, time as datetime_time, timedelta, timezone
 from importlib.metadata import PackageNotFoundError, version as package_version
 import json
 import math
@@ -8,6 +9,7 @@ from pathlib import Path
 import re
 import shlex
 import sys
+import time
 
 _LIMIT=65536
 _INPUT_ROLES=frozenset(('preview','apply','grant-preview','grant-apply','grant-check','grant-revoke'))
@@ -119,6 +121,15 @@ Apply-profile validates, stores and reads back an approved local profile.
 Include the host's pinned appointments in the profile to register them together.
 Use --format yaml with optional PyYAML for YAML input. Preview writes no record.
 The commission-apply and commission-status aliases remain available.
+
+One narrowly supported file grant can be included as an explicitly approved
+top-level `grant` in the same profile: `named_uid_read_acl` for one existing UID
+and one exact Linux file. Preview does not write. A matching apply repeat reads
+the existing grant; it does not replay it. Keep the returned `grant_plan` and
+use `workeros roles grant-check < grant_plan.json` to read it or
+`workeros roles grant-revoke < grant_plan.json` to remove the recorded ACL.
+This is not general host enforcement or proof of an independent observer.
+See https://github.com/thisistuhinsen/workerOS/blob/v0.8.0/docs/host-preflight.md#apply-a-profile-and-verify-a-file-grant.
 
   workeros managed commission PROFILE REVISION --declaration-sha256 SHA --intent-sha256 SHA
 
@@ -332,15 +343,45 @@ def _guide(args):
     from . import roles_cli
     if args: return _refuse('invalid_guide')
     if not sys.stdin.isatty() or not sys.stdout.isatty(): return _refuse('tty_required')
-    fields=(('profile','Profile name'),('revision','Revision'),('role','Role name'),
-            ('principal','Existing OS principal'),('scope','Scope name'),('expires_at','Expiry (Unix seconds)'),
-            ('operations','Operations, comma-separated [read]'),
-            ('independent_of','Different existing principal to declare independence from [none]'))
-    values={}; index=0
-    sys.stderr.write('Role draft only. Type back to change a field or cancel to stop.\n')
+    def expiry_seconds(raw):
+        value=raw.strip()
+        if re.fullmatch(r'[0-9]+',value):
+            result=int(value)
+        else:
+            relative=re.fullmatch(r'\+?([1-9][0-9]*)([hdw])',value,re.IGNORECASE)
+            if relative:
+                amount=int(relative.group(1)); scale={'h':3600,'d':86400,'w':604800}[relative.group(2).lower()]
+                result=int(time.time())+amount*scale
+            elif re.fullmatch(r'\d{4}-\d{2}-\d{2}',value):
+                # A date means the end of that UTC day, not local machine time.
+                next_day=date.fromisoformat(value)+timedelta(days=1)
+                result=int(datetime.combine(next_day,datetime_time.min,timezone.utc).timestamp())
+            else:
+                try: parsed=datetime.fromisoformat(value[:-1]+'+00:00' if value.endswith(('Z','z')) else value)
+                except ValueError: raise ValueError('Enter a Unix timestamp, +30d, YYYY-MM-DD, or a timezone-qualified ISO date and time.') from None
+                if parsed.tzinfo is None or parsed.utcoffset() is None:
+                    raise ValueError('Add Z or a UTC offset, such as 2027-04-30T17:00:00Z.')
+                result=int(parsed.timestamp())
+        if result <= int(time.time()) or result >= 2**53:
+            raise ValueError('Expiry must be in the future and below 2^53 Unix seconds.')
+        return result
+
+    base_fields=(('profile','Profile name'),('revision','Revision'))
+    role_fields=(('name','Role name'),('principal','Existing OS principal'),
+                 ('scopes','Scopes, comma-separated'),
+                 ('expires_at','Expiry (Unix seconds, +30d, YYYY-MM-DD, or ISO time with Z/offset)'),
+                 ('operations','Operations, comma-separated [read]'),
+                 ('independent_of','Different existing principal to declare independence from [none]'))
+    values={}; index=0; role_count=1
+    fields=list(base_fields)+[(f'role0_{key}',label) for key,label in role_fields]
+    sys.stderr.write('Role draft only. You can define several roles. Type back to change the previous field or cancel to stop.\n')
     try:
-        while True:
+        while index < len(fields):
             key,label=fields[index]
+            role_field=key.startswith('role')
+            leaf=key.split('_',1)[1] if role_field else key
+            if leaf=='expires_at':
+                label='Expiry (Unix timestamp, +30d, YYYY-MM-DD through end of UTC day, or ISO time with Z/offset)'
             sys.stderr.write(label+': '); sys.stderr.flush()
             raw=sys.stdin.readline(4097)
             if not raw or raw.strip().lower()=='cancel':
@@ -350,30 +391,122 @@ def _guide(args):
             value=raw.strip()
             if value.lower()=='back':
                 if index: index-=1
-                else: sys.stderr.write('Already at the first field.\n')
+                else: sys.stderr.write('Already at the first field; enter a value or cancel.\n')
                 continue
-            if not value and key not in ('operations','independent_of'):
-                sys.stderr.write('Enter a value, back, or cancel.\n'); continue
-            values[key]=value
-            if index<len(fields)-1:
-                index+=1; continue
+            if not value and leaf not in ('operations','independent_of'):
+                sys.stderr.write('This field is required. Enter a value, back, or cancel.\n'); continue
             try:
-                operations=[item.strip() for item in values['operations'].split(',')] if values['operations'] else ['read']
-                role={'name':values['role'],'principal':values['principal'],'operations':operations,
-                      'scopes':[values['scope']],'expires_at':int(values['expires_at'])}
-                if values['independent_of']: role['independent_of']=values['independent_of']
-                document={'version':1,'profile':values['profile'],'revision':values['revision'],'roles':[role]}
+                if leaf in ('profile','revision','name','scope'):
+                    roles_cli._name(value)
+                elif leaf=='principal':
+                    roles_cli._principal(value)
+                elif leaf=='scopes':
+                    items=[item.strip() for item in value.split(',')]
+                    if not items or any(not item for item in items): raise roles_cli.Refusal('invalid_scopes')
+                    for item in items: roles_cli._name(item)
+                    if len(set(items))!=len(items): raise roles_cli.Refusal('duplicate_scopes')
+                    value=items
+                elif leaf=='operations':
+                    items=[item.strip() for item in value.split(',')] if value else ['read']
+                    if not items or any(not item for item in items): raise roles_cli.Refusal('invalid_operations')
+                    for item in items: roles_cli._name(item)
+                    if len(set(items))!=len(items): raise roles_cli.Refusal('duplicate_operations')
+                    if not set(items)<=roles_cli._OPTIONS.keys(): raise roles_cli.Refusal('unsupported_operation')
+                    value=items
+                elif leaf=='expires_at':
+                    value=expiry_seconds(value)
+                elif leaf=='independent_of' and value:
+                    roles_cli._principal(value)
+                if leaf=='independent_of' and value and values.get(key[:key.index('_')+1]+'principal')==value:
+                    raise roles_cli.Refusal('independence_mismatch')
+            except (ValueError,TypeError,OverflowError) as exc:
+                reason=str(exc) if not isinstance(exc,roles_cli.Refusal) else str(exc)
+                if reason=='expected a bounded evidence identifier': reason='invalid_name'
+                messages={
+                    'invalid_name':'Start with a letter or digit; then use letters, digits, dot, underscore or hyphen (up to 128 characters).',
+                    'principal_missing':'That account does not exist. Choose an existing OS principal.',
+                    'invalid_principal':'Enter an existing account name without spaces, slash or colon.',
+                    'unsupported_operation':'One operation is not supported by this WorkerOS role schema. Use workeros roles draft --help to see current options.',
+                    'independence_mismatch':'Choose a different existing account; this declaration does not prove independent authority.',
+                    'duplicate_scopes':'Each scope must be listed once.',
+                    'duplicate_operations':'Each operation must be listed once.',
+                    'invalid_scopes':'Enter one or more comma-separated scope names.',
+                    'invalid_operations':'Enter one or more comma-separated operation names.',
+                }
+                sys.stderr.write(messages.get(reason,reason)+' Nothing was written or granted. Correct this field, type back, or cancel.\n')
+                continue
+            values[key]=value
+            index+=1
+            if index < len(fields): continue
+
+            roles=[]
+            for number in range(role_count):
+                prefix=f'role{number}_'
+                role={'name':values[prefix+'name'],'principal':values[prefix+'principal'],
+                      'operations':values[prefix+'operations'],'scopes':values[prefix+'scopes'],
+                      'expires_at':values[prefix+'expires_at']}
+                if values[prefix+'independent_of']: role['independent_of']=values[prefix+'independent_of']
+                roles.append(role)
+            document={'version':1,'profile':values['profile'],'revision':values['revision'],'roles':roles}
+            try:
                 encoded=json.dumps(document,separators=(',',':')).encode()
                 roles_cli._validate(encoded)
-            except (ValueError,TypeError,OverflowError):
-                sys.stderr.write('Draft is invalid. Correct a field with back, or cancel.\n')
+            except (ValueError,TypeError,OverflowError) as exc:
+                code=str(exc)
+                if code=='duplicate_role' and role_count>1:
+                    target=next((number for number,role in enumerate(roles)
+                                 if sum(other['name']==role['name'] for other in roles)>1),role_count-1)
+                    index=next(i for i,(field,_) in enumerate(fields) if field==f'role{target}_name')
+                    sys.stderr.write('Role names in one profile must be unique. Choose a different name; nothing was written.\n')
+                    continue
+                if code=='independence_mismatch':
+                    target=next((number for number,role in enumerate(roles)
+                                 if role.get('independent_of') and
+                                 roles_cli._principal(role['principal']).pw_uid ==
+                                 roles_cli._principal(role['independent_of']).pw_uid),role_count-1)
+                    index=next(i for i,(field,_) in enumerate(fields) if field==f'role{target}_independent_of')
+                    sys.stderr.write('The independent principal must be a different account. This field is a declaration only; it does not prove independent authority. Nothing was written.\n')
+                    continue
+                sys.stderr.write('The full draft is invalid ('+code+'). Correct the last field or type back to review it; nothing was written.\n')
+                index=max(0,index-1)
                 continue
-            text=encoded.decode(); print(text)
-            sys.stderr.write('No files or access changed. Give this draft to the administrator.\n'
-                'In their own shell, the administrator must set ADMIN_WORKEROS to the absolute path\n'
-                'of their independently installed, trusted WorkerOS executable, then preview:\n  '
-                "printf '%s\\n' "+shlex.quote(text)+' | "$ADMIN_WORKEROS" roles preview\n')
-            return 0
+
+            sys.stderr.write('Profile draft preview — no record, grant, or worker is created.\n')
+            for role in roles:
+                try: expiry=datetime.fromtimestamp(role['expires_at'],timezone.utc).strftime('%Y-%m-%d %H:%M UTC')
+                except (OverflowError,OSError,ValueError): expiry=f"Unix {role['expires_at']} seconds (outside calendar display range)"
+                sys.stderr.write(f"  {role['name']} (account {role['principal']}): "
+                                 f"{', '.join(role['operations'])} on {', '.join(role['scopes'])}; expires {expiry}\n")
+                if role.get('independent_of'):
+                    sys.stderr.write(f"    Declares independence from {role['independent_of']}; not verified by this draft.\n")
+            while True:
+                sys.stderr.write('Add another role? [y/N]: '); sys.stderr.flush()
+                answer=sys.stdin.readline(4097)
+                if len(answer)>4096: return _refuse('input_too_large')
+                if not answer or answer.strip().lower()=='cancel':
+                    print(json.dumps({'status':'cancelled','effect':'not_attempted'},separators=(',',':')))
+                    return 1
+                choice=answer.strip().lower()
+                if choice=='back':
+                    index=max(0,index-1)
+                    break
+                if choice in ('y','yes'):
+                    if role_count>=64:
+                        sys.stderr.write('A profile can contain at most 64 roles. The draft is not emitted.\n')
+                        return _refuse('invalid_roles')
+                    prefix=f'role{role_count}_'
+                    fields.extend((prefix+key,label) for key,label in role_fields)
+                    role_count+=1
+                    break
+                if choice in ('','n','no'):
+                    text=encoded.decode(); print(text)
+                    sys.stderr.write('No files or access changed. Give this draft to the administrator.\n'
+                        'In their own shell, the administrator must set ADMIN_WORKEROS to the absolute path\n'
+                        'of their independently installed, trusted WorkerOS executable, then preview:\n  '
+                        "printf '%s\\n' "+shlex.quote(text)+' | "$ADMIN_WORKEROS" roles preview\n')
+                    return 0
+                sys.stderr.write('Answer y or n, back, or cancel. Nothing has been written or granted.\n')
+            continue
     except KeyboardInterrupt:
         print(json.dumps({'status':'cancelled','effect':'not_attempted'},separators=(',',':')))
         return 130

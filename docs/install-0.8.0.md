@@ -8,16 +8,17 @@ Linux pidfds for the demo. Native Windows Python can install the wheel;
 loading the controller there fails on `fcntl`. On macOS use a supported
 Linux VM. [Windows and macOS help](support.md#windows-and-macos)
 
-These instructions use the [v0.8.0 GitHub release](https://github.com/thisistuhinsen/workerOS/releases/tag/v0.8.0).
-They use individual release assets. If you already received a directory named
+After publication, the public route uses the [v0.8.0 GitHub release](https://github.com/thisistuhinsen/workerOS/releases/tag/v0.8.0)
+and its individual assets. Do not expect these public URLs to work before then.
+If you already received a directory named
 `workerOS-0.8.0-offline`, go straight to [Offline install](#offline-install).
 For the published historical v0.4.0 package, use its
 [tagged instructions](https://github.com/thisistuhinsen/workerOS/blob/v0.4.0/README.md#install).
 
 ## Package manager quick reference
 
-These commands use the v0.8.0 GitHub release and tag. GitHub hosts the
-artifacts; the commands do not imply a package registry listing. Use Linux or
+After publication, these commands use the v0.8.0 GitHub release and tag.
+GitHub hosts the artifacts; the commands do not imply a package registry listing. Use Linux or
 Ubuntu in WSL2. Python starts jobs; the other packages read an input supplied
 to a worker. The linked walkthroughs create disposable consumers and run a
 first read.
@@ -163,6 +164,12 @@ If verification refuses, resolve the conflicting install in a new environment.
 Switch only after verification and a successful run. Roll back by reselecting
 the previous environment.
 
+Uninstalling the package does not remove an operating-system ACL. If this
+installation applied a file grant, keep the trusted administrator environment
+and exact plan until `workeros roles grant-revoke` and a fresh
+`workeros roles grant-check` confirm that the grant is absent. See the
+[named-principal file ACL guide](host-preflight.md#grant-read-access-to-one-linux-file).
+
 **Add the local wheel to a uv project.** From the offline bundle directory, this creates a disposable
 project, records the relative wheel dependency and checks the lock. Keep the
 wheel at that relative location when reusing this project's lockfile.
@@ -190,7 +197,7 @@ Install the resulting wheel in a fresh application environment. Record its
 own SHA-256 if you distribute that build.
 
 [Python first run](package-python.md) · [Python worker API and examples](workers.md#python-apis) ·
-[Give a worker an open file](start/code.md#give-a-worker-a-file-you-already-opened)
+[Give a worker an open file](start/code.md#give-a-worker-an-open-file-v080)
 
 Run `.venv-0.8.0/bin/workeros config --schema` for the installed JSON schema.
 Run the same hello job with a [JSON policy](start/config.md#run-from-json-v080)

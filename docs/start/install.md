@@ -27,6 +27,11 @@ Look for `hello` and `job: exited 0`. Both installers create
 `.venv-0.7.0`. If the checksum does not match, stop and use the
 [versioned release](https://github.com/thisistuhinsen/workerOS/releases/tag/v0.7.0)
 to check the expected asset. Don't substitute a package with a similar name.
+Removing a package does not remove operating-system file grants. If an
+administrator granted access to a file, ask them to revoke it through the
+same authority and confirm removal with a fresh readback before retiring the
+trusted admin environment or grant plan. See the
+[named-principal file ACL guide](../host-preflight.md#grant-read-access-to-one-linux-file).
 
 ## Reader packages
 
