@@ -1,7 +1,7 @@
-# Worker APIs and examples
+# WorkerOS 0.8.0 APIs and examples
 
-Start with [one worker](../README.md#run-one-worker) or [choose a package](install.md)
-from the WorkerOS 0.7.0 offline bundle. The Python API starts, supervises,
+For the published v0.7.0 first read, use [the code quickstart](start/code.md).
+This reference uses the v0.8.0 candidate names. The Python API starts, supervises,
 and passes files to workers on Linux. Use an ordinary executable as a worker,
 and add the language reader when it needs an open file from your app.
 
@@ -15,7 +15,7 @@ resources the operator enrolls before accepting the request.
 | Job | Example |
 | --- | --- |
 | Run one worker | [Installed fileless smoke](../README.md#run-one-worker) |
-| Read a file already opened by the application | [Bundled inherited FD launcher](../README.md#run-an-inherited-fd-example) |
+| Read a file already opened by the application | [Bundled inherited FD launcher](start/code.md#give-a-worker-a-file-you-already-opened) |
 | Use an installed language package | [Package entry points and examples](install.md) |
 
 [Terminal cartoon transcripts](media/README.md) include the complete dialogue.
@@ -43,7 +43,7 @@ the report pipeline are source examples.
 
 ## Read an inherited file
 
-Use the [bundled launcher](../README.md#run-an-inherited-fd-example) to check
+Use the [bundled launcher](start/code.md#give-a-worker-a-file-you-already-opened) to check
 the ABI with a disposable input. Name a specific language with `--language`
 to require that example to run. With no language selected, the launcher
 reports unavailable toolchains. Java requires a JDK 22+ on 64-bit Linux.
@@ -111,7 +111,7 @@ and custody use the Python APIs below.
   reads preserve the shared offset. File contents can still change if a
   writer holds access. Keep the parent's source descriptors stable during launch.
 
-[Python source and public exports](../src/worker_handoff/__init__.py).
+[Python source and public exports](../src/workeros/__init__.py).
 The v0.2 Python APIs, Unix-stream framing and inherited FD ABI remain compatible.
 
 ### Authorize a managed release
@@ -144,7 +144,7 @@ deadline. The child gets a read-only `INPUT` binding and the ABI environment.
 ![Terminal cartoon. The writer offers themself as an independent witness by wearing a lanyard. Strict custody refuses the release and skips both write and dispatch.](media/custody-lanyard.gif)
 
 The deployment supplies the observer and pins its Linux PID and UID. See the
-[custody protocol](../src/worker_handoff/custody.py).
+[custody protocol](../src/workeros/custody.py).
 
 `ReleaseResult` reports delivery, write effect, custody evidence, lifecycle
 and local descriptor cleanup separately. An authenticated receipt covers

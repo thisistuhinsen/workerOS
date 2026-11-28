@@ -1,4 +1,4 @@
-import io.github.thisistuhinsen.workerhandoff.InheritedReader;
+import io.github.thisistuhinsen.workeros.InheritedReader;
 import java.io.IOException;
 import java.util.Arrays;
 

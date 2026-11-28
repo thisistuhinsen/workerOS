@@ -14,10 +14,10 @@ import tempfile
 from time import monotonic_ns
 from unittest import TestCase, mock, skipUnless
 
-from worker_handoff import Identity, Worker, observe, send_original
-from worker_handoff.evidence import EvidenceScope, EvidenceState, RunBinding, ScopePhase
-from worker_handoff.lifecycle import Match, ProcessState, RegularFileObserver, monotonic_clock_id
-from worker_handoff.observer_cli import main as observer_main
+from workeros import Identity, Worker, observe, send_original
+from workeros.evidence import EvidenceScope, EvidenceState, RunBinding, ScopePhase
+from workeros.lifecycle import Match, ProcessState, RegularFileObserver, monotonic_clock_id
+from workeros.observer_cli import main as observer_main
 
 _SCOPE = '1a' * 32
 _FIXTURE_CLOCK = ("fixture-boot", "time:[123]")
@@ -25,7 +25,7 @@ _QUALIFY = os.environ.get("WORKER_HANDOFF_OBSERVER_QUALIFY") == "1"
 _PYTHON = [sys.executable, "-I"] if sys.flags.isolated else [sys.executable]
 _CHILD = """
 import os, socket, sys
-from worker_handoff import Identity, Worker, receive_original
+from workeros import Identity, Worker, receive_original
 
 s = socket.socket(socket.AF_UNIX)
 s.connect(sys.argv[1])
@@ -191,7 +191,7 @@ class LifecycleTests(TestCase):
         plan = dict(scope=_SCOPE, due_ns=self.due, original_fd=self.ref, pidfd=pin,
                     pid=os.getpid(), uid=os.getuid(), device=self.ident.device, inode=self.ident.inode,
                     slot=self.ref, directory_fd=self.dir, leaf='report')
-        child = subprocess.run([*_PYTHON, "-m", "worker_handoff.observer_cli"],
+        child = subprocess.run([*_PYTHON, "-m", "workeros.observer_cli"],
                                input=json.dumps(plan) + "\n", capture_output=True, text=True, timeout=5,
                                pass_fds=(self.ref, pin, self.dir), check=True)
         out = json.loads(child.stdout)
@@ -270,7 +270,7 @@ class LifecycleTests(TestCase):
 
     def test_expired_end_does_not_return_earlier_positive(self):
         provider = self.bind()
-        with mock.patch("worker_handoff.lifecycle.monotonic_ns", side_effect=[self.due-1, self.due]):
+        with mock.patch("workeros.lifecycle.monotonic_ns", side_effect=[self.due-1, self.due]):
             seen = provider.sample()
         self.assertEqual((seen.slot_match, seen.name_match, seen.reasons),
                          (Match.UNKNOWN, Match.UNKNOWN, ("expired",)))
@@ -316,7 +316,7 @@ class LifecycleTests(TestCase):
             _, report = observer.sample_for_scope(scope, provider_id="fixture")
             self.assertIs(report.observation.state, EvidenceState.OBSERVED)
 
-    @mock.patch("worker_handoff.lifecycle._clock_context", return_value=_FIXTURE_CLOCK)
+    @mock.patch("workeros.lifecycle._clock_context", return_value=_FIXTURE_CLOCK)
     def test_scope_report_preserves_slot_state_and_raw_sample(self, _clock):
         scope = self.evidence_scope()
         observer = self.bind(evidence_scope=scope)
@@ -346,7 +346,7 @@ class LifecycleTests(TestCase):
         self.assertEqual((raw.name_match, report.observation.state),
                          (Match.NOT_REQUESTED, EvidenceState.NOT_REQUESTED))
 
-    @mock.patch("worker_handoff.lifecycle._clock_context", return_value=_FIXTURE_CLOCK)
+    @mock.patch("workeros.lifecycle._clock_context", return_value=_FIXTURE_CLOCK)
     def test_full_evidence_scope_must_be_pinned_before_observer_sample(self, _clock):
         scope = self.evidence_scope()
         raw_only_observer = self.bind()
@@ -357,7 +357,7 @@ class LifecycleTests(TestCase):
         sample.assert_not_called()
 
         wrong_digest = replace(scope, scope_id="2a" * 32)
-        with (mock.patch("worker_handoff.lifecycle._duplicate") as duplicate,
+        with (mock.patch("workeros.lifecycle._duplicate") as duplicate,
               self.assertRaisesRegex(ValueError, "scope")):
             self.bind(evidence_scope=wrong_digest)
         duplicate.assert_not_called()
@@ -375,7 +375,7 @@ class LifecycleTests(TestCase):
                 observer.sample_for_scope(changed, provider_id="fixture")
             sample.assert_not_called()
 
-    @mock.patch("worker_handoff.lifecycle._clock_context", return_value=_FIXTURE_CLOCK)
+    @mock.patch("workeros.lifecycle._clock_context", return_value=_FIXTURE_CLOCK)
     def test_scope_clock_and_window_checked_before_observer_sample(self, _clock):
         scope = self.evidence_scope()
         for bad, reason in (
@@ -389,33 +389,33 @@ class LifecycleTests(TestCase):
                 observer.sample_for_scope(bad, provider_id="fixture")
             sample.assert_not_called()
         observer = self.bind(evidence_scope=scope)
-        with (mock.patch("worker_handoff.lifecycle._clock_context", return_value=(None, "time:[1]")),
+        with (mock.patch("workeros.lifecycle._clock_context", return_value=(None, "time:[1]")),
               mock.patch.object(observer, "sample") as sample,
               self.assertRaisesRegex(ValueError, "clock")):
             observer.sample_for_scope(scope, provider_id="fixture")
         sample.assert_not_called()
-        with (mock.patch("worker_handoff.lifecycle._clock_context",
+        with (mock.patch("workeros.lifecycle._clock_context",
                          side_effect=[_FIXTURE_CLOCK, ("fixture-boot", "time:[456]")]),
               self.assertRaisesRegex(ValueError, "clock became unavailable or changed")):
             observer.sample_for_scope(scope, provider_id="fixture")
 
-    @mock.patch("worker_handoff.lifecycle._clock_context", return_value=_FIXTURE_CLOCK)
+    @mock.patch("workeros.lifecycle._clock_context", return_value=_FIXTURE_CLOCK)
     def test_expired_same_clock_sample_cannot_report_observed(self, _clock):
         scope = self.evidence_scope()
         observer = self.bind(evidence_scope=scope)
-        with mock.patch("worker_handoff.lifecycle.monotonic_ns",
+        with mock.patch("workeros.lifecycle.monotonic_ns",
                         side_effect=[self.due - 1, self.due - 1, self.due]):
             raw, report = observer.sample_for_scope(scope, provider_id="fixture")
         self.assertEqual(raw.reasons, ("expired",))
         self.assertIs(report.observation.state, EvidenceState.UNAVAILABLE)
         scope = replace(scope, finished_ns=self.due - 1)
         observer = self.bind(evidence_scope=scope)
-        with (mock.patch("worker_handoff.lifecycle.monotonic_ns",
+        with (mock.patch("workeros.lifecycle.monotonic_ns",
                          side_effect=[self.due - 2, self.due - 2, self.due]),
               self.assertRaisesRegex(ValueError, "report interval is outside the scope window")):
             observer.sample_for_scope(scope, provider_id="fixture")
 
-    @mock.patch("worker_handoff.lifecycle._clock_context", return_value=_FIXTURE_CLOCK)
+    @mock.patch("workeros.lifecycle._clock_context", return_value=_FIXTURE_CLOCK)
     def test_observer_cli_scope_report_opt_in_preserves_default_shape(self, _clock):
         config = dict(scope=_SCOPE, due_ns=self.due, original_fd=self.ref,
                       pidfd=self.pin(os.getpid()), pid=os.getpid(), uid=os.getuid(),

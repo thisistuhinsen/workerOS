@@ -111,7 +111,7 @@ use the checkout that matches your candidate.
 | Source path | Behavior and limits |
 | --- | --- |
 | [Regular-file observer](regular-file-observer.md) | `worker_handoff.lifecycle` samples a designated process, regular-file slot, or name under already authorized observation. The 0.7.0 wheel includes `python -m worker_handoff.observer_cli`. Each sample describes its observation window. |
-| [Evidence API](../src/worker_handoff/evidence.py) | Validates caller-supplied run observations and scope reports. Authentication, authority, and scope measurement remain with the application and its providers. |
+| [v0.7.0 evidence API source](https://github.com/thisistuhinsen/workerOS/blob/339ca866647dc61062227923a3b1d697275977ed/src/worker_handoff/evidence.py) | Validates caller-supplied run observations and scope reports. Authentication, authority, and scope measurement remain with the application and its providers. |
 
 ### Installed composition acceptance
 

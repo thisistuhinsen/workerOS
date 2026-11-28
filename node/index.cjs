@@ -102,7 +102,7 @@ function openInherited(binding, options = {}) {
         throw new HandoffError("ACCESS", `${accessName} must be read or read-write`);
     }
     if (activeDescriptors.has(fd)) {
-        throw new HandoffError("IN_USE", `Descriptor ${fd} already has an open worker-handoff handle`);
+        throw new HandoffError("IN_USE", `Descriptor ${fd} already has an open workeros handle`);
     }
 
     const actual = descriptorFacts(fd, { device, inode, access });

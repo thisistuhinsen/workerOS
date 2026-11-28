@@ -20,25 +20,25 @@ from unittest import TestCase, skipUnless
 from unittest.mock import patch
 from uuid import uuid4
 
-import worker_handoff
-import worker_handoff.lifecycle as lifecycle
-from worker_handoff import (
+import workeros
+import workeros.lifecycle as lifecycle
+from workeros import (
     CleanupStatus, DeliveryStatus, DirectChildSupervisor, EffectStatus,
     LifecycleStatus, PositionalWrite, ReleasePlan, SupervisionStartError, Worker,
     observe, receive_original, release_executable, send_original,
 )
-from worker_handoff.evidence import (
+from workeros.evidence import (
     EvidenceObservation, EvidenceScope, EvidenceState, RunBinding, RunEvent,
     ScopePhase, ScopeReport, validate_run_evidence, validate_scope_evidence,
 )
-from worker_handoff.lifecycle import Match, ProcessState, RegularFileObserver
+from workeros.lifecycle import Match, ProcessState, RegularFileObserver
 
 
 _CHILD_COMMON = """
 import errno, os, sys
 from pathlib import Path
 from time import monotonic_ns, sleep
-from worker_handoff import Identity
+from workeros import Identity
 
 control, due = Path(sys.argv[1]), int(sys.argv[2])
 identity = Identity(*map(int, sys.argv[3:5]))
@@ -65,7 +65,7 @@ def require_closed(fd):
 
 _INHERITED_READER = _CHILD_COMMON + """
 from io import BytesIO
-from worker_handoff import Original
+from workeros import Original
 
 expected = bytes.fromhex(sys.argv[5])
 assert os.environ["WORKER_HANDOFF_ABI"] == "1"
@@ -106,7 +106,7 @@ class AcceptanceProfiles(TestCase):
         if not sys.flags.isolated:
             # Source-tree test runs pass the import location explicitly. The
             # installed suite uses isolated child imports from that same wheel.
-            package_path = str(Path(worker_handoff.__file__).resolve().parents[1])
+            package_path = str(Path(workeros.__file__).resolve().parents[1])
             code = f"import sys\nsys.path.insert(0, {package_path!r})\n" + code
         return (sys.executable, "-I", "-c", code, *map(str, args))
 
@@ -325,8 +325,8 @@ class AcceptanceProfiles(TestCase):
                 unresolved = unresolved or result.effect is EffectStatus.UNKNOWN
                 return result
 
-            with (patch("worker_handoff.managed.os.pwrite", side_effect=write_then_lose_result) as write,
-                  patch("worker_handoff.workers.subprocess.Popen", wraps=subprocess.Popen) as launch):
+            with (patch("workeros.managed.os.pwrite", side_effect=write_then_lose_result) as write,
+                  patch("workeros.workers.subprocess.Popen", wraps=subprocess.Popen) as launch):
                 for case, reports in (("missing", ()), ("wrong attempt", wrong), ("historical", historical)):
                     with self.subTest(case=case):
                         refused = attempt(current, reports)
@@ -368,7 +368,7 @@ class AcceptanceProfiles(TestCase):
         reader_gate.mkdir()
 
         writer_code = _CHILD_COMMON + """
-from worker_handoff import Writer
+from workeros import Writer
 fd = int(os.environ["WORKER_HANDOFF_FD_OUTPUT"])
 os.set_inheritable(fd, False)
 with Writer(fd, identity) as writer:
@@ -386,7 +386,7 @@ wait_for("exit")
 from io import BytesIO
 import json
 from socket import AF_UNIX, socket
-from worker_handoff import Original, Worker, receive_original
+from workeros import Original, Worker, receive_original
 with socket(AF_UNIX) as channel:
     channel.connect(sys.argv[5])
     report("ready", "reader")

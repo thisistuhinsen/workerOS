@@ -1,5 +1,8 @@
 # workerOS for Java
 
+> These are v0.8.0 instructions. Use public downloads only after that release,
+> or use a verified offline bundle now. For the published v0.7.0 release, use the [v0.7.0 guide](https://github.com/thisistuhinsen/workerOS/blob/v0.7.0/java/README.md).
+
 Use JDK 22 or later on 64-bit Linux with procfs and Maven 3.9 or newer. The
 JAR has no runtime dependencies. It reads a file descriptor inherited
 from a workerOS launcher using Java's Foreign Function & Memory API.
@@ -7,8 +10,7 @@ The release download uses curl and GNU coreutils (`sha256sum`).
 
 ## Try the public release
 
-After the matching v0.7.0 tag, JAR, POM, and Python wheel are published,
-[install the Python controller](../docs/install.md#python) and activate its
+[install the Python controller](https://github.com/thisistuhinsen/workerOS/blob/v0.8.0/docs/install-0.8.0.md#python) and activate its
 environment. Run this from any directory. Set `WORKEROS_PYTHON` to use a
 particular Python interpreter.
 
@@ -19,9 +21,9 @@ particular Python interpreter.
     work=$(mktemp -d)
     trap 'rm -rf -- "$work"' EXIT
     cd "$work"
-    release=https://github.com/thisistuhinsen/workerOS/releases/download/v0.7.0
-    jar=workeros-0.7.0.jar
-    pom=workeros-0.7.0.pom
+    release=https://github.com/thisistuhinsen/workerOS/releases/download/v0.8.0
+    jar=workeros-0.8.0.jar
+    pom=workeros-0.8.0.pom
     for file in "$jar" "$pom" SHA256SUMS; do
         curl --fail --silent --show-error --location "$release/$file" --output "$file"
     done
@@ -31,7 +33,7 @@ particular Python interpreter.
         sha256sum --strict --check "$file.sha256"
     done
     git clone --quiet --no-checkout https://github.com/thisistuhinsen/workerOS "$work/source"
-    git -C "$work/source" checkout --quiet --detach refs/tags/v0.7.0
+    git -C "$work/source" checkout --quiet --detach refs/tags/v0.8.0
     PATH="${python%/*}:$PATH" bash "$work/source/java/test-package.sh" "$work/$jar" "$work/$pom"
 )
 ```
@@ -42,23 +44,23 @@ file. Maven may need to fetch its build plugins.
 
 ## Try the private offline bundle
 
-[Install the Python controller](../docs/install.md#python) and set
+[Install the Python controller](https://github.com/thisistuhinsen/workerOS/blob/v0.8.0/docs/install-0.8.0.md#python) and set
 `WORKEROS_OFFLINE` to the absolute path of the verified
-private `workerOS-0.7.0-offline` directory. The block uses the pip environment.
-For uv, set `WORKEROS_PYTHON="$WORKEROS_OFFLINE/.venv-0.7.0-uv/bin/python"`
+private `workerOS-0.8.0-offline` directory. The block uses the pip environment.
+For uv, set `WORKEROS_PYTHON="$WORKEROS_OFFLINE/.venv-0.8.0-uv/bin/python"`
 first.
 
 ```sh
 (
     set -eu
     offline=${WORKEROS_OFFLINE:?set WORKEROS_OFFLINE to the extracted bundle directory}
-    python=${WORKEROS_PYTHON:-"$offline/.venv-0.7.0/bin/python"}
+    python=${WORKEROS_PYTHON:-"$offline/.venv-0.8.0/bin/python"}
     work=$(mktemp -d)
     trap 'rm -rf -- "$work"' EXIT
-    git clone --quiet --no-checkout "$offline/source/workeros-0.7.0.bundle" "$work/source"
-    git -C "$work/source" checkout --quiet --detach refs/tags/v0.7.0
+    git clone --quiet --no-checkout "$offline/source/workeros-0.8.0.bundle" "$work/source"
+    git -C "$work/source" checkout --quiet --detach refs/tags/v0.8.0
     PATH="${python%/*}:$PATH" bash "$work/source/java/test-package.sh" \
-        "$offline/assets/workeros-0.7.0.jar" "$offline/assets/workeros-0.7.0.pom"
+        "$offline/assets/workeros-0.8.0.jar" "$offline/assets/workeros-0.8.0.pom"
 )
 ```
 
@@ -75,7 +77,7 @@ Maven may need to fetch the install plugin on first use.
 
 ```sh
 mvn -B -ntp org.apache.maven.plugins:maven-install-plugin:3.1.4:install-file \
-    -Dfile=workeros-0.7.0.jar -DpomFile=workeros-0.7.0.pom
+    -Dfile=workeros-0.8.0.jar -DpomFile=workeros-0.8.0.pom
 ```
 
 Use the installed coordinates in your own Maven project.
@@ -83,8 +85,8 @@ Use the installed coordinates in your own Maven project.
 ```xml
 <dependency>
   <groupId>io.github.thisistuhinsen</groupId>
-  <artifactId>worker-handoff</artifactId>
-  <version>0.7.0</version>
+  <artifactId>workeros</artifactId>
+  <version>0.8.0</version>
 </dependency>
 ```
 
@@ -97,7 +99,7 @@ Pass `--enable-native-access=ALL-UNNAMED` when starting a Java worker on
 the classpath. The launcher supplies the regular file under the name `INPUT`.
 
 ```java
-import io.github.thisistuhinsen.workerhandoff.InheritedReader;
+import io.github.thisistuhinsen.workeros.InheritedReader;
 
 // In the launched worker:
 try (var input = InheritedReader.open("INPUT")) {

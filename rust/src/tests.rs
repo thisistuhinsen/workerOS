@@ -111,7 +111,7 @@ fn real_inherited_descriptor() {
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    let path = env::temp_dir().join(format!("worker-handoff-{}-{unique}", process::id()));
+    let path = env::temp_dir().join(format!("workeros-{}-{unique}", process::id()));
     let mut writable = OpenOptions::new()
         .write(true)
         .create_new(true)

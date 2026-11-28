@@ -10,11 +10,11 @@ from time import monotonic_ns
 import unittest
 from unittest.mock import patch
 
-from worker_handoff import Writer, observe
-from worker_handoff.managed import (
+from workeros import Writer, observe
+from workeros.managed import (
     DeliveryStatus, EffectStatus, PositionalWrite, ReleasePlan, release_executable,
 )
-from worker_handoff.supervisor import CleanupStatus, DirectChildSupervisor, LifecycleStatus
+from workeros.supervisor import CleanupStatus, DirectChildSupervisor, LifecycleStatus
 
 
 READ_INPUT = """
@@ -85,7 +85,7 @@ class ManagedReleaseTest(unittest.TestCase):
                     supervisor = DirectChildSupervisor() if supervised else None
                     if strict:
                         with (patch("subprocess.Popen") as launch,
-                              patch("worker_handoff.managed.os.pwrite") as write):
+                              patch("workeros.managed.os.pwrite") as write):
                             result = self.release(supervisor=supervisor, strict_custody=True)
                         launch.assert_not_called()
                         write.assert_not_called()
@@ -179,7 +179,7 @@ class ManagedReleaseTest(unittest.TestCase):
                         raise OSError("simulated ambiguous write result")
                     return written
 
-                with patch("worker_handoff.managed.os.pwrite", side_effect=write_once) as write:
+                with patch("workeros.managed.os.pwrite", side_effect=write_once) as write:
                     with patch("subprocess.Popen") as launch:
                         result = self.release()
                 self.assertEqual(write.call_count, 1)
@@ -205,7 +205,7 @@ class ManagedReleaseTest(unittest.TestCase):
         cancel = Event()
         cancel.set()
         with (patch("subprocess.Popen") as launch,
-              patch("worker_handoff.managed.os.pwrite") as write):
+              patch("workeros.managed.os.pwrite") as write):
             result = self.release(supervisor=DirectChildSupervisor(), cancel=cancel)
         self.assert_refused(result)
         self.assertIn("cancel", result.error)
@@ -237,7 +237,7 @@ class ManagedReleaseTest(unittest.TestCase):
             self.addCleanup(process.wait, timeout=5)
             raise OSError("simulated pidfd pin failure after exec")
 
-        with (patch("worker_handoff.supervisor._pin_child", side_effect=refuse_pin) as pin,
+        with (patch("workeros.supervisor._pin_child", side_effect=refuse_pin) as pin,
               patch("subprocess.Popen", wraps=subprocess.Popen) as launch):
             result = self.release(supervisor=DirectChildSupervisor())
         launch.assert_called_once()

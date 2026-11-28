@@ -7,7 +7,7 @@ import sys
 from tempfile import TemporaryDirectory
 from time import monotonic_ns
 
-from worker_handoff import WorkerRoster
+from workeros import WorkerRoster
 
 
 def launch(label, executable, fd):
@@ -58,7 +58,7 @@ def refusals(executable, source):
 
 
 def main(c_executable, cpp_executable):
-    with TemporaryDirectory(prefix="worker-handoff-conan-input-") as directory:
+    with TemporaryDirectory(prefix="workeros-conan-input-") as directory:
         source = Path(directory) / "original"
         contents = b"Worker handoff\n"
         source.write_bytes(contents)

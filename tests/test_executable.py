@@ -6,7 +6,7 @@ import tempfile
 from time import monotonic_ns
 import unittest
 
-from worker_handoff import WorkerRoster, observe
+from workeros import WorkerRoster, observe
 
 ROOT = Path(__file__).resolve().parents[1]
 

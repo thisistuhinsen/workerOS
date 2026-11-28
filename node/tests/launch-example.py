@@ -6,7 +6,7 @@ import sys
 from tempfile import TemporaryDirectory
 from time import monotonic_ns
 
-from worker_handoff import WorkerRoster
+from workeros import WorkerRoster
 
 
 def main(node, example):

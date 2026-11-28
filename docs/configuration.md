@@ -1,33 +1,31 @@
-# Configure a workerOS application
+# Run a job from JSON
 
-The shared interface uses two JSON v1 documents. A reusable **policy** names
-roles, workflows, allowed operations, bindings, and recorder settings. A
-per-run **invocation** selects one allowed operation and provides its options.
-The host enrolls the real executables, handles, providers, destinations, and
-authorization before accepting invocations. A role name is an application
-label. OS credentials and service configuration come from the host.
+For one runnable example with the install steps, start with [Run a job from
+JSON](start/config.md). This page is the complete configuration reference.
 
-Install the [0.7.0 offline wheel](install.md#python), then activate its
-environment in your Linux shell, for example `. .venv-0.7.0/bin/activate`
-from the bundle root. The command is `workeros-config`;
-`worker-handoff-config` is a compatibility alias for the same entry point.
-Both emit the same JSON invocation schema with `--schema` and use the same
-version 1 contracts. The application can also use the [Python API](api.md).
-For a workflow using existing host-provided roles and scopes, see
-[Use an authorized host profile](host-preflight.md). This preflight is separate
-from defining policy, granting access and qualifying independent evidence.
+- **Policy:** Which jobs and inputs your app may use. Save it once.
+- **Request:** Which job to run this time. Pass it on standard input.
+
+In a Linux or Ubuntu WSL2 terminal, go to the folder where you installed
+with [pip or uv](../README.md#install-and-run), then activate the environment:
+`. .venv-0.7.0/bin/activate`. Use `workeros-config` (or its alias
+`worker-handoff-config`). The v0.8.0 candidate also accepts the same
+arguments through `workeros config`. Requests and results are JSON.
+In the v0.8.0 candidate, the saved policy can also be YAML with optional
+PyYAML and `--format yaml`. [Run the same job from YAML](start/config.md#run-from-yaml)
+or [preview a role profile](start/config.md#preview-with-yaml).
+
+The app can also use the [Python API](api.md). A role is an application
+label, not an OS permission. The host grants access to executables, handles,
+providers and destinations, with separate checks for independent evidence.
+See [authorized host profiles](host-preflight.md) for that deployment path.
 
 ## Check and run an installed policy
 
 ### Run a fileless worker
 
-On Linux, activate the environment containing the wheel and run as an
-ordinary user. This policy allows one workflow to run the executable that
-the operator enrolls as `sample`. It uses the installed command's default
-direct-child wait, with a 30-second active budget and a 2-second cleanup
-budget. The basic and supervised waits can return an exit first collected
-at or after the cutoff. An exit result carries the status observed by the
-wait, with no guarantee about the physical exit time.
+`/usr/bin/true` prints nothing and exits successfully. The policy calls it
+`sample`; the request tells WorkerOS to launch it.
 
 ```sh
 root=$(mktemp -d)
@@ -52,7 +50,11 @@ workeros-config --run-policy "$policy" \
 JSON
 ```
 
-Check `result.terminal` for the child's lifecycle, exit code, and cleanup.
+Read `result.terminal` in the JSON reply. For this job, look for
+`lifecycle: "exited"`, `returncode: "0"`, and `cleanup.status: "reaped"`.
+Exit and cleanup are reported separately from timeout. This example uses a 30-second
+active budget and a 2-second cleanup budget. An exit may first be collected
+at or after the cutoff, so it does not establish the physical exit time.
 The reply's `policy_sha256` identifies the exact bytes the command read and
 validated. For an ordinary local run, the trusted operator chooses the
 policy and enrolled paths. Use `--check-policy` with optional `--explain`
@@ -65,14 +67,17 @@ authority and protected originals still require their enrolled host adapters.
 
 ### Store and verify terminal evidence
 
-Use the wheel's [example policy](../examples/workflow_policy.json) to require the
+With the [v0.8.0 candidate installed](install-0.8.0.md), use the wheel's
+[example policy](../examples/workflow_policy.json) to require the
 `direct-child` supervisor and capture terminal metadata. The store's parent
 directory must already exist. The installed local store creates a missing
 final directory with owner-only access when it first commits evidence.
+For the published v0.7.0 wheel, follow the
+[tagged configuration instructions](https://github.com/thisistuhinsen/workerOS/blob/v0.7.0/docs/configuration.md#store-and-verify-terminal-evidence).
 
 ```sh
 root=$(mktemp -d)
-examples=$(python -I -c 'from pathlib import Path; import sys; print(Path(sys.prefix) / "share/worker-handoff/examples")')
+examples=$(python -I -c 'from pathlib import Path; import sys; print(Path(sys.prefix) / "share/workeros/examples")')
 policy="$examples/workflow_policy.json"
 workeros-config --check-policy "$policy" \
     --executable sample /usr/bin/true --store archive "$root/archive"
@@ -183,9 +188,10 @@ runs one enrolled recorder operation. Subsequent wait, cancel, or cleanup
 calls require an application controller that keeps the owning supervisor
 alive. The installed policy command runs with ordinary, non-root credentials.
 
-For other resources, an application can build a trusted
-`worker_handoff.enrollment.HostBindings` catalog once and call
-`compile_policy(document, host)`. The compiled policy uses the same JSON
+For other resources, an application can build a trusted `HostBindings`
+catalog and call `compile_policy(document, host)`. Import both from
+`worker_handoff.enrollment` on v0.7.0 or `workeros.enrollment` on v0.8.0.
+The compiled policy uses the same JSON
 invocations through `serve(source, destination)`. The host authorizes each
 request and separately authorizes the exact plan for a managed release.
 Connected `SCM_RIGHTS`, Python callables, registration of an external
@@ -195,20 +201,21 @@ authority, or adopt a process by PID.
 
 ## Try the standalone recorder example
 
-In the activated environment, run the installed example with two fresh local
-destinations you own.
+Activate the v0.8.0 candidate environment and run the installed example with
+two fresh local destinations you own. For v0.7.0, use the
+[tagged recorder instructions](https://github.com/thisistuhinsen/workerOS/blob/v0.7.0/docs/configuration.md#try-the-standalone-recorder-example).
 
 ```sh
 store=$(mktemp -d)
 mkdir -m 0700 "$store/archive" "$store/review"
-config=$(python -I -c 'from pathlib import Path; import sys; print(Path(sys.prefix) / "share/worker-handoff/examples/evidence_config.json")')
+config=$(python -I -c 'from pathlib import Path; import sys; print(Path(sys.prefix) / "share/workeros/examples/evidence_config.json")')
 export WORKEROS_STORE="$store" WORKEROS_CONFIG="$config"
 workeros-config --example-root "$store" < "$config"
 workeros-config --schema
 ```
 
 The [example configuration](../examples/evidence_config.json) is also under
-`share/worker-handoff/examples` in the Python install prefix. It routes one
+`share/workeros/examples` in the v0.8.0 Python install prefix. It routes one
 synthetic JSON receipt to a required archive and an optional review store. Both
 are owner-only. The archive has a seven-day minimum retention age and the
 review destination uses manual retention. Neither directory has an automatic
@@ -309,6 +316,10 @@ If protocol I/O fails, the reply is unknown. The controller attempts the
 same bounded reconciliation for any child it already owns and keeps a
 nonzero exit status even if it reaps that child. A definite refusal keeps
 its original status and skips reconciliation.
+
+This example uses the published v0.7.0 `worker_handoff` import. On v0.8.0,
+import the same classes and functions from `workeros` and
+`workeros.configuration`.
 
 ```python
 import os
@@ -471,128 +482,186 @@ no selection, check resolves all workflows and reports unavailable bindings.
 Automatic and manual receipt origins identify their enrolled producer or
 workflow and scope. A manual run ID remains the caller's reported run label.
 
-## Run the same configuration from seven languages
+<a name="run-the-same-configuration-from-seven-languages"></a>
 
-Set `WORKEROS_STORE` to the directory created above and `WORKEROS_CONFIG` to
-the path of the same example JSON. The examples inherit standard output and
-error so the response is visible. With a custom enrolled controller, replace
-the fixed program and its arguments and keep the same versioned JSON
-contract. For a compiled workflow, replace the trusted operator arguments
-with the `--run-policy` command from the quickstart and pass its invocation
-JSON in the same way. These snippets all run the standalone recorder example.
+## Run a policy from seven languages
 
-**Python**
+Each example below calls the same installed `workeros-config` v1 interface. The
+Python helper interprets its JSON response for this **launch** example; it is
+not an SDK, a durable receipt, or a general classifier for every operation.
+Install the wheel on Linux or Ubuntu in WSL2 and activate its environment. An
+existing executable can be written in any language; these examples use
+`/usr/bin/true`. For language-specific inherited-file readers, see the
+[installation guide](install.md). Run the following setup once in the directory
+where you will save the examples:
+
+```sh
+cat > policy.json <<'JSON'
+{"version":1,"roles":{"job-role":{"operations":["launch"]}},"workflows":{"fileless":{"role":"job-role","operations":["launch"],"bindings":{"executable":"sample"}}}}
+JSON
+cat > worker-result.py <<'PYTHON'
+import json
+import re
+import subprocess
+import sys
+import tempfile
+
+request = {"version": 1, "workflow": "fileless", "role": "job-role",
+           "operation": "launch", "options": {"name": "sample-01"}}
+# Keep a production launch_attempt stderr event for recovery; this small
+# fileless example does not request evidence capture.
+try:
+    with tempfile.TemporaryFile() as output:
+        run = subprocess.run(
+            ["workeros-config", "--run-policy", "policy.json",
+             "--executable", "sample", "/usr/bin/true"],
+            input=json.dumps(request).encode(), stdout=output,
+            stderr=subprocess.DEVNULL, timeout=35, check=False)
+        output.seek(0)
+        raw = output.read(1_048_577)
+    if len(raw) > 1_048_576:
+        raise ValueError("response too large")
+    reply = json.loads(raw)
+    if not isinstance(reply, dict):
+        raise ValueError("not an object")
+    if reply.get("status") == "refused" and run.returncode == 1:
+        print("refused:", reply.get("code", "unspecified"))
+        sys.exit(1)
+    if reply.get("status") == "reported" and run.returncode in (0, 3):
+        result = reply["result"]
+        terminal = result["terminal"]
+        lifecycle = terminal["lifecycle"]
+        code = terminal["returncode"]
+        cleanup = terminal["cleanup"]["status"]
+        cleanup_code = terminal["cleanup"]["returncode"]
+        def valid_code(value):
+            return value is None or (type(value) is str and
+                                     re.fullmatch(r"0|-[1-9][0-9]*|[1-9][0-9]*", value) is not None)
+        if (lifecycle not in ("exited", "timed_out", "unknown") or
+                cleanup not in ("reaped", "pending", "unknown") or
+                not valid_code(code) or not valid_code(cleanup_code) or
+                (lifecycle == "exited" and code is None) or
+                (cleanup == "reaped" and (code is None or cleanup_code != code)) or
+                (cleanup != "reaped" and (code is not None or cleanup_code is not None))):
+            raise ValueError("invalid terminal result")
+        success = lifecycle == "exited" and code == "0" and cleanup == "reaped"
+        if (run.returncode == 0) != success:
+            raise ValueError("inconsistent exit and terminal result")
+        if lifecycle == "unknown" or cleanup == "unknown":
+            raise ValueError("terminal state unknown")
+        if success:
+            print("reported: exited 0; child reaped")
+            sys.exit(0)
+        print("reported: lifecycle={}, exit={}, cleanup={}".format(
+            lifecycle, code, cleanup))
+        sys.exit(3)
+except (OSError, subprocess.TimeoutExpired, ValueError, KeyError, TypeError):
+    pass
+print("unknown: reconcile the worker and any effects before retrying", file=sys.stderr)
+sys.exit(4)
+PYTHON
+```
+
+A normal run prints `reported: exited 0; child reaped` and exits 0. A definite
+refusal exits 1; a reported non-success exits 3; an unavailable, missing,
+invalid, oversized, interrupted or inconsistent reply exits 4 (unknown).
+The helper limits the bytes it parses and its wait; the temporary output file
+is not a disk quota. Timing out the controller does not prove its child stopped.
+A reported reap does not prove a write had no effect. Reconcile uncertain
+effects with their owner before any retry. For evidence-backed operations,
+retain the attempt event and use the receipt recovery described above. Values
+such as return codes in this interface are decimal strings.
+
+Save the desired example alongside `policy.json` and `worker-result.py`. Each
+runs the same helper, propagates its four exit classes, and does not replay.
+`python3` must resolve to the activated environment. Running these examples
+starts one ordinary local child per invocation.
+
+**Python** (`client.py`; run `python3 client.py`)
 
 ```python
-import os
 import subprocess
-
-with open(os.environ["WORKEROS_CONFIG"], "rb") as config:
-    subprocess.run(["workeros-config", "--example-root", os.environ["WORKEROS_STORE"]],
-                   stdin=config, check=True)
+raise SystemExit(subprocess.call(["python3", "worker-result.py"]))
 ```
 
-**JavaScript (Node.js)**
+**JavaScript** (`client.cjs`; run `node client.cjs`)
 
 ```javascript
-const fs = require("node:fs");
 const {spawnSync} = require("node:child_process");
-const input = fs.readFileSync(process.env.WORKEROS_CONFIG);
-const reply = spawnSync("workeros-config", ["--example-root", process.env.WORKEROS_STORE],
-                        {input, encoding: "utf8", stdio: ["pipe", "pipe", "inherit"]});
-if (reply.error) throw reply.error;
-process.stdout.write(reply.stdout);
-process.exitCode = reply.status ?? 1;
+const result = spawnSync("python3", ["worker-result.py"], {stdio: "inherit"});
+process.exitCode = result.error || result.status === null ? 4 : result.status;
 ```
 
-**C (Linux)**
+**C** (`client.c`; run `cc client.c -o client && ./client`)
 
 ```c
-#define _POSIX_C_SOURCE 200809L
 #include <stdio.h>
-#include <stdlib.h>
 #include <unistd.h>
-
 int main(void) {
-    const char *root = getenv("WORKEROS_STORE"), *config = getenv("WORKEROS_CONFIG");
-    if (!root || !config || !freopen(config, "r", stdin)) return 1;
-    execlp("workeros-config", "workeros-config", "--example-root", root, (char *)0);
-    perror("workeros-config");
-    return 1;
+    execlp("python3", "python3", "worker-result.py", (char *)0);
+    perror("python3");
+    return 4;
 }
 ```
 
-**C++ (Linux)**
+**C++** (`client.cpp`; run `c++ client.cpp -o client && ./client`)
 
 ```cpp
 #include <cstdio>
-#include <cstdlib>
 #include <unistd.h>
-
 int main() {
-    auto root = std::getenv("WORKEROS_STORE"), config = std::getenv("WORKEROS_CONFIG");
-    if (!root || !config || !std::freopen(config, "r", stdin)) return 1;
-    execlp("workeros-config", "workeros-config", "--example-root", root,
-           static_cast<char*>(nullptr));
-    std::perror("workeros-config");
-    return 1;
+    execlp("python3", "python3", "worker-result.py", static_cast<char *>(nullptr));
+    std::perror("python3");
+    return 4;
 }
 ```
 
-**Rust**
+**Rust** (`client.rs`; run `rustc client.rs -o client && ./client`)
 
 ```rust
-use std::{env, fs::File, process::{Command, ExitCode, Stdio}};
-
-fn main() -> Result<ExitCode, Box<dyn std::error::Error>> {
-    let config = File::open(env::var("WORKEROS_CONFIG")?)?;
-    let status = Command::new("workeros-config")
-        .args(["--example-root", &env::var("WORKEROS_STORE")?])
-        .stdin(Stdio::from(config))
-        .status()?;
-    Ok(if status.success() { ExitCode::SUCCESS } else { ExitCode::FAILURE })
+use std::process::{Command, ExitCode};
+fn main() -> ExitCode {
+    let status = Command::new("python3").arg("worker-result.py").status();
+    ExitCode::from(status.ok().and_then(|s| s.code())
+        .filter(|c| [0, 1, 3, 4].contains(c)).unwrap_or(4) as u8)
 }
 ```
 
-**Go**
+**Go** (`client.go`; run `go build -o client client.go && ./client`)
 
 ```go
 package main
-
-import (
-    "log"
-    "os"
-    "os/exec"
-)
-
+import ("os"; "os/exec")
 func main() {
-    config, err := os.Open(os.Getenv("WORKEROS_CONFIG"))
-    if err != nil {
-        log.Fatal(err)
+    cmd := exec.Command("python3", "worker-result.py")
+    cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
+    err := cmd.Run()
+    if err == nil { return }
+    if exit, ok := err.(*exec.ExitError); ok {
+        switch exit.ExitCode() { case 1, 3, 4: os.Exit(exit.ExitCode()) }
     }
-    defer config.Close()
-    cmd := exec.Command("workeros-config", "--example-root", os.Getenv("WORKEROS_STORE"))
-    cmd.Stdin, cmd.Stdout, cmd.Stderr = config, os.Stdout, os.Stderr
-    if err := cmd.Run(); err != nil {
-        log.Fatal(err)
-    }
+    os.Exit(4)
 }
 ```
 
-**Java**
+**Java** (`Client.java`; run `javac Client.java && java Client`)
 
 ```java
-import java.io.File;
-
-class ConfigClient {
-    public static void main(String[] args) throws Exception {
-        var process = new ProcessBuilder("workeros-config", "--example-root",
-                System.getenv("WORKEROS_STORE"))
-            .redirectInput(new File(System.getenv("WORKEROS_CONFIG")))
-            .redirectOutput(ProcessBuilder.Redirect.INHERIT)
-            .redirectError(ProcessBuilder.Redirect.INHERIT)
-            .start();
-        System.exit(process.waitFor());
+class Client {
+    public static void main(String[] args) {
+        try {
+            int code = new ProcessBuilder("python3", "worker-result.py")
+                .inheritIO().start().waitFor();
+            System.exit(code == 0 || code == 1 || code == 3 || code == 4 ? code : 4);
+        } catch (Exception e) {
+            System.err.println("unknown: helper did not complete");
+            System.exit(4);
+        }
     }
 }
 ```
+
+For this launch example, a refusal is an explicit response; `unavailable`
+or a missing response is not proof that an operation did not run. Other
+operations have their own result and effect fields: inspect the documented
+fields for the selected operation instead of treating `reported` as success.

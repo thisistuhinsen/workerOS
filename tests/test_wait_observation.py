@@ -6,7 +6,7 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import Mock, call, patch
 
-from worker_handoff import policy_cli, supervisor
+from workeros import policy_cli, supervisor
 
 
 _DUE = 50_000_000

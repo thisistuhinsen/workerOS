@@ -8,7 +8,7 @@ from threading import Event, Thread
 from time import monotonic_ns, sleep
 import unittest
 
-from worker_handoff.supervisor import CleanupStatus, DirectChildSupervisor, LifecycleStatus
+from workeros.supervisor import CleanupStatus, DirectChildSupervisor, LifecycleStatus
 
 
 def due():

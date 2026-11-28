@@ -17,12 +17,12 @@ import unittest
 from unittest.mock import patch
 from uuid import uuid4
 
-from worker_handoff import CleanupStatus, DirectChildSupervisor, LifecycleStatus, observe
-from worker_handoff.evidence import (
+from workeros import CleanupStatus, DirectChildSupervisor, LifecycleStatus, observe
+from workeros.evidence import (
     EvidenceScope, EvidenceState, RunBinding, ScopePhase, validate_scope_evidence,
 )
-from worker_handoff.lifecycle import Match, ProcessState, RegularFileObserver
-from worker_handoff.scope_meter import (
+from workeros.lifecycle import Match, ProcessState, RegularFileObserver
+from workeros.scope_meter import (
     CgroupIdentity, CgroupSample, CgroupScopeMeter, ScopeMeterUnavailable, cpu_delta_usec,
     monotonic_clock_id,
 )
@@ -66,6 +66,52 @@ def _mount_path(field):
     return PurePosixPath(re.sub(r"\\(040|011|012|134)", lambda m: chr(int(m[1], 8)), field))
 
 
+def open_self_cgroup(test, stack):
+    """Open only the caller’s visible unified cgroup and pin its mount ID."""
+    try:
+        groups = Path("/proc/self/cgroup").read_text(errors="surrogateescape").splitlines()
+        mounts = Path("/proc/self/mountinfo").read_text(errors="surrogateescape").splitlines()
+    except OSError as exc:
+        test.skipTest(f"own cgroup or mount metadata unavailable (errno {exc.errno})")
+    unified = [row[3:] for row in groups if row.startswith("0::")]
+    if len(unified) != 1:
+        test.skipTest("a single unified cgroup v2 membership is unavailable")
+    group = PurePosixPath(unified[0])
+    if not group.is_absolute() or ".." in group.parts:
+        test.skipTest("own cgroup path is outside its visible namespace")
+
+    candidates = []
+    for row in mounts:
+        left, _, right = row.partition(" - ")
+        if not right.startswith("cgroup2 "):
+            continue
+        fields = left.split()
+        if len(fields) < 5:
+            continue
+        mount_id, root, mountpoint = fields[0], _mount_path(fields[3]), _mount_path(fields[4])
+        if (not root.is_absolute() or not mountpoint.is_absolute()
+                or ".." in root.parts or ".." in mountpoint.parts):
+            continue
+        try:
+            relative = group.relative_to(root)
+        except ValueError:
+            continue
+        candidates.append((mount_id, mountpoint / relative))
+    if len(candidates) != 1:
+        test.skipTest("own cgroup v2 path has no unique matching mount context")
+    mount_id, directory = candidates[0]
+    try:
+        fd = os.open(directory, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | os.O_NOFOLLOW)
+        stack.callback(os.close, fd)
+        fdinfo = Path(f"/proc/self/fdinfo/{fd}").read_text().splitlines()
+    except OSError as exc:
+        test.skipTest(f"own cgroup directory or mount ID unavailable (errno {exc.errno})")
+    seen_ids = [row.partition(":")[2].strip() for row in fdinfo if row.startswith("mnt_id:")]
+    if seen_ids != [mount_id]:
+        test.skipTest("opened cgroup directory does not match the recorded mount ID")
+    return fd, unified[0]
+
+
 @unittest.skipUnless(sys.platform == "linux", "Linux cgroup v2 required")
 class CgroupScopeMeterTest(unittest.TestCase):
     def scope(self, clock_id):
@@ -75,50 +121,6 @@ class CgroupScopeMeterTest(unittest.TestCase):
         run = RunBinding(uuid4().hex, sha256(_PAYLOAD).hexdigest(),
                          clock_id or "fixture-unbound-clock", start, due)
         return EvidenceScope(run, sha256(uuid4().bytes).hexdigest(), start, due)
-
-    def open_self_cgroup(self, stack):
-        try:
-            groups = Path("/proc/self/cgroup").read_text(errors="surrogateescape").splitlines()
-            mounts = Path("/proc/self/mountinfo").read_text(errors="surrogateescape").splitlines()
-        except OSError as exc:
-            self.skipTest(f"own cgroup or mount metadata unavailable (errno {exc.errno})")
-        unified = [row[3:] for row in groups if row.startswith("0::")]
-        if len(unified) != 1:
-            self.skipTest("a single unified cgroup v2 membership is unavailable")
-        group = PurePosixPath(unified[0])
-        if not group.is_absolute() or ".." in group.parts:
-            self.skipTest("own cgroup path is outside its visible namespace")
-
-        candidates = []
-        for row in mounts:
-            left, _, right = row.partition(" - ")
-            if not right.startswith("cgroup2 "):
-                continue
-            fields = left.split()
-            if len(fields) < 5:
-                continue
-            mount_id, root, mountpoint = fields[0], _mount_path(fields[3]), _mount_path(fields[4])
-            if (not root.is_absolute() or not mountpoint.is_absolute()
-                    or ".." in root.parts or ".." in mountpoint.parts):
-                continue
-            try:
-                relative = group.relative_to(root)
-            except ValueError:
-                continue
-            candidates.append((mount_id, mountpoint / relative))
-        if len(candidates) != 1:
-            self.skipTest("own cgroup v2 path has no unique matching mount context")
-        mount_id, directory = candidates[0]
-        try:
-            fd = os.open(directory, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | os.O_NOFOLLOW)
-            stack.callback(os.close, fd)
-            fdinfo = Path(f"/proc/self/fdinfo/{fd}").read_text().splitlines()
-        except OSError as exc:
-            self.skipTest(f"own cgroup directory or mount ID unavailable (errno {exc.errno})")
-        seen_ids = [row.partition(":")[2].strip() for row in fdinfo if row.startswith("mnt_id:")]
-        if seen_ids != [mount_id]:
-            self.skipTest("opened cgroup directory does not match the recorded mount ID")
-        return fd, unified[0]
 
     def kernel_usage(self, directory_fd):
         try:
@@ -185,7 +187,7 @@ class CgroupScopeMeterTest(unittest.TestCase):
     def start_meter_cli(self, stack, scope, fd):
         python = [sys.executable, "-I"] if sys.flags.isolated else [sys.executable]
         process = subprocess.Popen(
-            [*python, "-m", "worker_handoff.scope_meter"],
+            [*python, "-m", "workeros.scope_meter"],
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, bufsize=0, pass_fds=(fd,),
         )
         stack.callback(process.stdin.close)
@@ -246,7 +248,7 @@ class CgroupScopeMeterTest(unittest.TestCase):
         except (OSError, RuntimeError) as exc:
             self.skipTest(f"Linux pidfd supervision unavailable ({exc})")
         with ExitStack() as stack:
-            fd, group = self.open_self_cgroup(stack)
+            fd, group = open_self_cgroup(self, stack)
             tmp = Path(stack.enter_context(TemporaryDirectory()))
             path = tmp / "input"
             path.write_bytes(_PAYLOAD)
@@ -315,7 +317,7 @@ class CgroupScopeMeterTest(unittest.TestCase):
                     raise FileNotFoundError(errno.ENOENT, "fixture metric file absent")
                 return real_open(path, *args, **kwargs)
 
-            with patch("worker_handoff.scope_meter.os.open", side_effect=missing_fields):
+            with patch("workeros.scope_meter.os.open", side_effect=missing_fields):
                 cpu_only = diagnostic_meter.sample(ScopePhase.METER_END)
             self.check_observed_sample(cpu_only, ScopePhase.METER_END, clock_id)
             self.assertIs(cpu_only.population_state, EvidenceState.UNAVAILABLE)

@@ -4,10 +4,10 @@
          xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
   <modelVersion>4.0.0</modelVersion>
   <groupId>io.github.thisistuhinsen</groupId>
-  <artifactId>worker-handoff</artifactId>
-  <version>0.7.0</version>
+  <artifactId>workeros</artifactId>
+  <version>0.8.0</version>
   <name>workerOS Java inherited-FD reader</name>
-  <description>Positional reads from named worker-handoff ABI v1 descriptors on 64-bit Linux.</description>
+  <description>Positional reads from named workeros ABI v1 descriptors on 64-bit Linux.</description>
   <url>https://github.com/thisistuhinsen/workerOS</url>
   <licenses>
     <license>

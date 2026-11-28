@@ -52,7 +52,7 @@ jobs:
           distribution: temurin
           java-version: '25'
       - name: Test installed wheel and all seven examples
-        run: bash -c "$WORKEROS_CI_CHECK"
+        run: bash scripts/run-ordinary-ci.sh /bin/bash -c "$WORKEROS_CI_CHECK"
       - name: Test the release gates with inert fixtures
         if: matrix.runner == 'ubuntu-24.04' && matrix.python == '3.12'
         run: python -I -m unittest discover -s scripts/tests -v
@@ -74,19 +74,30 @@ jobs:
           docker run --rm -e WORKEROS_CI_CHECK -v "$PWD:/src:ro" "$IMAGE" sh -ec '
             if command -v apt-get >/dev/null; then
               apt-get update
-              apt-get install -y --no-install-recommends ca-certificates python3 python3-venv \
+              apt-get install -y --no-install-recommends acl ca-certificates python3 python3-venv \
                 build-essential bash nodejs golang-go rustc openjdk-25-jdk-headless
             elif command -v dnf >/dev/null; then
-              dnf install -y --setopt=install_weak_deps=False ca-certificates python3 python3-pip \
+              dnf install -y --setopt=install_weak_deps=False acl ca-certificates python3 python3-pip \
                 gcc gcc-c++ glibc-devel bash nodejs golang rust java-25-openjdk-devel
             else
-              apk add --no-cache ca-certificates python3 py3-pip build-base bash nodejs go rust openjdk25-jdk
+              apk add --no-cache acl ca-certificates python3 py3-pip build-base bash nodejs go rust openjdk25-jdk
               export PATH="/usr/lib/jvm/java-25-openjdk/bin:$PATH"
             fi
             work=$(mktemp -d)
             cp -R /src/. "$work/"
+            chown -hR "$(id -u daemon):$(id -g daemon)" "$work"
             cd "$work"
-            bash -c "$WORKEROS_CI_CHECK"
+            HOME="$work" python3 -I -c '"'"'
+          import os
+          import pwd
+
+          account = pwd.getpwnam("daemon")
+          assert account.pw_uid != 0 and account.pw_gid != 0
+          os.setgroups([])
+          os.setgid(account.pw_gid)
+          os.setuid(account.pw_uid)
+          os.execvp("bash", ["bash", "-c", os.environ["WORKEROS_CI_CHECK"]])
+          '"'"'
           '
 
   windows-boundary:

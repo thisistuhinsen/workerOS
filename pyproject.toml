@@ -4,27 +4,39 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "workeros"
-version = "0.7.0"
+version = "0.8.0"
 description = "Explicit local workers and file descriptor handoff for existing supervisors"
 readme = "docs/package-python.md"
 license = {file = "LICENSE"}
 requires-python = ">=3.11"
 dependencies = []
 
+[project.urls]
+Homepage = "https://github.com/thisistuhinsen/workerOS"
+Documentation = "https://github.com/thisistuhinsen/workerOS/blob/v0.8.0/docs/install-0.8.0.md"
+Upgrade = "https://github.com/thisistuhinsen/workerOS/blob/v0.8.0/docs/install-0.8.0.md#upgrade-and-roll-back"
+Troubleshooting = "https://github.com/thisistuhinsen/workerOS/blob/v0.8.0/docs/support.md#troubleshooting"
+Issues = "https://github.com/thisistuhinsen/workerOS/issues"
+
 [project.scripts]
-workeros-demo = "worker_handoff.quickstart:main"
-workeros-config = "worker_handoff.configuration_cli:main"
-worker-handoff-config = "worker_handoff.configuration_cli:main"
+workeros = "workeros.cli:main"
+wos = "workeros.cli:main"
+workeros-demo = "workeros.quickstart:main"
+workeros-config = "workeros.configuration_cli:main"
+workeros-managed = "workeros.managed_cli:main"
+workeros-owner-access = "workeros.owner_access:main"
+workeros-roles = "workeros.roles_cli:main"
 
 [tool.setuptools.package-data]
-worker_handoff = ["configuration.schema.json"]
+workeros = ["configuration.schema.json"]
 
 [tool.setuptools.packages.find]
 where = ["src"]
 
 
 [tool.setuptools.data-files]
-"share/worker-handoff/examples" = [
+"share/workeros/docs" = ["docs/guarded-walkthrough.md", "docs/install-0.8.0.md"]
+"share/workeros/examples" = [
     "examples/ReadWorker.java",
     "examples/evidence_config.json",
     "examples/workflow_policy.json",
@@ -36,4 +48,6 @@ where = ["src"]
     "examples/read_worker.rs",
     "examples/run_inherited_fd.py",
     "examples/run_host_preflight.py",
+    "examples/draft_guarded_profile.py",
+    "examples/guarded_write.c",
 ]

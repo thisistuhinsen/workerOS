@@ -9,7 +9,7 @@ from time import monotonic_ns
 from types import coroutine
 import unittest
 
-from worker_handoff import WorkerRoster
+from workeros import WorkerRoster
 
 
 async def _async_function(value=7):

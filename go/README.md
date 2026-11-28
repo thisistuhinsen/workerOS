@@ -1,12 +1,15 @@
 # workerOS for Go
 
+> These are v0.8.0 instructions. Use public downloads only after that release,
+> or use a verified offline bundle now. For the published v0.7.0 release, use the [v0.7.0 guide](https://github.com/thisistuhinsen/workerOS/blob/v0.7.0/go/README.md).
+
 Use Go 1.22 or later on Linux amd64 or arm64. This example builds a reader in
 a fresh Go module, then starts it with an already-open file.
 
 ## Try the public tag
 
-After the matching v0.7.0 tag and Python wheel are published, [install the
-Python controller](../docs/install.md#python) and activate its environment.
+[install the
+Python controller](https://github.com/thisistuhinsen/workerOS/blob/v0.8.0/docs/install-0.8.0.md#python) and activate its environment.
 Run this from any directory. Set `WORKEROS_PYTHON` if you want to point to
 that environment's Python directly.
 
@@ -18,7 +21,7 @@ that environment's Python directly.
     trap 'rm -rf -- "$work"' EXIT
     cd "$work"
     go mod init example.invalid/workeros-reader
-    GOTOOLCHAIN=local go get github.com/thisistuhinsen/workerOS/go/workerhandoff@v0.7.0
+    GOTOOLCHAIN=local go get github.com/thisistuhinsen/workerOS/go/workeros@v0.8.0
     go mod verify
     cat > main.go <<'GO'
 package main
@@ -28,11 +31,11 @@ import (
     "io"
     "log"
 
-    "github.com/thisistuhinsen/workerOS/go/workerhandoff"
+    "github.com/thisistuhinsen/workerOS/go/workeros"
 )
 
 func main() {
-    input, err := workerhandoff.Open("INPUT")
+    input, err := workeros.Open("INPUT")
     if err != nil {
         log.Fatal(err)
     }
@@ -55,7 +58,7 @@ from tempfile import TemporaryDirectory
 from time import monotonic_ns
 import sys
 
-from worker_handoff import WorkerRoster
+from workeros import WorkerRoster
 
 with TemporaryDirectory() as directory:
     path = Path(directory) / "input.txt"
@@ -82,24 +85,24 @@ verify the public tag. Use your usual Go checksum settings.
 
 ## Try the private offline bundle
 
-[Install the Python controller](../docs/install.md#python) and set
+[Install the Python controller](https://github.com/thisistuhinsen/workerOS/blob/v0.8.0/docs/install-0.8.0.md#python) and set
 `WORKEROS_OFFLINE` to the absolute path of the verified
-private `workerOS-0.7.0-offline` directory. The block uses the pip environment.
-For uv, set `WORKEROS_PYTHON="$WORKEROS_OFFLINE/.venv-0.7.0-uv/bin/python"`
+private `workerOS-0.8.0-offline` directory. The block uses the pip environment.
+For uv, set `WORKEROS_PYTHON="$WORKEROS_OFFLINE/.venv-0.8.0-uv/bin/python"`
 first.
 
 ```sh
 (
     set -eu
     offline=${WORKEROS_OFFLINE:?set WORKEROS_OFFLINE to the extracted bundle directory}
-    python=${WORKEROS_PYTHON:-"$offline/.venv-0.7.0/bin/python"}
+    python=${WORKEROS_PYTHON:-"$offline/.venv-0.8.0/bin/python"}
     work=$(mktemp -d)
     trap 'rm -rf -- "$work"' EXIT
-    git clone --quiet --no-checkout "$offline/source/workeros-0.7.0.bundle" "$work/source"
-    git -C "$work/source" checkout --quiet --detach refs/tags/v0.7.0
+    git clone --quiet --no-checkout "$offline/source/workeros-0.8.0.bundle" "$work/source"
+    git -C "$work/source" checkout --quiet --detach refs/tags/v0.8.0
     cd "$work"
     go mod init example.invalid/workeros-reader
-    go mod edit -require=github.com/thisistuhinsen/workerOS@v0.7.0 \
+    go mod edit -require=github.com/thisistuhinsen/workerOS@v0.8.0 \
         "-replace=github.com/thisistuhinsen/workerOS=$work/source"
     cat > main.go <<'GO'
 package main
@@ -109,11 +112,11 @@ import (
     "io"
     "log"
 
-    "github.com/thisistuhinsen/workerOS/go/workerhandoff"
+    "github.com/thisistuhinsen/workerOS/go/workeros"
 )
 
 func main() {
-    input, err := workerhandoff.Open("INPUT")
+    input, err := workeros.Open("INPUT")
     if err != nil {
         log.Fatal(err)
     }
@@ -136,7 +139,7 @@ from tempfile import TemporaryDirectory
 from time import monotonic_ns
 import sys
 
-from worker_handoff import WorkerRoster
+from workeros import WorkerRoster
 
 with TemporaryDirectory() as directory:
     path = Path(directory) / "input.txt"

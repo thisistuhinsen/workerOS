@@ -22,13 +22,18 @@ SOURCE_NAME = f"workeros-{VERSION}"
 PUBLIC_DOCS = {
     "CONTRIBUTING.md", "SECURITY.md", "docs/releasing.md", "docs/support.md",
     "docs/media/README.md", "docs/media/custody-lanyard.gif", "docs/media/fd-7.gif", "docs/media/one-small-ticket.gif",
-    "docs/install.md", "docs/package-python.md", "docs/workers.md",
-    "docs/api.md", "docs/configuration.md", "docs/host-preflight.md",
+    "docs/install.md", "docs/install-0.8.0.md", "docs/package-python.md", "docs/workers.md",
+    "docs/api.md", "docs/configuration.md", "docs/host-preflight.md", "docs/guarded-walkthrough.md",
+    "docs/start/code.md", "docs/start/config.md", "docs/start/install.md", "docs/start/terminal.md",
     "docs/regular-file-observer.md", "skills/workeros/SKILL.md",
     "go/README.md", "java/README.md", "native/README.md", "node/README.md", "rust/README.md",
     "native/tests/c/CMakeLists.txt", "native/tests/c/conanfile.txt", "native/tests/c/read_input.c",
     "native/tests/cpp/CMakeLists.txt", "native/tests/cpp/conanfile.txt", "native/tests/cpp/read_input.cpp",
-    "scripts/check-strict-custody-linux.py",
+    "scripts/check-strict-custody-linux.py", "scripts/package-owned-bwrap.py",
+    *(f"scripts/owned-runtime/{name}" for name in (
+        "PROVENANCE.md", "build-in-container.sh", "fetch-pinned-inputs.py",
+        "inputs.lock.tsv", "libcap-Ubuntu-copyright.txt", "produce-owned-bwrap.sh",
+    )),
     "docs/brand/README.md", "docs/brand/workeros-banner.png", "docs/brand/workeros-mark.png", "docs/brand/workeros-social.png",
     *(f"docs/brand/language-{language}.png" for language in ("python", "node", "c", "cpp", "go", "rust", "java")),
     *(f"docs/brand/manager-{manager}.png" for manager in ("pip", "uv", "npm", "conan", "go", "cargo", "maven")),
@@ -40,7 +45,7 @@ NODE_FILES = {
 NATIVE_NAME = f"workeros-conan-{VERSION}"
 NATIVE_FILES = {
     "LICENSE", "README.md", "conanfile.py", "check-conan.sh",
-    "include/worker_handoff/input.h", "tests/run_inherited.py",
+    "include/workeros/input.h", "tests/run_inherited.py",
     "tests/c/CMakeLists.txt", "tests/c/conanfile.txt", "tests/c/read_input.c",
     "tests/cpp/CMakeLists.txt", "tests/cpp/conanfile.txt", "tests/cpp/read_input.cpp",
 }
@@ -110,7 +115,7 @@ def check_sdist(path, destination):
         files = {m.name.removeprefix(f"{SOURCE_NAME}/") for m in members if m.isfile()}
         core = {"LICENSE", "MANIFEST.in", "PKG-INFO", "README.md", "pyproject.toml", "setup.cfg"}
         core |= PUBLIC_DOCS | {"examples/evidence_config.json", "examples/workflow_policy.json",
-                               "src/worker_handoff/configuration.schema.json"}
+                               "src/workeros/configuration.schema.json"}
         check(core <= files, f"missing sdist files: {sorted(core - files)}")
         fixtures = {"examples/report_worker.c", "examples/run_local_report.py",
                     "examples/run_local_workers.py", "examples/run_host_preflight.py"}
@@ -120,7 +125,7 @@ def check_sdist(path, destination):
             name in core or re.fullmatch(
                 r"(?:examples/[^/]+\.(?:c|cpp|cjs|go|java|py|rs)"
                 r"|tests/(?:[\w-]+/)*[\w-]+\.py"
-                r"|src/worker_handoff/(?:[\w-]+/)*[\w-]+\.py"
+                r"|src/workeros/(?:[\w-]+/)*[\w-]+\.py"
                 r"|src/workeros\.egg-info/[\w.-]+\.txt"
                 r"|src/workeros\.egg-info/PKG-INFO)",
                 name,
@@ -134,29 +139,38 @@ def check_sdist(path, destination):
 def check_wheel(path, source):
     with (source / "pyproject.toml").open("rb") as stream:
         config = tomllib.load(stream)
-    examples = config["tool"]["setuptools"]["data-files"]["share/worker-handoff/examples"]
-    data_prefix = f"{SOURCE_NAME}.data/data/share/worker-handoff/examples/"
-    data_files = {data_prefix + Path(name).name for name in examples}
+    data = config["tool"]["setuptools"]["data-files"]
+    data_files = {f"{SOURCE_NAME}.data/data/{group}/{Path(name).name}": name
+                  for group in ("share/workeros/examples", "share/workeros/docs")
+                  for name in data.get(group, ())}
     info = f"{SOURCE_NAME}.dist-info/"
     metadata_files = {info + name for name in ("METADATA", "WHEEL", "RECORD", "top_level.txt", "entry_points.txt")}
     license_files = {info + "LICENSE", info + "licenses/LICENSE"}
-    schema = "worker_handoff/configuration.schema.json"
+    schema = "workeros/configuration.schema.json"
     with zipfile.ZipFile(path) as archive:
         names = archive.namelist()
         validate_paths(names)
         files = set(names)
-        check(data_files | metadata_files | {schema} <= files, "wheel omits metadata, schema or declared examples")
+        required = set(data_files) | metadata_files | {schema}
+        check(required <= files, "wheel omits metadata, schema or declared guides/examples")
         check(len(files & license_files) == 1, "wheel must include the MIT license")
-        check("worker_handoff/__init__.py" in files, "wheel omits the Python package")
-        check(all(name in data_files | metadata_files | license_files | {schema} or re.fullmatch(
-            r"worker_handoff/(?:[\w-]+/)*[\w-]+\.py", name,
+        check("workeros/__init__.py" in files, "wheel omits the Python package")
+        check(all(name in required | license_files or re.fullmatch(
+            r"workeros/(?:[\w-]+/)*[\w-]+\.py", name,
         ) for name in files), f"unexpected files in wheel: {sorted(files)}")
         check_metadata(archive.read(f"{info}METADATA"))
+        for member, name in data_files.items():
+            check(archive.read(member) == (source / name).read_bytes(), f"installed {name} differs from source")
         check(archive.read(schema) == (source / "src" / schema).read_bytes(), "installed schema differs from source")
         check(archive.read(f"{info}entry_points.txt").splitlines() == [
-            b"[console_scripts]", b"worker-handoff-config = worker_handoff.configuration_cli:main",
-            b"workeros-config = worker_handoff.configuration_cli:main",
-            b"workeros-demo = worker_handoff.quickstart:main",
+            b"[console_scripts]",
+            b"workeros = workeros.cli:main",
+            b"workeros-config = workeros.configuration_cli:main",
+            b"workeros-demo = workeros.quickstart:main",
+            b"workeros-managed = workeros.managed_cli:main",
+            b"workeros-owner-access = workeros.owner_access:main",
+            b"workeros-roles = workeros.roles_cli:main",
+            b"wos = workeros.cli:main",
         ], "unexpected Python entry points")
         wheel = BytesParser().parsebytes(archive.read(f"{info}WHEEL"))
         check(wheel.get_all("Tag") == ["py3-none-any"], "wheel is not architecture-independent")
@@ -194,7 +208,7 @@ def check_maven(path, pom):
     group = project.findtext("m:groupId", namespaces=ns)
     package = project.findtext("m:artifactId", namespaces=ns)
     version = project.findtext("m:version", namespaces=ns)
-    check((group, package, version) == ("io.github.thisistuhinsen", "worker-handoff", VERSION),
+    check((group, package, version) == ("io.github.thisistuhinsen", "workeros", VERSION),
           "unexpected Maven coordinates")
     check(not project.findall("m:dependencies/m:dependency", ns),
           "unexpected Maven dependencies")
@@ -204,14 +218,14 @@ def check_maven(path, pom):
     expected = {
         "META-INF/LICENSE", "META-INF/MANIFEST.MF",
         metadata + "pom.xml", metadata + "pom.properties",
-        "io/github/thisistuhinsen/workerhandoff/InheritedReader.class",
+        "io/github/thisistuhinsen/workeros/InheritedReader.class",
     }
     with zipfile.ZipFile(path) as archive:
         validate_paths(entry.filename.rstrip("/") for entry in archive.infolist())
         files = {entry.filename for entry in archive.infolist() if not entry.is_dir()}
         check(expected <= files, f"missing JAR entries: {sorted(expected - files)}")
         check(all(name in expected or re.fullmatch(
-            r"io/github/thisistuhinsen/workerhandoff/InheritedReader\$[\w$]+\.class", name,
+            r"io/github/thisistuhinsen/workeros/InheritedReader\$[\w$]+\.class", name,
         ) for name in files), f"unexpected JAR entries: {sorted(files - expected)}")
         check(archive.read("META-INF/LICENSE").startswith(b"MIT License"), "JAR omits MIT license")
         check(archive.read(metadata + "pom.xml") == source_pom, "JAR and release POM differ")

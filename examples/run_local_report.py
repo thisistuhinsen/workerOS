@@ -5,7 +5,7 @@ from subprocess import TimeoutExpired
 import sys
 from tempfile import TemporaryDirectory
 from time import monotonic_ns
-from worker_handoff import WorkerRoster, observe
+from workeros import WorkerRoster, observe
 
 
 def run(executable):

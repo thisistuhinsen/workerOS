@@ -12,7 +12,7 @@ from zipfile import ZipFile
 
 jar, pom, consumer = sys.argv[1:]
 ns = {"m": "http://maven.apache.org/POM/4.0.0"}
-group, artifact = "io.github.thisistuhinsen", "worker-handoff"
+group, artifact = "io.github.thisistuhinsen", "workeros"
 
 
 def coordinates(project):
@@ -43,7 +43,7 @@ cd "$work"
 mvn -B -ntp -Dmaven.repo.local="$repo" org.apache.maven.plugins:maven-install-plugin:3.1.4:install-file \
     -Dfile="$jar" -DpomFile="$pom"
 mvn -B -ntp -Dmaven.repo.local="$repo" -f consumer/pom.xml clean compile
-installed="$repo/io/github/thisistuhinsen/worker-handoff/$version/worker-handoff-$version"
+installed="$repo/io/github/thisistuhinsen/workeros/$version/workeros-$version"
 cmp "$jar" "$installed.jar"
 cmp "$pom" "$installed.pom"
 python3 -I consumer/test_handoff.py "$work/consumer/target/classes:$installed.jar"

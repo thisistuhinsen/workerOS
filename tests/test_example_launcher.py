@@ -6,7 +6,7 @@ from tempfile import TemporaryDirectory
 import unittest
 
 
-INSTALLED = Path(sys.prefix) / "share" / "worker-handoff" / "examples" / "run_inherited_fd.py"
+INSTALLED = Path(sys.prefix) / "share" / "workeros" / "examples" / "run_inherited_fd.py"
 CHECKOUT = Path(__file__).resolve().parents[1] / "examples" / "run_inherited_fd.py"
 
 

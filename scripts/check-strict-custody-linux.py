@@ -25,8 +25,8 @@ import sys
 from time import monotonic_ns
 from unittest.mock import Mock
 
-import worker_handoff
-from worker_handoff import (
+import workeros
+from workeros import (
     CleanupStatus, DeliveryStatus, DirectChildSupervisor, EffectStatus, Identity,
     IndependentCustody, LifecycleStatus, ReleasePlan, release_executable,
 )
@@ -300,7 +300,7 @@ def trial(case, account):
 
 def main(account_name, expected_version):
     assert sys.platform == "linux" and os.getresuid() == (0, 0, 0)
-    assert Path(worker_handoff.__file__).resolve().is_relative_to(Path(sys.prefix).resolve())
+    assert Path(workeros.__file__).resolve().is_relative_to(Path(sys.prefix).resolve())
     assert version("workeros") == expected_version
     account = pwd.getpwnam(account_name)
     assert account.pw_uid != 0 and account.pw_gid != 0

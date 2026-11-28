@@ -11,11 +11,11 @@ from tempfile import TemporaryDirectory
 from time import monotonic_ns
 from uuid import uuid4
 
-from worker_handoff import ReleasePlan, observe
-from worker_handoff.configuration import ConfigurationError, decode_request
-from worker_handoff.enrollment import DescriptorBinding, HostBindings, compile_policy
-from worker_handoff.managed import ReleaseResult
-from worker_handoff.recording import LocalStore, RecordError, StoragePolicy
+from workeros import ReleasePlan, observe
+from workeros.configuration import ConfigurationError, decode_request
+from workeros.enrollment import DescriptorBinding, HostBindings, compile_policy
+from workeros.managed import ReleaseResult
+from workeros.recording import LocalStore, RecordError, StoragePolicy
 
 
 PROFILE = "local-read"

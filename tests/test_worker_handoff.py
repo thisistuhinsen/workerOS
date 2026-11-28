@@ -8,9 +8,10 @@ import stat
 import tempfile
 from time import monotonic_ns
 import unittest
+from unittest.mock import patch
 
-from worker_handoff import HandoffError, Identity, Original, WorkerRoster, Writer, observe
-from worker_handoff.original import _receive_one
+from workeros import AppendWrite, HandoffError, Identity, Original, WorkerRoster, Writer, observe
+from workeros.original import _receive_one
 
 DATA = b"one original, two independent reads\n"
 
@@ -187,6 +188,55 @@ class LoopTest(unittest.TestCase):
         with self.assertRaises(HandoffError):
             Writer(writer_fd,self.ident)
         self.expect_closed(writer_fd)
+
+    def test_owner_append_follows_original_without_changing_offsets_or_flags(self):
+        os.write(self.fd, b"prefix")
+        reader = self.ro()
+        self.addCleanup(os.close, reader)
+        writer_fd = os.dup(self.fd)
+        with Writer(writer_fd, self.ident) as writer:
+            request = AppendWrite(b":next")
+            if not hasattr(os, "RWF_APPEND"):
+                with self.assertRaisesRegex(HandoffError, "kernel append interface unavailable"):
+                    writer.append(request, due_ns=due())
+                self.assertEqual(os.pread(reader, 32, 0), b"prefix")
+                return
+
+            self.path.rename(self.path.with_name("retained"))
+            self.path.write_bytes(b"replacement")
+            os.lseek(reader, 2, os.SEEK_SET)
+            os.lseek(writer_fd, 1, os.SEEK_SET)
+            before = observe(writer_fd)
+            self.assertFalse(before.flags & os.O_APPEND)
+            self.assertEqual(writer.append(request, due_ns=due()), len(request.data))
+            self.assertEqual(observe(writer_fd).flags, before.flags)
+            self.assertEqual(os.lseek(writer_fd, 0, os.SEEK_CUR), 1)
+            self.assertEqual(os.lseek(reader, 0, os.SEEK_CUR), 2)
+            self.assertEqual(observe(reader).identity, self.ident)
+            self.assertEqual(os.pread(reader, 32, 0), b"prefix:next")
+            self.assertEqual(self.path.read_bytes(), b"replacement")
+        self.expect_closed(writer_fd)
+
+    def test_append_refuses_bad_input_and_never_retries_a_short_or_failed_write(self):
+        with Writer(os.dup(self.fd), self.ident) as writer:
+            with self.assertRaises(ValueError):
+                AppendWrite(b"")
+            with self.assertRaises(HandoffError):
+                writer.append(b"raw", due_ns=due())
+            request = AppendWrite(b"one")
+            with patch("workeros.original.os.RWF_APPEND", 16, create=True), patch(
+                    "workeros.original.os.pwritev", return_value=1) as syscall:
+                with self.assertRaises(TimeoutError):
+                    writer.append(request, due_ns=1)
+                syscall.assert_not_called()
+                self.assertEqual(writer.append(request, due_ns=due()), 1)
+                syscall.assert_called_once_with(writer.fileno(), (b"one",), 0, 16)
+                syscall.reset_mock(side_effect=True)
+                syscall.side_effect = OSError("unconfirmed append")
+                with self.assertRaisesRegex(OSError, "unconfirmed append"):
+                    writer.append(request, due_ns=due())
+                syscall.assert_called_once()
+            self.assertEqual(self.path.read_bytes(), b"")
 
     def test_empty_eof_detach_has_explicit_ownership(self):
         fd=self.ro()

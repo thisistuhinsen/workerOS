@@ -11,21 +11,30 @@ Choose the task first. A Python controller can launch an ordinary executable;
 a program that needs no file can run without a reader package. Use a language
 reader when a launcher will actually grant the worker an open regular file.
 
-## Select the 0.7.0 distribution
+## Select the published release or an explicit pin
 
 Use Linux or an existing Ubuntu WSL2 guest, Python 3.11+ and usable pidfds.
 Native Windows Python can install the wheel, then fail to import `fcntl`.
 Create the application environment in Ubuntu WSL2 on that host. Native macOS
 users need a supported Linux VM.
 
-Choose the source the operator is using. A public v0.7.0 installation requires
+For a new public install, begin with the [latest published release](https://github.com/thisistuhinsen/workerOS/releases/latest)
+and use the install guide from those release notes. When it shows v0.8.0, use
+the [tagged v0.8.0 guide](https://github.com/thisistuhinsen/workerOS/blob/v0.8.0/docs/install-0.8.0.md)
+and confirm `workeros --version` reports `WorkerOS 0.8.0` before reporting the
+first job. Its wheel, source tag and checksum manifest must all exist before
+using them. If the operator supplies a verified v0.8.0 offline bundle, use its
+matching guide and checksum manifest. Use the [tagged v0.7.0 guide](https://github.com/thisistuhinsen/workerOS/blob/v0.7.0/docs/install.md)
+for an explicit v0.7.0 install or rollback.
+
+A public v0.7.0 installation requires
 the published [release](https://github.com/thisistuhinsen/workerOS/releases/tag/v0.7.0)
 and the [versioned source tag](https://github.com/thisistuhinsen/workerOS/tree/v0.7.0).
 The release has six individual assets plus `SHA256SUMS`. Go and Cargo consume
 the tag. A separately supplied `workerOS-0.7.0-offline` directory has its own
 layout and source; do not infer a public bundle URL from that directory name.
 
-### Public wheel after publication
+### Pinned public v0.7.0 wheel
 
 Run this in a fresh working directory. An unavailable asset, checksum mismatch
 or missing manifest entry must stop the install. Report that outcome and use
@@ -47,11 +56,12 @@ The commands use curl and GNU coreutils (`sha256sum --strict`).
     sha256sum --strict -c wheel.sha256)
   python3 -m venv .venv-0.7.0
   .venv-0.7.0/bin/python -m pip install --no-index --no-deps "$download/$wheel"
+  .venv-0.7.0/bin/python -I -c 'from importlib.metadata import version; import worker_handoff; assert version("workeros") == "0.7.0"'
   .venv-0.7.0/bin/workeros-demo
 )
 ```
 
-### Offline handoff
+### Pinned v0.7.0 offline handoff
 
 Start in the separately supplied `workerOS-0.7.0-offline` directory, beside
 `assets/`.
@@ -114,12 +124,12 @@ continue using the intact previous environment.
 | Give a new worker an open input | Bind the live FD when launching. Choose Python, Node.js/npm, Go, Rust/Cargo, C or C++/Conan, or Java/Maven. The reader's documentation describes borrowing, closing or duplicating that FD. |
 | Give a running peer a read-only original | Python `send_original` and `receive_original` need the connected Unix stream, correct peer identity, token and deadline. |
 | Authorize an exact handoff | `release_executable` uses a trusted policy callback and release plan. Strict custody also needs a qualified, independently operated observer and matching pre-grant evidence. |
-| Interpret scoped reports or sample a designated slot | Use the matching 0.7.0 `worker_handoff.evidence` and `worker_handoff.lifecycle` docs and source. Keep missing or indeterminate reports explicit. |
-| Use a policy from any language | Run `.venv-0.7.0/bin/workeros-config --schema` for the invocation contract. Follow the bundle's `docs/configuration.md` for `--check-policy` and `--run-policy`. `worker-handoff-config` is the same installed command under its compatibility name. Bind the executable and other resources on the operator side. |
+| Interpret scoped reports or sample a designated slot | Use the matching `worker_handoff.evidence` and `worker_handoff.lifecycle` docs and source. Keep missing or indeterminate reports explicit. |
+| Use a policy from any language | Run `workeros-config --schema` in the installed environment for the invocation contract. Follow the matching `docs/configuration.md` for `--check-policy` and `--run-policy`. `worker-handoff-config` is the compatibility name. Bind the executable and other resources on the operator side. |
 | Retain and read back a result | Choose an enrolled projection and a recorder policy with typed routes, destinations, retention and access. Keep the host-assigned attempt ID when returned on stderr. Recover or verify a receipt for that exact attempt before repeating an operation with unknown effects. |
 | Collect real scope measurements | `worker_handoff.scope_meter` samples an already accessible cgroup v2 directory. Keep raw field availability, units, scope and clock context. Verify provider authority and whole-scope coverage separately. |
 
-When v0.7.0 is published, use its [install guide](https://github.com/thisistuhinsen/workerOS/blob/v0.7.0/docs/install.md),
+For the pinned v0.7.0 path, use its [install guide](https://github.com/thisistuhinsen/workerOS/blob/v0.7.0/docs/install.md),
 [capability matrix](https://github.com/thisistuhinsen/workerOS/blob/v0.7.0/docs/support.md) and
 [JSON policy guide](https://github.com/thisistuhinsen/workerOS/blob/v0.7.0/docs/configuration.md).
 With a matching source tree, open `docs/install.md` for installation,

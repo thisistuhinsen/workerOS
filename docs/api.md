@@ -1,6 +1,8 @@
-# workerOS API reference
+# WorkerOS 0.8.0 API reference
 
-The Python distribution is `workeros`, imported as `worker_handoff`. Use
+The v0.8.0 distribution and Python import are both `workeros`. See the
+[published v0.7.0 reference](https://github.com/thisistuhinsen/workerOS/blob/v0.7.0/docs/api.md)
+for the installed v0.7.0 names. Use
 Python 3.11+ on Linux. [Install and run an example](../README.md#install-and-run) or
 check the [platform and verification matrix](support.md). The Python launcher
 can run any trusted executable, including tools that need no file inputs.
@@ -14,8 +16,8 @@ application](configuration.md). The APIs below remain available directly.
 
 ## Launch and supervise workers
 
-[Worker roster source](../src/worker_handoff/workers.py) ·
-[Direct-child supervisor source](../src/worker_handoff/supervisor.py)
+[Worker roster source](../src/workeros/workers.py) ·
+[Direct-child supervisor source](../src/workeros/supervisor.py)
 
 `Worker(name, role, pid, uid=None, process=None)` describes a worker. Names
 and roles are application labels. The optional UID is expected or reported
@@ -71,7 +73,7 @@ concurrent children, see [run_local_workers.py](../examples/run_local_workers.py
 import sys
 from time import monotonic_ns
 
-from worker_handoff import DirectChildSupervisor, SupervisionStartError
+from workeros import DirectChildSupervisor, SupervisionStartError
 
 supervisor = DirectChildSupervisor()
 deadline = monotonic_ns() + 5_000_000_000
@@ -122,14 +124,14 @@ non-inheritable first unless passing it on is intentional.
 
 ## Work with an open file
 
-[Descriptor and transport source](../src/worker_handoff/original.py)
+[Descriptor and transport source](../src/workeros/original.py)
 
 | API | Ownership and result |
 | --- | --- |
 | `Identity(device, inode)` and `observe(fd)` | `Identity` names a file by device and inode. `observe` borrows the FD and returns an `Observation` with identity, access flags, owner UID, file mode, size, link count, inheritable flag, and timestamps. It reads metadata only. |
 | `Original(fd, identity)` | Takes ownership of an exact non-inheritable read-only regular-file FD. `fileno()` borrows the numeric slot, `close()` releases it, and `detach()` transfers it to the caller. |
 | `Original.read_and_close(sink, *, due_ns, expected_size=None, block_size=65536)` | Reads positionally into a binary sink, checks EOF and metadata, and closes the descriptor on completion or failure. Returns `ReadResult(original, bytes_read, eof_observed_ns, closed_ns)` on success. |
-| `Writer(fd, identity)` | Takes ownership of an exact non-inheritable writable regular-file FD owned by the caller's actual Linux UID. `write(data)` writes bytes at the current position or in append mode. `flush(sync=True)` calls `fsync`. `fileno()` borrows the slot. |
+| `Writer(fd, identity)` | Takes ownership of an exact non-inheritable writable regular-file FD owned by the caller's actual Linux UID. `write(data)` uses the descriptor's current position and mode. `append(AppendWrite(data), due_ns=deadline)` makes one kernel-selected EOF write. `flush(sync=True)` calls `fsync`. `fileno()` borrows the slot. |
 
 Use context managers to close owned wrappers. The constructors may close a
 validly passed FD when validation fails. Pass a duplicate if you need to keep
@@ -142,6 +144,90 @@ partially take effect. Stage data if your application publishes it only after
 a successful read. Metadata checks cannot account for every intervening
 change. `HandoffError` represents a rejected contract. A syscall can
 also raise `OSError`, and a blocking operation can outlast a deadline check.
+
+Keep `Writer` private to the trusted owner. `AppendWrite` exposes no offset.
+The append call uses Linux `pwritev(RWF_APPEND)` on the retained inode. A
+separately opened read-only handle to that inode can see the new bytes even
+after a path rename. Append leaves the descriptor position and status flags
+unchanged. The Python build, kernel and filesystem must support the syscall.
+Check the returned count and reconcile any short or uncertain result before
+another attempt. A live worker append grant and independent custody each need
+separate host enforcement and evidence.
+
+### Run an enrolled owner append
+
+The enrolled operation keeps the writer in its existing Linux owner process.
+The administrator approves the workflow, role, operation alias, and exact
+resource. A separate custody observer holds the same original read-only and
+authenticates coverage through the append deadline. A writable stream alias
+uses a separate capability and offers different access.
+
+For example, this policy lets the role `report-owner` select `add_entry`.
+The enrollment supplies the existing registration named `report-original`.
+
+```yaml
+version: 1
+roles:
+  report-owner:
+    operations: [owner_append, owner_append_status]
+workflows:
+  compile-reports:
+    role: report-owner
+    operations: [owner_append, owner_append_status]
+    bindings:
+      owner_appends:
+        add_entry: report-original
+```
+
+For the installed controller, the administrator places the registration at
+`/etc/workeros/owner-append.json` in the protected WorkerOS directory. The
+registration contains:
+
+- `version` (1) and `policy_sha256` for the exact policy file bytes.
+- `workflow`, `role`, `alias`, `reference`, `scope`, and `generation`.
+- The approved non-root `owner_uid`, original `device` and `inode`, absolute
+  monotonic `expires_ns`, and existing private `journal_directory`.
+- The preheld `writer_fd` and `reader_fd` in the appointed owner process, plus
+  `observer_fd` for a connected custody socket with pinned `observer_pid`
+  and `observer_uid`.
+
+Use decimal strings for large integer values. The registration must be owned
+by the administrator, readable by the appointed owner, and writable only by
+the administrator. The owner starts the command with those already-held
+slots. A fresh install supplies the loader; enrollment supplies the original,
+the observer, and the matching clock.
+
+```sh
+workeros config --check-policy append.yaml --format yaml --registered-owner-append
+workeros config --run-policy append.yaml --format yaml --registered-owner-append < append.json
+```
+
+`--check-policy` checks the protected registration and the local original
+handles. The append request itself requires the live custody approval.
+
+```json
+{
+  "version": 1,
+  "workflow": "compile-reports",
+  "role": "report-owner",
+  "operation": "owner_append",
+  "options": {"alias": "add_entry", "attempt_id": "report-202", "data": "bm90ZQo="}
+}
+```
+
+Trusted Python hosts can supply an `OwnerAppendBinding` from
+`workeros.owner_append` in `HostBindings.owner_appends`, keyed by the binding's
+`registry_reference`. They can execute the same
+request with `compile_policy(document, host).execute(parse_request(request))`
+from `workeros.enrollment` and `workeros.configuration`.
+
+To reconcile, use `owner_append_status` with the same alias and attempt ID and
+`data_sha256` in place of `data`. This reads the matching owner journal without
+another append. A known byte count is separate from completion timing.
+`late` means completion was observed at or after the deadline. A short write
+reports its known count. An uncertain syscall or missing outcome record stays
+unknown on readback. The journal records the reported effect; file durability
+requires a separate sync policy.
 
 ## Transfer an original over a Unix stream
 
@@ -165,7 +251,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from time import monotonic_ns
 
-from worker_handoff import Worker, Writer, observe, receive_original, send_original
+from workeros import Worker, Writer, observe, receive_original, send_original
 
 with TemporaryDirectory() as directory:
     path = Path(directory) / "input"
@@ -196,8 +282,8 @@ occur after the FD reached the peer. Reconcile uncertain delivery before retryin
 
 ## Authorize a managed release
 
-[Managed release source](../src/worker_handoff/managed.py) ·
-[Strict custody source](../src/worker_handoff/custody.py)
+[Managed release source](../src/workeros/managed.py) ·
+[Strict custody source](../src/workeros/custody.py)
 
 `ReleasePlan(name, role, argv, identity, due_ns, write=None, exclusive_writer=False)`
 describes a single attempt. Use an argv tuple with an absolute executable path.
@@ -235,7 +321,7 @@ writer exclusion. A separate Linux UID alone does not establish independent
 administrative control.
 
 Custom pre-grant callers can use
-`worker_handoff.custody.require_custody(observer, *, identity, operation,
+`workeros.custody.require_custody(observer, *, identity, operation,
 recipient=None, scope, due_ns)`. It consumes the observer endpoint and
 returns a receipt or raises `CustodyRefused`. Close an unused endpoint if an
 earlier stage refuses. The receipt contains the scope, identity, operation,
@@ -249,7 +335,7 @@ error.
 ## Observe a designated process and file slot
 
 [Observer setup and qualification](regular-file-observer.md) ·
-[Observer source](../src/worker_handoff/lifecycle.py)
+[Observer source](../src/workeros/lifecycle.py)
 
 `RegularFileObserver(scope=..., due_ns=..., original_fd=..., identity=...,
 pidfd=..., worker=..., slot=..., directory_fd=None, leaf=None, evidence_scope=None)` borrows and
@@ -275,7 +361,7 @@ returns `(Sample, ScopeReport)` for `"slot"`, `"name"` or `"process"`. It
 compares the entire pinned scope, including its `RunBinding` and interval,
 and verifies actual boot and time-namespace identifiers against
 `scope.run.clock_id`. Use
-`worker_handoff.lifecycle.monotonic_clock_id(boot_id, time_namespace)`
+`workeros.lifecycle.monotonic_clock_id(boot_id, time_namespace)`
 to format those identifiers. It returns `None` if either is unavailable.
 The scoped adapter refuses unavailable or incompatible clocks and intervals
 outside the scope. Within a compatible interval it distinguishes observed
@@ -283,7 +369,7 @@ matches, confirmed absence, unavailable or indeterminate readings, and
 observations that were not requested. Raw samples retain the reasons and
 the actual flags.
 
-`python -m worker_handoff.observer_cli` accepts the existing one-line
+`python -m workeros.observer_cli` accepts the existing one-line
 launcher plan with inherited FDs and returns the raw sample by default. To
 opt in, declare `scope_report` in the startup plan with `scope` (including
 its nested `run`), `provider_id`, and optional `subject`. The CLI pins that
@@ -293,7 +379,7 @@ PID and UID fields.
 
 ## Validate run and provider evidence
 
-[Evidence source](../src/worker_handoff/evidence.py)
+[Evidence source](../src/workeros/evidence.py)
 
 - `RunBinding(run_id, artifact_id, clock_id, started_ns, finished_ns)`
   declares one child execution. Use a fresh run ID and a clock context
@@ -334,7 +420,7 @@ provider's coverage require their own evidence.
 
 ## Measure an already provisioned cgroup v2 scope
 
-[Scope meter source](../src/worker_handoff/scope_meter.py)
+[Scope meter source](../src/workeros/scope_meter.py)
 
 `CgroupScopeMeter(scope=..., provider_id=..., directory_fd=...)` borrows
 and duplicates a non-inheritable FD for an existing, visible cgroup v2
@@ -373,7 +459,7 @@ returns `None`. A missing or unsupported cgroup v2 directory can raise
 `ScopeMeterUnavailable`. Basic supervision and raw file observation
 remain available independently when their own prerequisites are met.
 
-`python -m worker_handoff.scope_meter` accepts a JSON line with `scope`,
+`python -m workeros.scope_meter` accepts a JSON line with `scope`,
 `provider_id`, and the inherited `directory_fd`. Then send JSON string
 lines `"meter_begin"` and `"meter_end"` in order to the same process.
 Each returns one JSON line with the raw `sample` and its `scope_report`,
@@ -391,9 +477,9 @@ sample's types. The application authenticates the meter and its replies.
 
 | Runtime | Package API and lifetime |
 | --- | --- |
-| [C and C++ with Conan](../native/README.md) | Linux header-only API for C99+ and C++11+. Initialize `worker_handoff_input`, then use `worker_handoff_open_inherited`, `worker_handoff_read_at`, and `worker_handoff_close` with borrowed or owned semantics. |
+| [C and C++ with Conan](../native/README.md) | Linux header-only API for C99+ and C++11+. Initialize `workeros_input`, then use `workeros_open_inherited`, `workeros_read_at`, and `workeros_close` with borrowed or owned semantics. |
 | [Node.js](../node/README.md) | Linux x64 or ARM64 with procfs and Node.js 22+. `openInherited`, `readAt`, and `close`. Borrowed is the default. Owned closes the validated inherited slot. |
-| [Go](../go/README.md) | Go 1.22+ on Linux amd64 or arm64. `workerhandoff.Open`, `ReadAt`, and `Close` operate on a private duplicate. `ReadAt` checks the deadline before reading. |
+| [Go](../go/README.md) | Go 1.22+ on Linux amd64 or arm64. `workeros.Open`, `ReadAt`, and `Close` operate on a private duplicate. `ReadAt` checks the deadline before reading. |
 | [Rust](../rust/README.md) | Rust 1.85+ on Linux x86-64 or AArch64. `open_read` takes a read-only binding, and `read_at` uses a private duplicate that closes on drop. |
 | [Java](../java/README.md) | 64-bit Linux x64 or ARM64 with procfs, JDK 22+, and FFM native access enabled. Use `InheritedReader.open`, `readAt`, and try-with-resources to close its private duplicate. |
 

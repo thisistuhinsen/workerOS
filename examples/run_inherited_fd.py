@@ -127,16 +127,16 @@ def main():
             print(f"{label}: SKIPPED ({reason})", flush=True)
         return int(required)
 
-    import worker_handoff
+    import workeros
 
-    print(f"workerOS {version('workeros')} from {worker_handoff.__file__}", flush=True)
+    print(f"workerOS {version('workeros')} from {workeros.__file__}", flush=True)
 
     failed = False
     with TemporaryDirectory(prefix="workeros-examples-") as directory:
         output = Path(directory)
         original = output / "original.txt"
         original.write_bytes(b"Worker input\n")
-        roster = worker_handoff.WorkerRoster()
+        roster = workeros.WorkerRoster()
         with original.open("rb", buffering=0) as file:
             for language, label in LANGUAGES.items():
                 if language not in selected:

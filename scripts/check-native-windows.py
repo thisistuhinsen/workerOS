@@ -11,7 +11,10 @@ import sysconfig
 import traceback
 
 
-CONSOLES = ("workeros-config", "worker-handoff-config")
+CONSOLES = {
+    "workeros": ("workeros.cli:main", ("config", "--schema")),
+    "workeros-config": ("workeros.configuration_cli:main", ("--schema",)),
+}
 MISSING_FCNTL = "ModuleNotFoundError: No module named 'fcntl'"
 
 
@@ -37,20 +40,20 @@ def main(version):
             "installation paths are outside the virtual environment")
     require(package.metadata["Name"] == "workeros" and package.version == version
             and Path(package.locate_file("")).resolve() == site
-            and packages_distributions().get("worker_handoff") == ["workeros"],
+            and packages_distributions().get("workeros") == ["workeros"],
             "wrong distribution, version, location, or import owner")
     installed = {Path(package.locate_file(path)).resolve() for path in package.files or ()}
-    original = site / "worker_handoff" / "original.py"
-    init = site / "worker_handoff" / "__init__.py"
-    spec = find_spec("worker_handoff")
+    original = site / "workeros" / "original.py"
+    init = site / "workeros" / "__init__.py"
+    spec = find_spec("workeros")
     require(original.is_file() and init.is_file() and {original, init} <= installed
             and spec is not None and spec.origin is not None and Path(spec.origin).resolve() == init,
-            "worker_handoff does not resolve to the installed wheel")
+            "workeros does not resolve to the installed wheel")
     print(f"Installed {package.metadata['Name']} {package.version} at {site}")
     print(f"Native interpreter {sys.executable} ({sys.version})")
 
     try:
-        import worker_handoff
+        import workeros
     except ModuleNotFoundError as exc:
         frames = {Path(frame.filename).resolve() for frame in traceback.extract_tb(exc.__traceback__)}
         require(exc.name == "fcntl" and {original, init} <= frames,
@@ -63,13 +66,13 @@ def main(version):
                     if entry.group == "console_scripts"}
     environment = {key: value for key, value in os.environ.items() if not key.upper().startswith("PYTHON")}
     environment.update(PYTHONNOUSERSITE="1", PYTHONSAFEPATH="1", PYTHON_COLORS="0")
-    for command in CONSOLES:
+    for command, (entry_point, arguments) in CONSOLES.items():
         executable = scripts / f"{command}.exe"
         require(executable in installed and executable.is_file()
-                and entry_points.get(command) == "worker_handoff.configuration_cli:main",
+                and entry_points.get(command) == entry_point,
                 f"missing or wrong installed launcher for {command}")
         outcome = subprocess.run(
-            [str(executable), "--schema"], env=environment, capture_output=True, text=True, timeout=15,
+            [str(executable), *arguments], env=environment, capture_output=True, text=True, timeout=15,
         )
         frames = {Path(path).resolve()
                   for path in re.findall(r'^\s*File "([^"]+)", line \d+', outcome.stderr, re.MULTILINE)}

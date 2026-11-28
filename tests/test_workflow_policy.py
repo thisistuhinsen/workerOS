@@ -14,10 +14,10 @@ from tempfile import TemporaryDirectory
 import unittest
 from unittest.mock import Mock
 
-from worker_handoff.configuration import ConfigurationError, EvidenceInputs, serve
-from worker_handoff.enrollment import HostBindings, compile_policy
-from worker_handoff.evidence import RunBinding
-from worker_handoff.recording import LocalStore, RecordKey, StoragePolicy
+from workeros.configuration import ConfigurationError, EvidenceInputs, serve
+from workeros.enrollment import HostBindings, compile_policy
+from workeros.evidence import RunBinding
+from workeros.recording import LocalStore, RecordKey, StoragePolicy
 
 
 class WorkflowPolicyTest(unittest.TestCase):
@@ -39,9 +39,9 @@ class WorkflowPolicyTest(unittest.TestCase):
             "raise SystemExit(7)\n"
         )
         self.executable.chmod(0o700)
-        console = Path(sys.executable).with_name("worker-handoff-config")
-        self.command = ([str(console)] if console.is_file()
-                        else [sys.executable, "-B", "-m", "worker_handoff.configuration_cli"])
+        console = Path(sys.executable).with_name("workeros")
+        self.command = ([str(console), "config"] if console.is_file()
+                        else [sys.executable, "-B", "-m", "workeros.configuration_cli"])
         self.tool = ["--executable", "tool", str(self.executable)]
 
     def launch_policy(self):

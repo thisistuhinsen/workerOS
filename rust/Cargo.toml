@@ -1,6 +1,6 @@
 [package]
-name = "worker-handoff"
-version = "0.7.0"
+name = "workeros"
+version = "0.8.0"
 edition = "2021"
 rust-version = "1.85"
 description = "Linux inherited file descriptor reader for the workerOS ABI"

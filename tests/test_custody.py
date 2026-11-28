@@ -10,12 +10,12 @@ import unittest
 from unittest.mock import Mock
 from uuid import uuid4
 
-from worker_handoff.custody import (
+from workeros.custody import (
     CustodyReceipt, CustodyRefused, IndependentCustody,
     _APPROVAL, _approval, _request, require_custody,
 )
-from worker_handoff.original import Identity
-from worker_handoff.workers import Worker
+from workeros.original import Identity
+from workeros.workers import Worker
 
 
 class CustodyTests(unittest.TestCase):
