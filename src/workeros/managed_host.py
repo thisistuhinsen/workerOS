@@ -9,11 +9,90 @@ from time import monotonic_ns, time
 from .aggregate_setup import AggregateSetup, ScopeSetup
 from .configuration import ConfigurationError
 from .enrollment import _operations, compile_policy, decode_policy
+from .managed_launch import LaunchPlan, LaunchRegistration, LaunchRolePolicy, ScopedLaunch, ServiceWindow, launch_result
 from .profile_setup import ManagerSelection, ProfileDefinition, SetupResult
-from .recording import _name
+from .recording import EvidenceType, Persistence, RecordError, _name
 from .verify_install import VerificationError, verify_install
 
 _HASH = re.compile(r'[0-9a-f]{64}')
+_LAUNCH_RESERVATION = EvidenceType('managed-launch-reservation', 'application/json')
+_LAUNCH_TICKET = EvidenceType('managed-launch-ticket', 'application/json')
+
+
+def _launch_reservation_key(profile, revision, registration, request_id):
+    from .roles_cli import _key
+
+    prefix = ('launch-attempt-' if registration.service_scope_sha256 is None else
+              'service-attempt-' + registration.plan.workflow + '-')
+    return _key(profile, revision, prefix + request_id)
+
+
+def _claim_launch_ticket(store, approval):
+    """Consume one authority ticket while the existing approval lock is held."""
+    from .roles_cli import _canonical, _commit, _key, _read
+
+    # This index is shared by profiles and revisions in the protected store.
+    # Key it to the approved authority and the ticket, not a caller request ID.
+    key = _key('launch-tickets', approval.source_sha256, approval.ticket_sha256)
+    if _read(store, key) is not None:
+        return False
+    payload = _canonical({'version': 1, 'approval': asdict(approval)})
+    if _commit(store, key, payload, kind=_LAUNCH_TICKET) is not Persistence.COMMITTED:
+        return None
+    return True if _read(store, key) == payload else None
+
+
+def _launch_record(registration, identity, clock_id, request_id, *, window=None):
+    from .appointment_registry import launch_policy_sha256
+    from .roles_cli import _canonical
+
+    record = {'version': 1, 'request_id': request_id, 'profile_identity': identity,
+              'clock_id': clock_id, 'policy_sha256': launch_policy_sha256(registration.plan)}
+    if registration.service_scope_sha256 is not None:
+        record['service_scope_sha256'] = registration.service_scope_sha256
+    if registration.service_enforcement is not None:
+        record['service_enforcement'] = registration.service_enforcement
+    if registration.service_limits is not None:
+        if type(window) is not ServiceWindow:
+            raise ValueError('missing durable service window')
+        record['service_window'] = asdict(window)
+    invocation_key = sha256(_canonical(record)).hexdigest()
+    record['invocation_key'] = invocation_key
+    return registration._for_attempt(invocation_key), _canonical(record)
+
+
+def _recorded_launch(registration, raw, request_id, *, current=None):
+    record = decode_policy(raw)
+    identity, clock_id = record['profile_identity'], record['clock_id']
+    if current is not None and current != (identity, clock_id):
+        raise ValueError('different launch registration')
+    window = ServiceWindow(**record['service_window']) if registration.service_limits is not None else None
+    bound, expected = _launch_record(registration, identity, clock_id, request_id, window=window)
+    if raw != expected:
+        raise ValueError('different launch registration')
+    return ScopedLaunch(bound, identity, clock_id, already_reserved=True, service_window=window)
+
+
+def _read_historical_launch(registration, profile, revision, request_id, deadline):
+    """Resolve one reserved key from the protected store without live role access."""
+    from . import roles_cli
+
+    correlation = {'request_id': request_id}
+    if type(request_id) is not str or not _HASH.fullmatch(request_id):
+        return launch_result('refused', 'not_attempted', 'invalid_launch_request_id')
+    key = _launch_reservation_key(profile, revision, registration, request_id)
+    try:
+        with roles_cli._store(create=False) as store:
+            raw = roles_cli._read(store, key)
+    except (OSError, RecordError, roles_cli.Refusal):
+        return launch_result('unknown', 'unknown', 'launch_reservation_unconfirmed', **correlation)
+    if raw is None:
+        return launch_result('not_started', 'not_attempted', 'launch_not_reserved', **correlation)
+    try:
+        launch = _recorded_launch(registration, raw, request_id)
+    except (ValueError, TypeError, KeyError):
+        return launch_result('unknown', 'unknown', 'launch_reservation_mismatch', **correlation)
+    return launch.read(deadline_ns=deadline) | correlation
 
 
 @dataclass(frozen=True, slots=True)
@@ -128,7 +207,8 @@ class ManagedHostAdapter:
     may report not_started/not_committed only when it can prove that fact.
     """
     def __init__(self, *, profile, revision, operation_key, scopes, definitions, generations,
-                 wheel, wheel_sha256, clock_id, store, local_approval=None, local_appointments=False):
+                 wheel, wheel_sha256, clock_id, store, local_approval=None, local_appointments=False,
+                 launch_registration=None):
         _name(profile); _name(revision)
         if type(operation_key) is not str or not _HASH.fullmatch(operation_key):
             raise ValueError('expected opaque operation key')
@@ -157,17 +237,25 @@ class ManagedHostAdapter:
             tuple(scope.requirements for scope in scopes), generations, local_approval, local_appointments)
         pinned = tuple(replace(s, manager=_PinnedManager(s.manager,d,g)) for s,d,g in zip(scopes,definitions,generations))
         self.aggregate = AggregateSetup(pinned, wheel=wheel, wheel_sha256=wheel_sha256, clock_id=clock_id)
+        if launch_registration is not None and type(launch_registration) is not LaunchRegistration:
+            raise ValueError('expected an administrator-supplied launch registration')
+        self._launch_registration = launch_registration
+        self._launch = None
+        if launch_registration is not None:
+            if type(launch_registration.plan) is LaunchPlan:
+                self._launch = ScopedLaunch(launch_registration, self.identity, clock_id)
+            elif not local_appointments or not launch_registration.bounded:
+                raise ValueError('reusable launch needs a bounded backend and local appointments')
 
     @contextmanager
-    def _approval(self):
-        """Hold the local role lock across one bounded, no-start manager operation."""
+    def _approval(self, *, launch_plan=None):
+        """Hold the local role lock across one manager operation."""
         if self._local_approval is None:
-            yield None
+            yield None, None, None
             return
         from . import roles_cli
-        from .recording import RecordError
-
         with ExitStack() as locks:
+            registrations = store = None
             try:
                 store = locks.enter_context(roles_cli._store(create=False))
                 receipt = roles_cli._commission_status_store(store, self.profile, self.revision)
@@ -179,28 +267,34 @@ class ManagedHostAdapter:
                     code = 'commissioned_mapping_mismatch'
                 elif 'appointments_sha256' in receipt and not self._local_appointments:
                     code = 'role_appointment_unverified'
+                elif ('file_acl_plans_sha256' in receipt and
+                      roles_cli._inspect_profile_grants(store, receipt)['status'] != 'file_acl_verified'):
+                    code = 'file_acl_readback_unverified'
                 else:
                     declaration = roles_cli._inspect_store(store, self.profile, self.revision)
-                    code = self._check_declaration(store, receipt, declaration)
+                    code, registrations = self._check_declaration(store, receipt, declaration, launch_plan=launch_plan)
             except roles_cli.Refusal as exc:
                 code = ('manager_selection_denied' if str(exc) in
                         ('administrator_required', 'profile_store_missing') else 'host_bindings_unavailable')
             except (OSError, ValueError, RecordError):
                 code = 'host_bindings_unavailable'
-            yield code
+            yield code, registrations, store
 
-    def _check_declaration(self, store, receipt, declaration):
+    def _check_declaration(self, store, receipt, declaration, *, launch_plan=None):
         registrations = None
         if self._local_appointments:
             from .appointment_registry import read_registry
 
             document = read_registry(store, self.profile, self.revision, receipt, declaration)
             if document is None:
-                return 'role_appointment_unverified'
+                return 'role_appointment_unverified', None
             registrations = {entry['workflow']: entry for entry in document['appointments']}
-        return self._check_declared_scopes(declaration, registrations)
+        return self._check_declared_scopes(declaration, registrations, launch_plan=launch_plan), registrations
 
-    def _check_declared_scopes(self, declaration, registrations):
+    def _check_declared_scopes(self, declaration, registrations, *, launch_plan=None):
+        from .appointment_registry import launch_plan_sha256, launch_policy_sha256, launch_scope_sha256
+        from .roles_cli import _principal
+
         if declaration['status'] != 'configured':
             return 'manager_selection_denied'
         roles = {role['name']: role for role in declaration['roles']}
@@ -211,10 +305,44 @@ class ManagedHostAdapter:
         approval_limit = monotonic_ns() + int((expiry - time()) * 1_000_000_000)
         for scope, definition, expected_generation in zip(self.scopes, self.definitions, self._generations):
             role = roles.get(scope.requirements.role)
-            # The existing provider registry cannot compare declaration-side
-            # resource identities or OS principal independence to a live binding.
-            if (role is None or scope.requirements.scope not in role['scopes']
-                    or role.get('resources') or role.get('independent_of') or role.get('privileged')):
+            if role is None or scope.requirements.scope not in role['scopes']:
+                return 'commissioned_mapping_mismatch'
+            aliases = role.get('operation_aliases', {})
+            if launch_plan is not None and launch_plan.workflow == definition.name and registrations is not None:
+                entry = registrations.get(definition.name, {})
+                launch = entry.get('launch')
+                scope_sha256 = launch_scope_sha256(role, definition.scope, entry.get('operations', ()))
+                pin = ({'policy_sha256': launch_policy_sha256(launch_plan)}
+                       if type(launch_plan) is LaunchRolePolicy else {'plan_sha256': launch_plan_sha256(launch_plan)})
+                if (launch != {**pin, 'scope_sha256': scope_sha256}
+                        or launch_plan.scope_sha256 != scope_sha256
+                        or launch_plan.principal != role['principal']
+                        or launch_plan.authority == role.get('independent_of')):
+                    return 'role_appointment_mismatch'
+                principal_uid = _principal(role['principal']).pw_uid
+                if launch_plan.principal_uid is not None and principal_uid != launch_plan.principal_uid:
+                    return 'role_appointment_mismatch'
+                if 'independent_of' in role and principal_uid == _principal(role['independent_of']).pw_uid:
+                    return 'role_appointment_mismatch'
+                resource = role.get('resources', {}).get(definition.scope)
+                verify_scope = getattr(scope.manager, 'verify_launch_scope', None)
+                if not callable(verify_scope) or verify_scope(principal_uid, resource) is not True:
+                    return 'role_appointment_mismatch'
+                verify_role = getattr(scope.manager, 'verify_launch_role', None)
+                if (role.get('privileged') or aliases) and not callable(verify_role):
+                    return 'role_appointment_mismatch'
+                if aliases:
+                    provider_pin = self._launch_registration.service_scope_sha256
+                    if (any(alias['provider_sha256'] != provider_pin for alias in aliases.values())
+                            or not any((binding.kind, binding.capability, binding.reference,
+                                        binding.principal, binding.scope) == (
+                                            'streams', 'systemd-fd', provider_pin,
+                                            launch_plan.launcher, definition.scope)
+                                       for binding in definition.providers)):
+                        return 'role_appointment_mismatch'
+                if callable(verify_role) and verify_role(role) is not True:
+                    return 'role_appointment_mismatch'
+            elif role.get('resources') or role.get('independent_of') or role.get('privileged') or aliases:
                 return 'commissioned_mapping_mismatch'
             if any(binding.scope not in role['scopes'] for binding in definition.providers):
                 return 'commissioned_mapping_mismatch'
@@ -326,10 +454,186 @@ class ManagedHostAdapter:
     def setup(self):
         try: verify_install(self.wheel, self.wheel_sha256)
         except VerificationError: return self._output('refused', effect='not_attempted')
-        with self._approval() as code:
+        with self._approval() as (code, _, _):
             if code is not None:
                 return self._approval_refusal(code)
             return self._setup()
+
+    def _launch_limit(self, plan, registrations):
+        from .appointment_registry import definition_sha256
+
+        for scope, definition, generation in zip(self.scopes, self.definitions, self._generations, strict=True):
+            if definition.name == plan.workflow:
+                break
+        else:
+            return None
+        if (definition_sha256(definition) != plan.definition_sha256 or generation != plan.generation
+                or scope.requirements.role != plan.role or plan.authority == definition.manager):
+            return None
+        selected = scope.manager.select(definition.name, definition.revision)
+        if (type(selected) is not ManagerSelection or selected.definition != definition
+                or sha256(selected.policy).hexdigest() != definition.policy_sha256):
+            return None
+        policy = decode_policy(selected.policy)
+        workflow = policy['workflows'][definition.name]
+        operations = _operations(workflow['operations'])
+        if 'launch' not in operations or workflow['role'] != plan.role:
+            return None
+        providers = {(binding.kind, binding.name): binding for binding in definition.providers}
+        refs = workflow['bindings']
+        executable = providers['executable', refs['executable']]
+        supervisor = providers['supervisor', refs['supervisor']]
+        if (executable.reference != plan.executable_sha256 or supervisor.reference != plan.scope_sha256
+                or executable.scope != definition.scope or supervisor.scope != definition.scope
+                or supervisor.principal != plan.launcher or supervisor.capability != 'scoped-launch'):
+            return None
+        if self._check_role_appointment(scope, selected, policy, plan.principal, generation, operations, registrations):
+            return None
+        if (self._launch_registration.service_scope_sha256 is not None
+                and not any(binding.kind in ('observers', 'meters', 'evidence', 'custody')
+                            for binding in definition.providers)):
+            # Launch authorization and result still pass the separate service
+            # authority. No optional setup observation was requested here.
+            return selected.expires_ns
+        checked = self.aggregate._check_bindings(self.definitions)
+        if checked.status != 'bindings_verified' or checked.valid_until_ns is None:
+            return None
+        return min(selected.expires_ns, checked.valid_until_ns)
+
+    @contextmanager
+    def _launch_window(self):
+        from .managed_cli import _CHECK_WORK_DEADLINE, _TIMEOUT
+
+        if not self._launch_registration.bounded:
+            yield None
+            return
+        deadline = monotonic_ns() + int(_TIMEOUT * 1_000_000_000)
+        enclosing = _CHECK_WORK_DEADLINE.get()
+        if enclosing is not None:
+            deadline = min(deadline, int(enclosing * 1_000_000_000))
+        token = _CHECK_WORK_DEADLINE.set(deadline / 1_000_000_000)
+        try:
+            yield deadline
+        finally:
+            _CHECK_WORK_DEADLINE.reset(token)
+
+    def _reusable_attempt(self, request_id, *, window=None):
+        bound, payload = _launch_record(self._launch_registration, self.identity, self.clock_id, request_id, window=window)
+        key = _launch_reservation_key(self.profile, self.revision, self._launch_registration, request_id)
+        return bound, key, payload
+
+    def _launch_request_valid(self, request_id):
+        if self._launch is not None:
+            return request_id is None
+        return type(request_id) is str and _HASH.fullmatch(request_id) is not None
+
+    def launch_approved(self, *, request_id=None):
+        """Invoke the current approval once. Retain the request ID for reconciliation."""
+        if self._launch_registration is None:
+            return launch_result('refused', 'not_attempted', 'launch_backend_unavailable')
+        if not self._launch_request_valid(request_id):
+            return launch_result('refused', 'not_attempted', 'invalid_launch_request_id')
+        try:
+            verify_install(self.wheel, self.wheel_sha256)
+        except VerificationError:
+            return launch_result('refused', 'not_attempted', 'installed_package_unverified')
+        plan = self._launch_registration.plan
+        with self._launch_window() as deadline, self._approval(launch_plan=plan) as (code, registrations, store):
+            if code is not None:
+                return launch_result('refused', 'not_attempted', code)
+            if self._launch is None:
+                return self._launch_reusable(request_id, store, registrations, deadline)
+            return self._start_launch(self._launch, plan, registrations, deadline)
+
+    def _start_launch(self, launch, plan, registrations, deadline, *, reserve=None):
+        limit = self._checked_launch_limit(plan, registrations)
+        if limit is None:
+            return launch_result('refused', 'not_attempted', 'launch_scope_unverified')
+        return launch.start(valid_until_ns=limit, deadline_ns=deadline, reserve=reserve)
+
+    def _checked_launch_limit(self, plan, registrations):
+        try:
+            limit = self._launch_limit(plan, registrations)
+        except Exception:
+            limit = None
+        return limit if limit is not None and monotonic_ns() < limit else None
+
+    def _launch_reusable(self, request_id, store, registrations, deadline):
+        from . import roles_cli
+
+        configured = self._launch_registration
+        key = _launch_reservation_key(self.profile, self.revision, configured, request_id)
+        correlation = {'request_id': request_id}
+        try:
+            prior = roles_cli._read(store, key)
+        except (OSError, RecordError):
+            return launch_result('unknown', 'unknown', 'launch_reservation_unconfirmed', **correlation)
+        if prior is not None:
+            try:
+                launch = _recorded_launch(configured, prior, request_id, current=(self.identity, self.clock_id))
+            except (ValueError, TypeError, KeyError):
+                return launch_result('unknown', 'unknown', 'launch_reservation_mismatch', **correlation)
+            return launch.read(deadline_ns=deadline) | correlation
+
+        limit = self._checked_launch_limit(configured.plan, registrations)
+        if limit is None:
+            return launch_result('refused', 'not_attempted', 'launch_scope_unverified') | correlation
+        window = None
+        if configured.service_limits is not None:
+            now = monotonic_ns()
+            active = min(limit, deadline, now + configured.service_limits.active_ms * 1_000_000)
+            if active <= now:
+                return launch_result('refused', 'not_attempted', 'launch_deadline_elapsed') | correlation
+            window = ServiceWindow(active, active + configured.service_limits.cleanup_ms * 1_000_000)
+            limit = active
+        registration, key, payload = self._reusable_attempt(request_id, window=window)
+        correlation['invocation_key'] = registration.plan.invocation_key
+
+        def reserve():
+            try:
+                return (roles_cli._commit(store, key, payload, kind=_LAUNCH_RESERVATION) is Persistence.COMMITTED
+                        and roles_cli._read(store, key) == payload)
+            except (OSError, RecordError):
+                return False
+
+        launch = ScopedLaunch(registration, self.identity, self.clock_id, service_window=window)
+        return launch.start(valid_until_ns=limit, deadline_ns=deadline, reserve=reserve,
+                            claim_ticket=lambda approval: _claim_launch_ticket(store, approval)) | correlation
+
+    def read_launch(self, *, request_id=None):
+        """Read the registered invocation's historical outcome without dispatch."""
+        if self._launch_registration is None:
+            return launch_result('refused', 'not_attempted', 'launch_backend_unavailable')
+        if not self._launch_request_valid(request_id):
+            return launch_result('refused', 'not_attempted', 'invalid_launch_request_id')
+        try:
+            verify_install(self.wheel, self.wheel_sha256)
+        except VerificationError:
+            return launch_result('refused', 'not_attempted', 'installed_package_unverified')
+        with self._launch_window() as deadline:
+            if self._launch is not None:
+                return self._launch.read(deadline_ns=deadline)
+            return self._read_reusable_launch(request_id, deadline)
+
+    def _read_reusable_launch(self, request_id, deadline):
+        if self._launch_registration.service_limits is not None:
+            return _read_historical_launch(self._launch_registration, self.profile, self.revision,
+                                           request_id, deadline)
+        from . import roles_cli
+
+        registration, key, payload = self._reusable_attempt(request_id)
+        correlation = {'request_id': request_id, 'invocation_key': registration.plan.invocation_key}
+        try:
+            with roles_cli._store(create=False) as store:
+                prior = roles_cli._read(store, key)
+        except (OSError, RecordError, roles_cli.Refusal):
+            return launch_result('unknown', 'unknown', 'launch_reservation_unconfirmed', **correlation)
+        if prior is None:
+            return launch_result('not_started', 'not_attempted', 'launch_not_reserved', **correlation)
+        if prior != payload:
+            return launch_result('unknown', 'unknown', 'launch_reservation_mismatch', **correlation)
+        launch = ScopedLaunch(registration, self.identity, self.clock_id, already_reserved=True)
+        return launch.read(deadline_ns=deadline) | correlation
 
     def binding_check_pins(self):
         """Return the fixed revision, clock and definition pins for the client."""
@@ -356,7 +660,7 @@ class ManagedHostAdapter:
         # before beginning downstream work after either one returns.
         if not _binding_check_time_available():
             return dict(result, code='host_bindings_unavailable')
-        with self._approval() as code:
+        with self._approval() as (code, _, _):
             if code is not None:
                 return dict(result, code=code)
             if not _binding_check_time_available():
@@ -400,7 +704,7 @@ class ManagedHostAdapter:
         return self._readback()
 
     def readback(self):
-        with self._approval() as code:
+        with self._approval() as (code, _, _):
             if code is not None:
                 return self._approval_refusal(code)
             return self._readback()

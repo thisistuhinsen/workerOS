@@ -1,5 +1,6 @@
 """No-start client for an administrator-commissioned local host integration."""
 import argparse
+from contextlib import ExitStack
 from contextvars import ContextVar
 import json
 import os
@@ -23,7 +24,7 @@ _CHECK_WORK_DEADLINE = ContextVar("managed_binding_check_work_deadline", default
 _CHECK_BINDINGS = 'check-bindings'
 _OPERATIONS = frozenset(('setup', 'readback', 'reconcile', _CHECK_BINDINGS))
 _LOCAL_OPERATIONS = frozenset(('commission', 'commission-status', 'commission-apply',
-                               'apply-profile', 'profile-status'))
+                               'apply-profile', 'profile-status', 'revoke-profile'))
 _REGISTRY_OPERATIONS = frozenset(('appointment-register', 'appointment-status'))
 _STATES = frozenset(('accepted', 'refused', 'unknown', 'conflict', 'not_committed', 'recorded', 'absent'))
 _EFFECTS = frozenset(('not_attempted', 'committed', 'not_committed', 'unknown'))
@@ -32,12 +33,13 @@ _CODES = frozenset(('manager_readback_verified', 'binding_generation_changed', '
     'host_bindings_unavailable', 'manager_create_unconfirmed', 'reconciliation_required',
     'manager_readback_unavailable', 'role_appointment_unverified', 'role_appointment_mismatch',
     'scope_commit_verified', 'scope_commit_unconfirmed', 'scope_commit_unattributed',
-    'scope_mapping_conflict', 'other'))
+    'scope_mapping_conflict', 'binding_check_only', 'file_acl_readback_unverified', 'other'))
 _CHECK_BOUNDARY = {'effect': 'not_attempted', 'readiness': 'not_checked',
                    'independence': 'unverified', 'runtime_evidence': 'not_requested'}
 _CHECK_REFUSALS = frozenset(('installed_package_unverified', 'profile_revoked', 'manager_selection_denied',
                             'commissioned_mapping_mismatch', 'host_bindings_unavailable',
-                            'binding_generation_changed', 'role_appointment_unverified', 'role_appointment_mismatch'))
+                            'binding_generation_changed', 'role_appointment_unverified', 'role_appointment_mismatch',
+                            'file_acl_readback_unverified'))
 _CHECK_SCOPE_CODES = frozenset(('bindings_verified', 'manager_selection_unavailable',
                                'manager_selection_stale', 'manager_selection_denied',
                                'commissioned_mapping_mismatch', 'host_bindings_unavailable',
@@ -61,29 +63,27 @@ def _safe_directory(fd):
         raise Refusal('untrusted_configuration')
 
 
-def _read_admin_json(filename):
+def _read_admin_json(filename, *, public=False):
     """Open only the fixed administrator-controlled configuration, no symlinks."""
     flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
-    parent = os.open(_CONFIG_PARENT, flags)
-    try:
+    with ExitStack() as resources:
+        parent = os.open(_CONFIG_PARENT, flags)
+        resources.callback(os.close, parent)
         _safe_directory(parent)
-        directory = os.open(_CONFIG_DIRECTORY, flags, dir_fd=parent)
-        try:
+        directory = parent
+        if not public:
+            directory = os.open(_CONFIG_DIRECTORY, flags, dir_fd=parent)
+            resources.callback(os.close, directory)
             _safe_directory(directory)
-            fd = os.open(filename, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC | os.O_NONBLOCK, dir_fd=directory)
-            try:
-                info = os.fstat(fd)
-                if (not stat.S_ISREG(info.st_mode) or info.st_uid != _TRUSTED_UID
-                        or info.st_mode & 0o022 or info.st_nlink != 1):
-                    raise Refusal('untrusted_configuration')
-                with os.fdopen(fd, 'rb', closefd=False) as source:
-                    data = source.read(_LIMIT + 1)
-            finally:
-                os.close(fd)
-        finally:
-            os.close(directory)
-    finally:
-        os.close(parent)
+        fd = os.open(filename, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC | os.O_NONBLOCK, dir_fd=directory)
+        resources.callback(os.close, fd)
+        info = os.fstat(fd)
+        if (not stat.S_ISREG(info.st_mode) or info.st_uid != _TRUSTED_UID
+                or info.st_mode & 0o022 or info.st_nlink != 1
+                or (public and info.st_mode & 0o444 != 0o444)):
+            raise Refusal('untrusted_configuration')
+        with os.fdopen(fd, 'rb', closefd=False) as source:
+            data = source.read(_LIMIT + 1)
     if len(data) > _LIMIT:
         raise Refusal('configuration_invalid')
     try:
@@ -279,7 +279,7 @@ def run(operation):
         return result
 
 
-def serve_connection(connection, *, authorized_uids, adapter):
+def serve_connection(connection, *, authorized_uids, adapter, check_only=False):
     """Serve one already-accepted socket in an existing trusted host.
 
     The host supplies the fixed commissioned adapter; the request never selects
@@ -288,7 +288,8 @@ def serve_connection(connection, *, authorized_uids, adapter):
     """
     from .managed_host import ManagedHostAdapter
     if (type(authorized_uids) is not frozenset or not authorized_uids or
-            any(type(uid) is not int or uid < 0 for uid in authorized_uids) or type(adapter) is not ManagedHostAdapter):
+            any(type(uid) is not int or uid < 0 for uid in authorized_uids) or type(adapter) is not ManagedHostAdapter
+            or type(check_only) is not bool):
         raise ValueError('invalid host registration')
     creds = connection.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, struct.calcsize('3i'))
     _, uid, _ = struct.unpack('3i', creds)
@@ -324,6 +325,9 @@ def serve_connection(connection, *, authorized_uids, adapter):
                   'version': 1, 'operation': operation, 'operation_key': adapter.operation_key}
         result.pop('next_action', None)  # The client supplies its own guidance.
         validate = _binding_response
+    elif check_only:
+        result = adapter._approval_refusal('binding_check_only')
+        validate = _response
     else:
         # If this callback raises, setup may already have had an effect.
         result = {'setup':adapter.setup,'readback':adapter.readback,'reconcile':adapter.reconcile}[operation]()
@@ -345,7 +349,7 @@ def serve_connection(connection, *, authorized_uids, adapter):
     connection.sendall(struct.pack('!I', len(encoded)) + encoded)
 
 
-def serve_listener_once(listener, *, authorized_uids, adapter, accept_timeout=5.0):
+def serve_listener_once(listener, *, authorized_uids, adapter, accept_timeout=5.0, check_only=False):
     """Serve one request on a host-owned listening Unix socket, then return.
 
     The trusted host supplies the already commissioned adapter and listener.
@@ -359,14 +363,15 @@ def serve_listener_once(listener, *, authorized_uids, adapter, accept_timeout=5.
             or type(authorized_uids) is not frozenset or not authorized_uids
             or any(type(uid) is not int or uid < 0 for uid in authorized_uids)
             or type(adapter) is not ManagedHostAdapter
-            or type(accept_timeout) not in (int, float) or not 0 < accept_timeout <= _TIMEOUT):
+            or type(accept_timeout) not in (int, float) or not 0 < accept_timeout <= _TIMEOUT
+            or type(check_only) is not bool):
         raise ValueError('invalid host registration')
     original_timeout = listener.gettimeout()
     try:
         listener.settimeout(accept_timeout)
         connection, _ = listener.accept()
         with connection:
-            serve_connection(connection, authorized_uids=authorized_uids, adapter=adapter)
+            serve_connection(connection, authorized_uids=authorized_uids, adapter=adapter, check_only=check_only)
     finally:
         listener.settimeout(original_timeout)
 
@@ -379,9 +384,16 @@ def _commission_document(argv, *, acl_registrations):
     from .recording import RecordError
 
     parser = argparse.ArgumentParser(prog='workeros managed apply-profile',
-                                     description='Apply and read back an approved profile and any explicitly approved file grant.')
+                                     description='Apply and read back an approved profile and its registered grants.')
     parser.add_argument('--format', choices=('json', 'yaml'), default='json')
     parser.add_argument('--preview', action='store_true', help='validate and show digests without writing')
+    registered = parser.add_mutually_exclusive_group()
+    registered.add_argument('--registered-file-acl', action='store_true',
+                            help='require the administrator-owned file-acl-registrations.json approval')
+    registered.add_argument('--registered-managed', action='store_true',
+                            help='match protected managed-setup and launch-executor pins without starting work')
+    registered.add_argument('--provision-managed', action='store_true',
+                            help='provision absent protected registrations from one approved administrator bundle')
     args = parser.parse_args(argv)
     try:
         raw = sys.stdin.buffer.read(_LIMIT + 1)
@@ -394,8 +406,17 @@ def _commission_document(argv, *, acl_registrations):
         result = roles_cli._commission_result('refused', 'not_attempted', code='input_unavailable')
     else:
         try:
-            result = roles_cli.commission_apply(data, input_sha256=sha256(raw).hexdigest(),
-                                                preview=args.preview, acl_registrations=acl_registrations)
+            if args.registered_managed or args.provision_managed:
+                from . import managed_registration
+                if acl_registrations is not None:
+                    raise roles_cli.Refusal('managed_registration_requires_appointments_without_file_acls')
+                result = managed_registration.apply(data, input_sha256=sha256(raw).hexdigest(),
+                                                    preview=args.preview, provision=args.provision_managed)
+            else:
+                if args.registered_file_acl:
+                    acl_registrations = _admin_acl_registrations(acl_registrations)
+                result = roles_cli.commission_apply(data, input_sha256=sha256(raw).hexdigest(),
+                                                    preview=args.preview, acl_registrations=acl_registrations)
         except roles_cli.Refusal as exc:
             result = roles_cli._commission_result('unknown' if exc.uncertain else 'refused',
                                                   'unknown' if exc.uncertain else 'not_attempted', code=str(exc))
@@ -405,8 +426,8 @@ def _commission_document(argv, *, acl_registrations):
         except ValueError:
             result = roles_cli._commission_result('refused', 'not_attempted', code='invalid_profile')
     if result['status'] == 'file_acl_verified':
-        result['next_action'] = ('Keep grant_plan. Use roles grant-check to read the ACL or '
-                                 'roles grant-revoke to remove it before expiry or uninstall.')
+        result['next_action'] = ('Use managed profile-status to check this revision or '
+                                 'managed revoke-profile to remove its ACLs before expiry or uninstall.')
     elif result['status'] == 'configured':
         result['next_action'] = (
             'Use the managed host to verify live bindings and independent provider evidence.'
@@ -415,14 +436,37 @@ def _commission_document(argv, *, acl_registrations):
         )
     elif result['status'] in ('incomplete', 'unknown'):
         result['next_action'] = (
-            'Use roles grant-check with grant_plan and inspect profile-status. Do not repeat an uncertain grant.'
-            if 'grant_plan' in result else
             'Check profile-status (alias commission-status) for this profile and revision before running another apply.'
         )
+    elif result.get('code') == 'automatic_acl_expiry_unsupported':
+        result['next_action'] = ('Use a host backend that enforces expiry, or choose manual cleanup '
+                                 'and schedule managed revoke-profile before expiry.')
+    elif result.get('code') == 'process_scoped_enforcement_unavailable':
+        result['next_action'] = ('Use an authorized supervisor with executable-bound enforcement. '
+                                 'The named-file ACL applies to the approved UID across its processes.')
     elif result.get('code') == 'yaml_dependency_missing':
         result['next_action'] = 'Install optional PyYAML in the trusted WorkerOS environment or use JSON.'
     print(json.dumps(result, separators=(',', ':'), sort_keys=True))
     return 0 if result['status'] in ('configured', 'preview', 'file_acl_verified') else 1
+
+
+def _admin_acl_registrations(existing):
+    from . import delegated_acl, roles_cli
+
+    if existing is not None:
+        raise roles_cli.Refusal('conflicting_native_acl_registration_sources')
+    if os.geteuid() != _TRUSTED_UID:
+        raise roles_cli.Refusal('administrator_required')
+    try:
+        value = _read_admin_json('file-acl-registrations.json')
+    except FileNotFoundError:
+        raise roles_cli.Refusal('native_acl_registration_unavailable') from None
+    except (OSError, Refusal):
+        raise roles_cli.Refusal('native_acl_registration_untrusted') from None
+    try:
+        return delegated_acl.load_registrations(value)
+    except (KeyError, TypeError, ValueError):
+        raise roles_cli.Refusal('invalid_native_acl_registration') from None
 
 
 def _local_commission(argv):
@@ -431,13 +475,19 @@ def _local_commission(argv):
 
     operation = argv[0]
     writing = operation == 'commission'
-    parser = argparse.ArgumentParser(prog=f'workeros managed {operation if writing else "profile-status"}',
-                                     description='Record or inspect local administrator intent.')
+    revoking = operation == 'revoke-profile'
+    parser = argparse.ArgumentParser(
+        prog=f'workeros managed {operation if writing or revoking else "profile-status"}',
+        description=('Revoke this exact profile revision and verify removal of its managed file ACLs.'
+                     if revoking else 'Record or inspect local administrator intent.'))
     parser.add_argument('profile')
     parser.add_argument('revision')
     if writing:
         parser.add_argument('--declaration-sha256', required=True)
         parser.add_argument('--intent-sha256', required=True)
+    elif not revoking:
+        parser.add_argument('--registered-managed', action='store_true',
+                            help='read back protected managed registration pins without starting work')
     args = parser.parse_args(argv[1:])
     try:
         _name(args.profile)
@@ -449,6 +499,11 @@ def _local_commission(argv):
             if writing:
                 result = roles_cli.commission(args.profile, args.revision, args.declaration_sha256,
                                               args.intent_sha256)
+            elif revoking:
+                result = roles_cli.revoke_profile(args.profile, args.revision)
+            elif args.registered_managed:
+                from . import managed_registration
+                result = managed_registration.readback(args.profile, args.revision)
             else:
                 result = roles_cli.commission_status(args.profile, args.revision)
         except roles_cli.Refusal as exc:
@@ -456,17 +511,38 @@ def _local_commission(argv):
             unavailable = exc.uncertain or code in ('untrusted_store', 'profile_store_busy')
             status = ('unknown' if unavailable else 'unconfigured'
                       if not writing and code == 'profile_store_missing' else 'refused')
-            effect = 'unknown' if writing and exc.uncertain else 'not_attempted'
+            effect = 'unknown' if (writing or revoking) and exc.uncertain else 'not_attempted'
             result = roles_cli._commission_result(status, effect, code=code)
         except (OSError, ValueError, RecordError):
-            result = roles_cli._commission_result('unknown', 'unknown' if writing else 'not_attempted',
+            result = roles_cli._commission_result('unknown', 'unknown' if writing or revoking else 'not_attempted',
                                                   code='commission_state_unconfirmed')
+    if revoking and result['status'] in ('unknown', 'incomplete'):
+        result['next_action'] = ('Inspect managed profile-status and each file_access row. '
+                                 'Reconcile unknown cleanup before submitting another change.')
+    elif revoking and result.get('code') == 'file_acl_manifest_missing':
+        result['next_action'] = 'Use roles grant-check and grant-revoke with the exact earlier grant plan.'
     print(json.dumps(result, separators=(',', ':'), sort_keys=True))
-    return 0 if result['status'] == 'configured' else 1
+    successful = ('revoked',) if revoking else ('configured', 'file_acl_verified')
+    return 0 if result['status'] in successful else 1
 
 
 def main(argv=None, *, acl_registrations=None):
     argv = list(sys.argv[1:] if argv is None else argv)
+    if argv and argv[0] == 'serve-launch':
+        from .managed_service_client import serve_main
+        return serve_main(argv[1:])
+    if argv and argv[0] == 'serve-guard':
+        from .managed_guard_server import main as serve_guard
+        return serve_guard(argv[1:])
+    if argv and argv[0] == 'serve-holder':
+        from .managed_holder import main as serve_holder
+        return serve_holder(argv[1:])
+    if argv and argv[0] == 'serve-witness':
+        from .managed_witness_activation import main as serve_witness
+        return serve_witness(argv[1:])
+    if argv and argv[0] in ('run-approved', 'launch-status'):
+        from . import managed_executor
+        return managed_executor.main(argv[0], argv[1:])
     if argv and argv[0] == 'serve-setup':
         from . import managed_bootstrap
         return managed_bootstrap.main(argv[1:])

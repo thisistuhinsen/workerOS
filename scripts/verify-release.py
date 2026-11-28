@@ -23,7 +23,7 @@ PUBLIC_DOCS = {
     "CONTRIBUTING.md", "SECURITY.md", "docs/releasing.md", "docs/support.md",
     "docs/media/README.md", "docs/media/custody-lanyard.gif", "docs/media/fd-7.gif", "docs/media/one-small-ticket.gif",
     "docs/install.md", "docs/install-0.8.0.md", "docs/package-python.md", "docs/workers.md",
-    "docs/api.md", "docs/configuration.md", "docs/host-preflight.md",
+    "docs/api.md", "docs/configuration.md", "docs/host-preflight.md", "docs/guarded-walkthrough.md",
     "docs/start/code.md", "docs/start/config.md", "docs/start/install.md", "docs/start/terminal.md",
     "docs/regular-file-observer.md", "skills/workeros/SKILL.md",
     "go/README.md", "java/README.md", "native/README.md", "node/README.md", "rust/README.md",
@@ -135,9 +135,10 @@ def check_sdist(path, destination):
 def check_wheel(path, source):
     with (source / "pyproject.toml").open("rb") as stream:
         config = tomllib.load(stream)
-    examples = config["tool"]["setuptools"]["data-files"]["share/workeros/examples"]
-    data_prefix = f"{SOURCE_NAME}.data/data/share/workeros/examples/"
-    data_files = {data_prefix + Path(name).name for name in examples}
+    data = config["tool"]["setuptools"]["data-files"]
+    data_files = {f"{SOURCE_NAME}.data/data/{group}/{Path(name).name}": name
+                  for group in ("share/workeros/examples", "share/workeros/docs")
+                  for name in data.get(group, ())}
     info = f"{SOURCE_NAME}.dist-info/"
     metadata_files = {info + name for name in ("METADATA", "WHEEL", "RECORD", "top_level.txt", "entry_points.txt")}
     license_files = {info + "LICENSE", info + "licenses/LICENSE"}
@@ -146,13 +147,16 @@ def check_wheel(path, source):
         names = archive.namelist()
         validate_paths(names)
         files = set(names)
-        check(data_files | metadata_files | {schema} <= files, "wheel omits metadata, schema or declared examples")
+        required = set(data_files) | metadata_files | {schema}
+        check(required <= files, "wheel omits metadata, schema or declared guides/examples")
         check(len(files & license_files) == 1, "wheel must include the MIT license")
         check("workeros/__init__.py" in files, "wheel omits the Python package")
-        check(all(name in data_files | metadata_files | license_files | {schema} or re.fullmatch(
+        check(all(name in required | license_files or re.fullmatch(
             r"workeros/(?:[\w-]+/)*[\w-]+\.py", name,
         ) for name in files), f"unexpected files in wheel: {sorted(files)}")
         check_metadata(archive.read(f"{info}METADATA"))
+        for member, name in data_files.items():
+            check(archive.read(member) == (source / name).read_bytes(), f"installed {name} differs from source")
         check(archive.read(schema) == (source / "src" / schema).read_bytes(), "installed schema differs from source")
         check(archive.read(f"{info}entry_points.txt").splitlines() == [
             b"[console_scripts]",

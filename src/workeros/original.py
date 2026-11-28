@@ -50,6 +50,17 @@ class ReadResult:
     closed_ns: int
 
 
+@dataclass(frozen=True, slots=True)
+class AppendWrite:
+    """One owner-mediated write at kernel-selected EOF, with no caller offset."""
+
+    data: bytes
+
+    def __post_init__(self):
+        if type(self.data) is not bytes or not self.data:
+            raise ValueError("expected nonempty append bytes")
+
+
 def _require(value, label):
     if not value:
         raise HandoffError(label)
@@ -160,6 +171,22 @@ class Writer(_Owned):
                 raise OSError("write made no progress")
             view = view[sent:]
         return len(data)
+
+    def append(self, operation: AppendWrite, *, due_ns: int) -> int:
+        """Append once through the trusted owner's retained original.
+
+        Keep this Writer with the owner. A short count or raised I/O error
+        requires reconciliation. This call does not retry or fall back.
+        """
+        _require(type(operation) is AppendWrite, "expected an AppendWrite")
+        append_flag = getattr(os, "RWF_APPEND", None)
+        _require(append_flag is not None and hasattr(os, "pwritev"),
+                 "kernel append interface unavailable in this Python build")
+        fd = self._writable()
+        _before(due_ns)
+        # A nonnegative offset with RWF_APPEND selects EOF without changing
+        # the open description's position or mutable status flags.
+        return os.pwritev(fd, (operation.data,), 0, append_flag)
 
     def flush(self, *, sync=False):
         """Writes are unbuffered; explicitly request fsync where the app needs it."""

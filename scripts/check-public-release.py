@@ -31,8 +31,8 @@ def require(condition, message):
         raise VerificationError(message)
 
 
-def package_names(version):
-    return (
+def package_names(version, *, owned_runtime=False):
+    packages = (
         f"workeros-{version}-py3-none-any.whl",
         f"workeros-{version}.tar.gz",
         f"workeros-{version}.tgz",
@@ -40,6 +40,9 @@ def package_names(version):
         f"workeros-{version}.pom",
         f"workeros-conan-{version}.tar.gz",
     )
+    if owned_runtime:
+        packages += (f"workeros-{version}-py3-none-linux_x86_64.whl",)
+    return packages
 
 
 def https_host(url, hosts):
@@ -163,7 +166,9 @@ def verify_public_release(version, revision, expected_dir, output_dir, *, opener
     require(output_dir.parent.is_dir(), "output parent directory must exist")
     require(expected_dir.resolve() not in output_dir.resolve().parents,
             "output must be separate from the staged assets")
-    expected = staged_assets(expected_dir, package_names(version))
+    platform = expected_dir / f"workeros-{version}-py3-none-linux_x86_64.whl"
+    expected = staged_assets(expected_dir, package_names(
+        version, owned_runtime=platform.exists() or platform.is_symlink()))
     opener = build_opener(PublicRedirects()) if opener is None else opener
     tag = f"v{version}"
     release = verify_metadata(opener, tag, revision, expected)

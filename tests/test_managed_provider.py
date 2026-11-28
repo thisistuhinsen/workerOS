@@ -21,7 +21,7 @@ from unittest.mock import patch
 from workeros import Worker, observe
 from workeros.managed_cli import _TRUSTED_UID
 from workeros.lifecycle import Match, ProcessState, RegularFileObserver
-from workeros.managed_provider import ProviderRefusal, _point_digest, _registration
+from workeros.managed_provider import ProviderRefusal, _paired_meter, _point_digest, _registration, _serve_once
 from workeros.profile_setup import ProfileDefinition, ProviderBinding
 from workeros.roles_cli import _canonical
 from workeros.appointment_registry import definition_sha256
@@ -153,6 +153,161 @@ class PointProviderTest(TestCase):
             del wrong["meter"]
             with self.assertRaisesRegex(ProviderRefusal, "^provider_binding_mismatch$"):
                 _registration(wrong)
+
+    def test_stock_meter_only_selects_its_binding_in_an_interval_pair(self):
+        if os.getresuid() != (os.getuid(),) * 3 or not os.getuid():
+            self.skipTest("ordinary provider principal required")
+        config = self.registration(host_uid=0, capability="interval")
+        observer, = config["definition"]["providers"]
+        observer = {**observer, "independent_of": "fixture-writer"}
+        meter = {**observer, "name": "meter", "kind": "meters", "principal": "fixture-meter",
+                 "capability": "cgroup-v2", "reference": "c" * 64}
+        config["definition"]["providers"] = (observer, meter)
+        with patch("workeros.managed_provider.setup_clock_id", return_value="fixture-clock"):
+            with self.assertRaisesRegex(ProviderRefusal, "^provider_capability_unsupported$"):
+                _registration(config)
+            del config["observer"]
+            config.update(binding="meter", meter={})
+            _, selected = _registration(config)
+            self.assertEqual((selected.kind, selected.capability), ("meters", "cgroup-v2"))
+            config["definition"]["providers"] = (observer, {**meter, "scope": "other"})
+            with self.assertRaisesRegex(ProviderRefusal, "^provider_capability_unsupported$"):
+                _registration(config)
+
+    def test_launch_metadata_admits_only_its_exact_independent_point(self):
+        if os.getresuid() != (os.getuid(),) * 3 or not os.getuid():
+            self.skipTest("ordinary provider principal required")
+        config = self.registration(host_uid=0)
+        point, = config["definition"]["providers"]
+        point = {**point, "independent_of": "fixture-worker"}
+        tool = dict(name="tool", kind="executable", capability="executable", scope="scope",
+                    reference="2" * 64, principal="fixture-launcher", independent_of=None)
+        launcher = {**tool, "name": "scoped", "kind": "supervisor", "capability": "scoped-launch",
+                    "reference": "3" * 64}
+        config["observer"]["uid"] = 0  # Structural fixture, no point sample or real role.
+        config["definition"]["providers"] = (point, tool, launcher)
+        with patch("workeros.managed_provider.setup_clock_id", return_value="fixture-clock"):
+            definition, selected = _registration(config)
+            self.assertEqual(asdict(definition), config["definition"])
+            self.assertEqual(asdict(selected), point)
+            for name in (tool["name"], launcher["name"]):
+                with self.subTest(selected=name), self.assertRaisesRegex(
+                        ProviderRefusal, "^provider_capability_unsupported$"):
+                    _registration({**config, "binding": name})
+            invalid = (
+                ({**point, "independent_of": None}, tool, launcher),
+                ({**point, "scope": "other"}, tool, launcher),
+                ({**point, "principal": launcher["principal"]}, tool, launcher),
+                (point, tool, {**launcher, "reference": "unpinned"}),
+                (point, tool, {**launcher, "capability": "other"}),
+                (point, launcher),
+            )
+            for providers in invalid:
+                config["definition"]["providers"] = providers
+                with self.subTest(providers=providers), self.assertRaisesRegex(
+                        ProviderRefusal, "^provider_capability_unsupported$"):
+                    _registration(config)
+            config["definition"]["providers"] = (point, tool, launcher)
+            config["observer"]["uid"] = os.getuid()
+            with self.assertRaisesRegex(ProviderRefusal, "^provider_capability_unsupported$"):
+                _registration(config)
+
+    def service_registration(self):
+        config = self.registration(host_uid=0)
+        point, = config["definition"]["providers"]
+        point = {**point, "independent_of": "fixture-worker"}
+        meter = {**point, "name": "meter", "kind": "meters", "capability": "cgroup-v2",
+                 "reference": "3" * 64, "principal": "fixture-meter"}
+        executable = dict(name="tool", kind="executable", capability="executable", scope="scope",
+                          reference="4" * 64, principal="fixture-launcher", independent_of=None)
+        supervisor = {**executable, "name": "launcher", "kind": "supervisor",
+                      "capability": "scoped-launch", "reference": "5" * 64}
+        stream = {**executable, "name": "input-slot", "kind": "streams",
+                  "capability": "systemd-fd", "reference": "6" * 64}
+        config["observer"]["uid"] = 0  # Structural fixture, no commissioned role.
+        return config, point, meter, (executable, supervisor, stream)
+
+    def test_service_registration_selects_only_independent_point_or_meter(self):
+        config, point, meter, metadata = self.service_registration()
+        meter_config = {**config, "binding": meter["name"], "meter": {}}
+        del meter_config["observer"]
+        interval = {**point, "capability": "interval"}
+        with patch("workeros.managed_provider.setup_clock_id", return_value="fixture-clock"):
+            for evidence, selected_config, expected, paired in (
+                    ((point,), config, point, False),
+                    ((meter,), meter_config, meter, False),
+                    ((point, meter), config, point, False),
+                    ((point, meter), meter_config, meter, False),
+                    ((interval, meter), meter_config, meter, True)):
+                config["definition"]["providers"] = (*evidence, *metadata)
+                with self.subTest(binding=expected["name"], shape=evidence):
+                    definition, selected = _registration(selected_config)
+                    self.assertEqual(asdict(definition), config["definition"])
+                    self.assertEqual(asdict(selected), expected)
+                    self.assertEqual(_paired_meter(definition), paired)
+            config["definition"]["providers"] = (interval, meter, *metadata)
+            with self.assertRaisesRegex(ProviderRefusal, "^provider_capability_unsupported$"):
+                _registration(config)
+
+    def test_service_registration_refuses_crossed_or_selectable_metadata(self):
+        config, point, meter, metadata = self.service_registration()
+        executable, supervisor, stream = metadata
+        config["definition"]["providers"] = (point, *metadata)
+        with patch("workeros.managed_provider.setup_clock_id", return_value="fixture-clock"):
+            for entry in metadata:
+                with self.subTest(selected=entry["name"]), self.assertRaisesRegex(
+                        ProviderRefusal, "^provider_capability_unsupported$"):
+                    _registration({**config, "binding": entry["name"]})
+            invalid = (
+                (point, executable, stream),
+                (point, executable, supervisor, {**stream, "reference": "unpinned"}),
+                (point, executable, supervisor, {**stream, "principal": "other"}),
+                (point, executable, supervisor, {**stream, "scope": "other"}),
+                (point, executable, supervisor, stream, {**stream, "name": "duplicate"}),
+                ({**point, "independent_of": None}, *metadata),
+                ({**point, "principal": "fixture-launcher"}, *metadata),
+                (point, {**meter, "principal": point["principal"]}, *metadata),
+                (point, {**meter, "scope": "other"}, *metadata),
+            )
+            for providers in invalid:
+                config["definition"]["providers"] = providers
+                with self.subTest(providers=providers), self.assertRaisesRegex(
+                        ProviderRefusal, "^provider_capability_unsupported$"):
+                    _registration(config)
+            config["definition"]["providers"] = (point, *metadata)
+            config["observer"]["uid"] = os.getuid()
+            with self.assertRaisesRegex(ProviderRefusal, "^provider_capability_unsupported$"):
+                _registration(config)
+
+    def test_service_point_reply_pins_even_passive_stream_metadata(self):
+        config, point, _, metadata = self.service_registration()
+        config["definition"]["providers"] = (point, *metadata)
+        with patch("workeros.managed_provider.setup_clock_id", return_value="fixture-clock"):
+            definition, binding = _registration(config)
+        expected = {"definition_sha256": definition_sha256(definition), "role": config["role"],
+                    "clock_id": definition.clock_id, "generation": config["binding_generation"]}
+        stream = replace(definition.providers[-1], reference="7"*64)
+        crossed = definition_sha256(replace(definition, providers=(*definition.providers[:-1], stream)))
+        observer = self.observer(self.original)
+        for digest in (expected["definition_sha256"], crossed):
+            client, provider = socket.socketpair()
+            with self.subTest(digest=digest), client, provider:
+                client.settimeout(1)
+                request = _canonical({**expected, "definition_sha256": digest, "version": 1,
+                                      "request_id": "1"*32})
+                client.sendall(struct.pack("!I", len(request)) + request)
+                with patch("workeros.managed_provider._credentials", return_value=(os.getpid()+1, 0)):
+                    deadline = monotonic_ns()/1_000_000_000 + 1
+                    if digest == crossed:
+                        with self.assertRaisesRegex(ProviderRefusal, "^invalid_provider_request$"):
+                            _serve_once(provider, config, binding, observer, expected, set(),
+                                        definition.expires_ns, deadline)
+                        continue
+                    _serve_once(provider, config, binding, observer, expected, set(),
+                                definition.expires_ns, deadline)
+                with client.makefile("rb") as reply:
+                    size, = struct.unpack("!I", reply.read(4))
+                    self.assertEqual(json.loads(reply.read(size))["definition_sha256"], digest)
 
     def test_owned_unix_listener_handles_bounded_serial_requests(self):
         # This is a real socket exchange and point sample. The executor runs

@@ -35,6 +35,7 @@ where = ["src"]
 
 
 [tool.setuptools.data-files]
+"share/workeros/docs" = ["docs/guarded-walkthrough.md", "docs/install-0.8.0.md"]
 "share/workeros/examples" = [
     "examples/ReadWorker.java",
     "examples/evidence_config.json",
@@ -47,4 +48,6 @@ where = ["src"]
     "examples/read_worker.rs",
     "examples/run_inherited_fd.py",
     "examples/run_host_preflight.py",
+    "examples/draft_guarded_profile.py",
+    "examples/guarded_write.c",
 ]

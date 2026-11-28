@@ -1,7 +1,7 @@
 """Serve bounded, independently operated binding checks on preopened resources."""
 import argparse
 from contextlib import ExitStack
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from hashlib import sha256
 import fcntl
 import json
@@ -17,7 +17,7 @@ from . import managed_cli
 from .appointment_registry import definition_sha256
 from .evidence import EvidenceState, ScopePhase
 from .lifecycle import Match, ProcessState
-from .managed_bootstrap import _meter, _observer, setup_clock_id
+from .managed_bootstrap import _meter, _observer, _paired_interval_meter, setup_clock_id
 from .profile_setup import ProfileDefinition, ProviderBinding
 from .recording import _name
 from .roles_cli import _canonical, _fields
@@ -25,6 +25,12 @@ from .roles_cli import _canonical, _fields
 
 _PEER = struct.Struct('=iII')
 _SIZE = struct.Struct('!I')
+_DIGEST = re.compile(r'[0-9a-f]{64}')
+_POINT = ('observers', 'point')
+_INTERVAL = ('observers', 'interval')
+_CGROUP_METER = ('meters', 'cgroup-v2')
+_LAUNCH_METADATA = {('executable', 'executable'), ('supervisor', 'scoped-launch')}
+_SERVICE_METADATA = _LAUNCH_METADATA | {('streams', 'systemd-fd')}
 _MAX_REQUESTS = 16
 _SESSION_SECONDS = 30.0
 
@@ -48,6 +54,47 @@ def _read_registration(fd):
     return managed_cli.decode_policy(raw)
 
 
+def _point_launch_metadata(definition, binding, observer, provider_uid):
+    """Check the opt-in shape without removing metadata from the definition pin."""
+    by_kind = {(entry.kind, entry.capability): entry for entry in definition.providers}
+    if ((binding.kind, binding.capability) != _POINT or len(definition.providers) != 3
+            or set(by_kind) != _LAUNCH_METADATA | {_POINT}):
+        return False
+    tool = by_kind['executable', 'executable']
+    launcher = by_kind['supervisor', 'scoped-launch']
+    return (all(entry.scope == definition.scope for entry in definition.providers)
+            and _DIGEST.fullmatch(tool.reference) is not None and _DIGEST.fullmatch(launcher.reference) is not None
+            and tool.principal == launcher.principal and binding.principal != launcher.principal
+            and binding.independent_of is not None and type(observer) is dict
+            and type(observer.get('uid')) is int and observer['uid'] != provider_uid)
+
+
+def _service_evidence(definition):
+    """Return the evidence-only view for shape checks, never for wire pins."""
+    by_kind = {(entry.kind, entry.capability): entry for entry in definition.providers}
+    if len(by_kind) != len(definition.providers) or not _SERVICE_METADATA <= by_kind.keys():
+        return None
+    evidence_kinds = by_kind.keys() - _SERVICE_METADATA
+    if evidence_kinds not in ({_POINT}, {_CGROUP_METER}, {_POINT, _CGROUP_METER}, {_INTERVAL, _CGROUP_METER}):
+        return None
+    metadata = tuple(by_kind[kind] for kind in _SERVICE_METADATA)
+    launcher = by_kind['supervisor', 'scoped-launch'].principal
+    if (any(entry.scope != definition.scope for entry in definition.providers)
+            or any(entry.principal != launcher or _DIGEST.fullmatch(entry.reference) is None
+                   for entry in metadata)):
+        return None
+    evidence = tuple(entry for entry in definition.providers if (entry.kind, entry.capability) in evidence_kinds)
+    principals = {entry.principal for entry in evidence}
+    if (len(principals) != len(evidence) or principals & {launcher, definition.manager}
+            or any(entry.independent_of is None or entry.independent_of in principals for entry in evidence)):
+        return None
+    return replace(definition, providers=evidence)
+
+
+def _paired_meter(definition):
+    return _paired_interval_meter(_service_evidence(definition) or definition)
+
+
 def _registration(config):
     _fields(config, ('version', 'host_uid', 'provider_uid', 'definition', 'role',
                      'binding_generation', 'binding'), ('observer', 'meter'))
@@ -68,7 +115,17 @@ def _registration(config):
     if len(selected) != 1:
         raise ProviderRefusal('provider_binding_unavailable')
     binding, = selected
-    supported = {('observers', 'point'), ('meters', 'cgroup-v2')}
+    supported = {_POINT, _CGROUP_METER}
+    service = _service_evidence(definition)
+    if (binding.kind, binding.capability) == _CGROUP_METER and _paired_interval_meter(service or definition):
+        supported.add(_INTERVAL)
+    if _point_launch_metadata(definition, binding, config.get('observer'), provider):
+        supported.update(_LAUNCH_METADATA)
+    if service is not None and (binding.kind, binding.capability) in {_POINT, _CGROUP_METER}:
+        observer = config.get('observer')
+        if (binding.kind, binding.capability) == _CGROUP_METER or (
+                type(observer) is dict and type(observer.get('uid')) is int and observer['uid'] != provider):
+            supported.update(_SERVICE_METADATA)
     kinds = {(entry.kind, entry.capability) for entry in providers}
     if kinds - supported or len(providers) != len(kinds):
         raise ProviderRefusal('provider_capability_unsupported')
@@ -202,11 +259,14 @@ def main(argv=None):
         definition, binding = _registration(config)
         with ExitStack() as resources:
             used = {args.config_fd, args.listen_fd}
+            listener = resources.enter_context(socket.socket(fileno=os.dup(args.listen_fd)))
             if binding.kind == 'meters':
-                resource, _ = _meter(config['meter'], binding, definition, resources, used)
+                endpoint = ({'socket': listener.getsockname(), 'peer_uid': config['provider_uid']}
+                            if _paired_meter(definition) else None)
+                resource, _ = _meter(config['meter'], binding, definition, resources, used,
+                                     paired_endpoint=endpoint)
             else:
                 resource = _observer(config['observer'], binding, definition, resources, used)
-            listener = resources.enter_context(socket.socket(fileno=os.dup(args.listen_fd)))
             _serve(listener, config, definition, binding, resource, max_requests=args.max_requests)
         return 0
     except ProviderRefusal as exc:

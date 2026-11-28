@@ -7,7 +7,7 @@ from time import monotonic_ns
 
 from . import Identity
 from .configuration import (
-    ConfigurationError, Workflow, _OPTIONS, _bool, _decode_json, _fields,
+    ConfigurationError, Workflow, _OPTIONS, _REQUEST_OPTIONS, _bool, _decode_json, _fields,
     _identifier, _integer, _require, _serve, execute,
 )
 from .managed import EffectStatus
@@ -15,7 +15,7 @@ from .recording import RecordError, RecordKey, RecorderPolicy, _decode_policy
 from .supervisor import DirectChildSupervisor
 
 
-_BINDINGS = "executable descriptors supervisor custody inherited observers meters evidence streams"
+_BINDINGS = "executable descriptors supervisor custody inherited observers meters evidence streams owner_appends"
 _LIFECYCLE = frozenset(("wait", "cancel", "cleanup"))
 _RECORDING = frozenset(("record", "readback", "purge", "verify_durable", "recover_receipt", "sweep"))
 _PROJECTABLE = frozenset(("read", "write", "launch", "release", "wait", "cancel", "cleanup",
@@ -54,6 +54,7 @@ class HostBindings:
     directories: Mapping | None = None
     environment: Mapping | None = field(default=None, repr=False)
     streams: Mapping | None = None
+    owner_appends: Mapping | None = field(default=None, repr=False)
 
 
 @dataclass(frozen=True, slots=True)
@@ -129,11 +130,11 @@ def _named(value):
     return {_identifier(key): item for key, item in value.items()}
 
 
-def _operations(value):
+def _operations(value, *, allowed=_OPTIONS):
     _require(type(value) is list and bool(value), "invalid_operation_list")
     names = [_identifier(item) for item in value]
     choices = frozenset(names)
-    _require(len(names) == len(choices) and choices <= _OPTIONS.keys(), "invalid_operation_list")
+    _require(len(names) == len(choices) and choices <= allowed.keys(), "invalid_operation_list")
     return choices
 
 
@@ -166,10 +167,22 @@ def _workflow(name, spec, roles, recorders, host, now):
     _fields(spec, "role operations bindings",
             "timeout_ms cleanup_ms require_supervision require_custody recorder capture args cwd env")
     role = _identifier(spec["role"])
-    operations = _operations(spec["operations"])
+    operations = _operations(spec["operations"], allowed=_REQUEST_OPTIONS)
     _require(role in roles, "unknown_role")
     _require(operations <= roles[role], "role_operation_forbidden")
     refs = _fields(spec["bindings"], "", _BINDINGS)
+    append_ops = operations & {"owner_append", "owner_append_status"}
+    owner_appends = {}
+    if append_ops or "owner_appends" in refs:
+        from .owner_append import OwnerAppendBinding
+
+        _require(append_ops and refs.get("owner_appends") and host.owner_appends is not None,
+                 "owner_append_binding_missing")
+        owner_appends = _resolve_map(host.owner_appends, refs["owner_appends"])
+        for alias, binding in owner_appends.items():
+            _require(type(binding) is OwnerAppendBinding and
+                     (binding.workflow, binding.role, binding.alias, binding.registry_reference) ==
+                     (name, role, alias, refs["owner_appends"][alias]), "owner_append_binding_mismatch")
     active = now + _budget(spec.get("timeout_ms", 30_000), 86_400_000)
     cleanup = active + _budget(spec["cleanup_ms"], 60_000) if "cleanup_ms" in spec else None
     supervised = _bool(spec.get("require_supervision", False))
@@ -270,7 +283,7 @@ def _workflow(name, spec, roles, recorders, host, now):
         writer_fd=descriptors.writer_fd if descriptors else None,
         sink=descriptors.sink if descriptors else None,
         recorder=recorder, recorder_config=recorder_config, authorize=host.authorize, authorize_all=True,
-        authorize_release=host.authorize_release, settled=host.settled, **sources,
+        authorize_release=host.authorize_release, settled=host.settled, owner_appends=owner_appends, **sources,
     )
     return workflow, capture
 
@@ -284,7 +297,7 @@ def compile_policy(document, host, *, workflow=None):
     for name, spec in _named(document["roles"]).items():
         try:
             _fields(spec, "operations")
-            roles[name] = _operations(spec["operations"])
+            roles[name] = _operations(spec["operations"], allowed=_REQUEST_OPTIONS)
         except ConfigurationError as exc:
             exc.path = f"/roles/{name}"
             raise

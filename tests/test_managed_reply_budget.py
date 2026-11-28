@@ -140,7 +140,7 @@ def exercise(point_delay, meter_delay, *, wheel_read=0.0, approval_read=0.0,
     def approval(_):
         local_phases.append("approval")
         clock.seconds += approval_read
-        yield None
+        yield None, None, None
 
     attest = bootstrap._EvidenceProvider.attest
     validate = managed_cli._binding_response

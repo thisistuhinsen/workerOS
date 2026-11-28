@@ -12,7 +12,7 @@ from typing import Mapping
 
 from .evidence import EvidenceScope, RunBinding, ScopePhase, validate_run_evidence, validate_scope_evidence
 from .managed import EffectStatus, PositionalWrite, ReleasePlan, release_executable
-from .original import Identity, Original, Writer
+from .original import AppendWrite, Identity, Original, Writer
 from .recording import RecordError, RecordKey, RecordReceipt, RecorderPolicy, _decode_policy, _name
 from .scope_meter import CgroupSample, cpu_delta_usec
 from .supervisor import SupervisionStartError
@@ -78,6 +78,7 @@ class Workflow:
     launch_cwd: str | None = None
     launch_streams: Mapping = field(default_factory=dict)
     recover_receipt: object = field(default=None, repr=False)
+    owner_appends: Mapping = field(default_factory=dict, repr=False)
 
 
 @dataclass(frozen=True, slots=True)
@@ -170,7 +171,10 @@ _OPTIONS = {
     "recover_receipt": ("destination attempt_id", ""),
     "sweep": ("destination receipts", "limit"),
 }
-_EFFECTFUL = frozenset(("write", "launch", "cancel", "cleanup", "record", "purge", "sweep"))
+_OWNER_APPEND_OPTIONS = {"owner_append": ("alias attempt_id data", "timeout_ms"),
+                         "owner_append_status": ("alias attempt_id data_sha256", "")}
+_REQUEST_OPTIONS = {**_OPTIONS, **_OWNER_APPEND_OPTIONS}
+_EFFECTFUL = frozenset(("write", "launch", "cancel", "cleanup", "record", "purge", "sweep", "owner_append"))
 
 
 def _pairs(items):
@@ -194,10 +198,11 @@ def parse_request(document):
     if type(document["version"]) is not int or document["version"] != 1:
         raise ConfigurationError("unsupported_version")
     workflow, role, operation = map(_identifier, (document["workflow"], document["role"], document["operation"]))
-    if operation not in _OPTIONS:
+    if operation not in _REQUEST_OPTIONS:
         raise ConfigurationError("unsupported_operation")
-    options = dict(_fields(document.get("options", {}), *_OPTIONS[operation]))
-    for key in ("name", "scope", "run_id", "record_id", "type", "destination", "require_terminal_from", "attempt_id"):
+    options = dict(_fields(document.get("options", {}), *_REQUEST_OPTIONS[operation]))
+    for key in ("name", "scope", "run_id", "record_id", "type", "destination", "require_terminal_from", "attempt_id",
+                "alias"):
         if key in options:
             options[key] = _identifier(options[key])
     for key in ("supervise", "custody", "sync"):
@@ -208,6 +213,11 @@ def parse_request(document):
             options[key] = _integer(options[key], minimum=0 if key == "expected_size" else 1)
     if "data" in options:
         options["data"] = _bytes(options["data"])
+    if operation == "owner_append":
+        _require(bool(options["data"]), "empty_append")
+    if "data_sha256" in options:
+        digest = options["data_sha256"]
+        _require(type(digest) is str and re.fullmatch(r"[0-9a-f]{64}", digest) is not None, "invalid_append_digest")
     if "effect" in options:
         options["effect"] = _enum(EffectStatus, options["effect"])
     if "phase" in options:
@@ -489,12 +499,27 @@ def execute(request, workflows: Mapping[str, Workflow], *, _before=None):
                  json.dumps(workflow.recorder_config, sort_keys=True), "recorder_configuration_not_enrolled")
     operation, options = request.operation, request.options
     cleanup_on_wait = operation == "wait" and "cleanup_ms" in options
-    if workflow.authorize_all or operation in _EFFECTFUL or cleanup_on_wait:
+    operation_deadline = None
+    if workflow.authorize_all or operation in _EFFECTFUL or operation in _OWNER_APPEND_OPTIONS or cleanup_on_wait:
         if operation in _EFFECTFUL - {"cleanup", "cancel", "purge", "sweep"} or cleanup_on_wait:
-            _deadline(workflow, options)
+            operation_deadline = _deadline(workflow, options)
         _require(workflow.authorize is not None and workflow.authorize(request) is True, "operation_not_authorized")
     if operation == "launch":
         return _launch(workflow, options, before=_before)
+    if operation in _OWNER_APPEND_OPTIONS:
+        from .owner_append import OwnerAppendBinding
+
+        binding = workflow.owner_appends.get(options["alias"])
+        _require(type(binding) is OwnerAppendBinding and
+                 (binding.workflow, binding.role, binding.alias) == (request.workflow, request.role, options["alias"]),
+                 "owner_append_binding_missing")
+        attempt = options["attempt_id"]
+        if operation == "owner_append_status":
+            result = binding.status(attempt, options["data_sha256"])
+        else:
+            result = binding.append(attempt, AppendWrite(options["data"]),
+                                    due_ns=operation_deadline, cancel=workflow.cancel)
+        return {**result, "attempt_id": attempt}
     if operation in ("read", "write", "release", "observe", "meter", "validate"):
         return {
             "read": _read, "write": _write, "release": _release,

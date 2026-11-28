@@ -1,11 +1,17 @@
 """Small, installed walkthrough for supervised local jobs."""
 
 import argparse
+from contextlib import ExitStack, contextmanager
+import errno
+import json
+import os
+from pathlib import Path
 import subprocess
 import sys
 from time import monotonic_ns
 
 from .supervisor import CleanupStatus, DirectChildSupervisor, LifecycleStatus, SupervisionStartError
+from .result_export import RESULT_VERSION, _open_directory, can_export, report_path
 
 
 SECOND = 1_000_000_000
@@ -75,22 +81,139 @@ def main(argv=None):
     return int(slow is None or slow[:2] != (LifecycleStatus.TIMED_OUT, CleanupStatus.REAPED))
 
 
-def run_json(argv, *, wait_seconds=5):
+def _emit_result(result):
+    print(json.dumps({'version': RESULT_VERSION, **result}, separators=(',', ':')))
+
+
+def run_json_main(args):
+    """Parse local machine-mode options before a literal command separator."""
+    split = args.index('--') if '--' in args else len(args)
+    if split >= len(args) - 1:
+        _emit_result({"status": "refused", "effect": "not_attempted", "code": "json_command_required"})
+        return 1
+    parser = argparse.ArgumentParser(add_help=False, allow_abbrev=False, exit_on_error=False)
+    for flag, dest in (('--cwd', 'cwd'), ('--stdout', 'stdout_path'), ('--stderr', 'stderr_path')):
+        parser.add_argument(flag, dest=dest, action='append', default=[])
+    try:
+        values, unknown = parser.parse_known_args(args[:split])
+        if unknown or any(len(entries) > 1 for entries in vars(values).values()):
+            raise ValueError('invalid local run options')
+    except (argparse.ArgumentError, ValueError):
+        _emit_result({"status": "refused", "effect": "not_attempted", "code": "invalid_local_run_options"})
+        return 1
+    return run_json(args[split + 1:], **{key: entries[0] if entries else None
+                                        for key, entries in vars(values).items()})
+
+
+class _LocalDestinationError(ValueError):
+    pass
+
+
+def _close_local_handle(descriptor):
+    # A close error on the parent's copy cannot establish that the worker
+    # did not start or that its raw capture is complete.
+    try:
+        os.close(descriptor)
+    except OSError:
+        pass
+
+
+def _discard_capture(directory, name, descriptor):
+    try:
+        current = os.stat(name, dir_fd=directory, follow_symlinks=False)
+        opened = os.fstat(descriptor)
+        if (current.st_dev, current.st_ino) == (opened.st_dev, opened.st_ino):
+            os.unlink(name, dir_fd=directory)
+    except OSError:
+        pass
+
+
+def _open_capture(value, handles, discard):
+    try:
+        path = report_path(value)
+    except ValueError as exc:
+        raise _LocalDestinationError('invalid_capture_destination') from exc
+    try:
+        directory = _open_directory(path.parent)
+        handles.callback(_close_local_handle, directory)
+        descriptor = os.open(path.name, os.O_WRONLY | os.O_CREAT | os.O_EXCL
+                             | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600, dir_fd=directory)
+        handles.callback(_close_local_handle, descriptor)
+        discard.callback(_discard_capture, directory, path.name, descriptor)
+        return descriptor
+    except OSError as exc:
+        code = {
+            errno.EEXIST: 'capture_destination_exists',
+            errno.ENOENT: 'capture_parent_missing',
+            errno.ENOTDIR: 'capture_parent_unavailable',
+            errno.ELOOP: 'capture_parent_unavailable',
+            errno.EACCES: 'capture_destination_denied',
+            errno.EPERM: 'capture_destination_denied',
+            errno.ENOSPC: 'capture_storage_exhausted',
+            errno.EDQUOT: 'capture_storage_exhausted',
+        }.get(exc.errno, 'capture_open_failed')
+        raise _LocalDestinationError(code) from exc
+
+
+@contextmanager
+def _start_options(cwd, stdout_path, stderr_path):
+    options = {'stdout': subprocess.DEVNULL, 'stderr': subprocess.DEVNULL}
+    with ExitStack() as handles, ExitStack() as discard:
+        try:
+            if (cwd is not None or stdout_path is not None or stderr_path is not None) and not can_export():
+                raise _LocalDestinationError('unprivileged_local_paths_required')
+            if cwd is not None:
+                try:
+                    value = os.fspath(cwd)
+                    if not value or '\x00' in value:
+                        raise ValueError('invalid working directory')
+                    path = Path(value)
+                    directory = _open_directory(path if path.is_absolute() else Path.cwd() / path)
+                    handles.callback(_close_local_handle, directory)
+                    options['cwd'] = f'/proc/self/fd/{directory}'
+                except (OSError, TypeError, ValueError) as exc:
+                    raise _LocalDestinationError('working_directory_unavailable') from exc
+            for stream, value in (('stdout', stdout_path), ('stderr', stderr_path)):
+                if value is not None:
+                    options[stream] = _open_capture(value, handles, discard)
+        except KeyboardInterrupt as exc:
+            raise _LocalDestinationError('capture_preparation_interrupted') from exc
+        try:
+            yield options
+        except (SupervisionStartError, KeyboardInterrupt):
+            # Child creation may already have happened. Keep the caller's capture files.
+            discard.pop_all()
+            raise
+        else:
+            discard.pop_all()
+
+
+def run_json(argv, *, wait_seconds=5, cwd=None, stdout_path=None, stderr_path=None):
     """Run one direct child and emit one structured, effect-cautious result."""
-    import json
     from .configuration import _clean, _terminal, _wire
     from .supervisor import CleanupResult, SupervisionResult
 
     if not argv or any(type(arg) is not str or "\x00" in arg for arg in argv):
-        print(json.dumps({"status": "refused", "effect": "not_attempted",
-                          "code": "command_required"}, separators=(",", ":")))
+        _emit_result({"status": "refused", "effect": "not_attempted",
+                      "code": "command_required"})
         return 1
     due_ns = monotonic_ns() + wait_seconds * SECOND
     cleanup_due_ns = due_ns + 2 * SECOND
     supervisor = DirectChildSupervisor()
+    interrupted = None
+    started = False
     try:
-        supervisor.start_executable(
-            "run", "command", argv, due_ns=due_ns, stdout=2, stderr=2)
+        with _start_options(cwd, stdout_path, stderr_path) as options:
+            supervisor.start_executable("run", "command", argv, due_ns=due_ns, **options)
+            started = True
+    except _LocalDestinationError as exc:
+        _emit_result({"status": "refused", "effect": "not_attempted", "code": str(exc)})
+        return 1
+    except KeyboardInterrupt as exc:
+        if not started:
+            _emit_result({"status": "unavailable", "effect": "unknown", "code": "launch_interrupted"})
+            return 1
+        interrupted = exc
     except SupervisionStartError as exc:
         process = exc.process
         reaped = False
@@ -109,14 +232,16 @@ def run_json(argv, *, wait_seconds=5):
             exc.__cause__ if isinstance(exc.__cause__, OSError) else None)))
         reply = {"status": "unavailable", "effect": "unknown",
                  "code": "supervision_pin_unavailable", "result": {"terminal": terminal}}
-        print(json.dumps(reply, separators=(",", ":")))
+        _emit_result(reply)
         return 1
     except (OSError, RuntimeError, ValueError):
-        print(json.dumps({"status": "refused", "effect": "not_attempted",
-                          "code": "command_start_failed"}, separators=(",", ":")))
+        _emit_result({"status": "refused", "effect": "not_attempted",
+                      "code": "command_start_failed"})
         return 1
 
     try:
+        if interrupted is not None:
+            raise interrupted
         result = supervisor.wait("run", due_ns=due_ns, cleanup_due_ns=cleanup_due_ns)
     except (OSError, RuntimeError, KeyboardInterrupt) as exc:
         try:
@@ -141,6 +266,6 @@ def run_json(argv, *, wait_seconds=5):
     reply = {"status": status, "effect": "unknown", "result": {"terminal": terminal}}
     if status == "unavailable":
         reply["code"] = "terminal_result_unavailable"
-    print(json.dumps(reply, separators=(",", ":")))
+    _emit_result(reply)
     return int(not (lifecycle == LifecycleStatus.EXITED.value and result.returncode == 0
                     and cleanup.status is CleanupStatus.REAPED and status == "reported"))

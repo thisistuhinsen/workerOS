@@ -8,6 +8,14 @@ Linux pidfds for the demo. Native Windows Python can install the wheel;
 loading the controller there fails on `fcntl`. On macOS use a supported
 Linux VM. [Windows and macOS help](support.md#windows-and-macos)
 
+Ordinary local jobs need a user-owned environment and no administrator
+permissions. For a managed installation, use the administrator's approved
+environment. When your verified bundle supplies the Linux x86-64 wheel
+`workeros-0.8.0-py3-none-linux_x86_64.whl`, install that exact file instead of
+the generic wheel. Its included Bubblewrap 0.12.0 is selected automatically
+for guarded launches and requires glibc 2.38 or newer. Use that filename and
+its own checksum when following the wheel verification steps below.
+
 After publication, the public route uses the [v0.8.0 GitHub release](https://github.com/thisistuhinsen/workerOS/releases/tag/v0.8.0)
 and its individual assets. Do not expect these public URLs to work before then.
 If you already received a directory named
@@ -164,10 +172,12 @@ If verification refuses, resolve the conflicting install in a new environment.
 Switch only after verification and a successful run. Roll back by reselecting
 the previous environment.
 
-Uninstalling the package does not remove an operating-system ACL. If this
-installation applied a file grant, keep the trusted administrator environment
-and exact plan until `workeros roles grant-revoke` and a fresh
-`workeros roles grant-check` confirm that the grant is absent. See the
+Uninstalling the package does not remove operating-system ACLs. In the
+trusted administrator environment, run
+`workeros managed revoke-profile PROFILE REVISION`, then confirm the
+per-file ACLs are absent with `workeros managed profile-status PROFILE REVISION`.
+For a standalone grant, keep the exact plan and use `roles grant-revoke`
+and `roles grant-check`. See the
 [named-principal file ACL guide](host-preflight.md#grant-read-access-to-one-linux-file).
 
 **Add the local wheel to a uv project.** From the offline bundle directory, this creates a disposable

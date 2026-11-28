@@ -1,7 +1,7 @@
 """Explicit local workers, descriptor handoff and optional managed release."""
 
 from .original import (
-    HandoffError, Identity, Observation, Original, ReadResult, Writer,
+    AppendWrite, HandoffError, Identity, Observation, Original, ReadResult, Writer,
     observe, receive_original, send_original,
 )
 from .workers import Worker, WorkerRoster
@@ -16,7 +16,7 @@ from .supervisor import (
 )
 
 __all__ = [
-    "HandoffError", "Identity", "Observation", "Original", "ReadResult", "Writer",
+    "AppendWrite", "HandoffError", "Identity", "Observation", "Original", "ReadResult", "Writer",
     "Worker", "WorkerRoster", "observe", "receive_original", "send_original",
     "CustodyReceipt", "CustodyRefused", "IndependentCustody", "DeliveryStatus",
     "EffectStatus", "PositionalWrite", "ReleasePlan", "ReleaseResult",

@@ -59,11 +59,15 @@ For a failed or uncertain job, see https://github.com/thisistuhinsen/workerOS/bl
 
   workeros run -- /usr/bin/printf 'hello\\n'
   workeros run --json -- /usr/bin/printf 'hello\\n'
+  workeros run --json --cwd DIR --stdout FILE --stderr FILE -- COMMAND
 
 Expected: hello, then job: exited 0. Add --json before -- for one JSON result.
-The child receives stdin, including piped input. Its stdout and stderr go to
-stderr. The JSON result separates lifecycle and cleanup and leaves effects
-unknown. This starts one trusted local command.
+The child receives stdin, including piped input. JSON mode discards the child's
+stdout and stderr by default. Capture either stream to a new file in a directory
+you own that other users cannot write. Relative paths use your current
+directory, including with --cwd. Capture never replaces a file. This starts one
+trusted local command.
+The versioned result separates lifecycle and cleanup and leaves effects unknown.
 For the timeout and cleanup example, run workeros demo. A timeout or an unknown
 effect is not proof that nothing happened; check effects before retrying.''',
  'file': '''Use WorkerOS from code
@@ -116,19 +120,19 @@ See docs/host-preflight.md for the schema, limits and next steps.''',
   workeros managed apply-profile --preview < profile.json
   workeros managed apply-profile < profile.json
   workeros managed profile-status PROFILE REVISION
+  workeros managed revoke-profile PROFILE REVISION
 
 Apply-profile validates, stores and reads back an approved local profile.
 Include the host's pinned appointments in the profile to register them together.
 Use --format yaml with optional PyYAML for YAML input. Preview writes no record.
 The commission-apply and commission-status aliases remain available.
 
-One narrowly supported file grant can be included as an explicitly approved
-top-level `grant` in the same profile: `named_uid_read_acl` for one existing UID
-and one exact Linux file. Preview does not write. A matching apply repeat reads
-the existing grant; it does not replay it. Keep the returned `grant_plan` and
-use `workeros roles grant-check < grant_plan.json` to read it or
-`workeros roles grant-revoke < grant_plan.json` to remove the recorded ACL.
-This is not general host enforcement or proof of an independent observer.
+Include one approved `grant` for `named_uid_read_acl`, or a `grants` list
+with --registered-file-acl for separately registered operations on distinct
+Linux files. An exact repeat reads the stored grants. Use profile-status
+after a lost reply and revoke-profile to remove the revision's exact ACLs.
+Revocation affects future opens. Schedule it explicitly before expiry.
+Provider attachment and independent evidence require separate checks.
 See https://github.com/thisistuhinsen/workerOS/blob/v0.8.0/docs/host-preflight.md#apply-a-profile-and-verify-a-file-grant.
 
   workeros managed commission PROFILE REVISION --declaration-sha256 SHA --intent-sha256 SHA
@@ -152,9 +156,23 @@ and independent evidence separately.
   workeros managed serve-setup --listen-fd FD
   workeros managed serve-setup --recover-interrupted
   workeros managed serve-provider --config-fd FD --listen-fd FD
+  workeros managed run-approved --request-id ID
+  workeros managed launch-status --request-id ID
+  workeros managed run-approved --workflow NAME --request-id ID
+  workeros managed launch-status --workflow NAME --request-id ID
+  workeros managed launch-status --workflow NAME --request-id ID --report FILE
+  workeros managed serve-launch --listen-fd FD
+  workeros managed serve-launch --commissioned WORKFLOW
+  workeros managed serve-guard --commissioned
+  workeros managed serve-holder --commissioned WORKFLOW
+  workeros managed serve-witness --commissioned WORKFLOW
 
 Preview reads configuration without connecting. Check-bindings asks the
 commissioned host to verify exact bindings before any setup record or start.
+Commissioned activation serves an existing approved workflow. The host
+manager must supply the registered roles and retain their original resources.
+Use --report FILE to save a caller-owned copy without overwriting an existing
+file. If export fails, use launch-status and the same request ID.
 For multi-check setup, add --max-requests 16 to the provider command. The
 provider serves fresh checks for an approved point observer or cgroup meter.
 Setup requires an authenticated host and approved bindings. If its reply is lost,
@@ -306,13 +324,17 @@ def _yaml_to_json(data):
         raise InputError('invalid_yaml') from None
 
 
-def _refuse(code):
+def _refuse(code, *, versioned=False):
     advice=('Install the optional PyYAML package in this environment, or use JSON.' if code=='yaml_dependency_missing'
             else 'Run workeros roles guide in a terminal, or use the noninteractive draft command.' if code=='tty_required'
             else 'Use workeros run -- COMMAND ARG ... for text output; no command was started.' if code=='run_json_unsupported'
             else 'Run workeros --help to find a command or help topic.' if code in ('unknown_command','unknown_help_topic')
             else 'Correct the command or input; no operation was attempted.')
-    print(json.dumps({'status':'refused','effect':'not_attempted','code':code,'next_action':advice},separators=(',',':')))
+    result = {'status':'refused','effect':'not_attempted','code':code,'next_action':advice}
+    if versioned:
+        from .result_export import RESULT_VERSION
+        result['version'] = RESULT_VERSION
+    print(json.dumps(result,separators=(',',':')))
     return 1
 
 
@@ -583,8 +605,10 @@ def main(argv=None):
     if command=='roles' and remaining and remaining[0]=='draft' and ('--help' in remaining or '-h' in remaining):
         return _draft(['--help'])
     if command=='managed' and remaining and remaining[0] in ('commission', 'commission-status', 'commission-apply',
-                                                            'apply-profile', 'profile-status', 'serve-setup',
-                                                            'serve-provider', 'appointment-register', 'appointment-status'):
+                                                            'apply-profile', 'profile-status', 'revoke-profile', 'serve-setup',
+                                                            'serve-provider', 'appointment-register', 'appointment-status',
+                                                            'run-approved', 'launch-status', 'serve-launch', 'serve-guard',
+                                                            'serve-holder', 'serve-witness'):
         from . import managed_cli
         return managed_cli.main(remaining)
     if command in ('roles','managed') and (not remaining or '--help' in remaining or '-h' in remaining):
@@ -598,8 +622,7 @@ def main(argv=None):
         from . import quickstart
         if command=='demo': return quickstart.main(remaining)
         if remaining and remaining[0]=='--json':
-            if len(remaining)<3 or remaining[1]!='--': return _refuse('json_command_required')
-            return quickstart.run_json(remaining[2:])
+            return quickstart.run_json_main(remaining[1:])
         if remaining and remaining[0] in ('--format=json','--format','--output=json'):
             return _refuse('run_json_unsupported')
         if remaining and remaining[0]=='--': remaining=remaining[1:]

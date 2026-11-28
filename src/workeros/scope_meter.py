@@ -188,6 +188,18 @@ def _counter(data, key, maximum):
     raise ValueError("counter missing, duplicated, or invalid")
 
 
+def _read_metric(directory, mount, leaf, key=None, maximum=_MAX_COUNTER):
+    flags = os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW | os.O_NONBLOCK
+    fd = os.open(leaf, flags, dir_fd=directory)
+    with os.fdopen(fd, "rb") as stream:
+        if not stat.S_ISREG(os.fstat(fd).st_mode) or _mount_id(fd) != mount:
+            raise ValueError("unexpected cgroup metric handle")
+        data = stream.read(65537)
+    if len(data) > 65536:
+        raise ValueError("cgroup metric exceeded read limit")
+    return _counter(data, key, maximum)
+
+
 class CgroupScopeMeter:
     """Borrow a directory FD and read fixed CPU, memory and population files.
 
@@ -238,15 +250,8 @@ class CgroupScopeMeter:
 
     def _read(self, leaf, key=None, maximum=_MAX_COUNTER):
         try:
-            flags = os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW | os.O_NONBLOCK
-            fd = os.open(leaf, flags, dir_fd=self._directory)
-            with os.fdopen(fd, "rb") as stream:
-                if not stat.S_ISREG(os.fstat(fd).st_mode) or _mount_id(fd) != self._identity.mount_id:
-                    raise ValueError("unexpected cgroup metric handle")
-                data = stream.read(65537)
-            if len(data) > 65536:
-                raise ValueError("cgroup metric exceeded read limit")
-            return _counter(data, key, maximum), EvidenceState.OBSERVED, ()
+            value = _read_metric(self._directory, self._identity.mount_id, leaf, key, maximum)
+            return value, EvidenceState.OBSERVED, ()
         except OSError as exc:
             return None, EvidenceState.UNAVAILABLE, (f"{leaf}_errno:{exc.errno}",)
         except (KeyError, ValueError):

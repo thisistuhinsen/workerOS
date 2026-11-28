@@ -130,7 +130,7 @@ class ManagedGrantTest(unittest.TestCase):
         self.target.chmod(0o600)
         self.info = self.target.stat()
         self.uid = os.geteuid() + 1
-        self.raw = None
+        self.acls = {self.info.st_ino: None}
         self.setter_calls = []
         self.document = {
             'version': 1, 'profile': 'reporting', 'revision': 'r1',
@@ -152,22 +152,24 @@ class ManagedGrantTest(unittest.TestCase):
         self.enterContext(patch.multiple(roles_cli, _PARENT=directory, _UID=os.geteuid()))
         self.enterContext(patch.object(delegated_acl, '_ADMIN_UID', os.geteuid()))
         self.enterContext(patch.object(delegated_acl, '_uid_mapped', return_value=True))
-        self.enterContext(patch.object(pwd, 'getpwnam', return_value=SimpleNamespace(pw_uid=self.uid)))
+        self.accounts = self.enterContext(patch.object(pwd, 'getpwnam', return_value=SimpleNamespace(pw_uid=self.uid)))
         self.enterContext(patch.object(os, 'getxattr', side_effect=self.getxattr))
         self.enterContext(patch.object(os, 'setxattr', side_effect=self.setxattr))
 
     def getxattr(self, fd, name):
-        if isinstance(fd, int) and os.fstat(fd).st_ino == self.info.st_ino and name == delegated_acl._XATTR:
-            if self.raw is None:
+        inode = os.fstat(fd).st_ino if isinstance(fd, int) else None
+        if inode in self.acls and name == delegated_acl._XATTR:
+            if self.acls[inode] is None:
                 raise OSError(errno.ENODATA, 'absent')
-            return self.raw
+            return self.acls[inode]
         return self.real_getxattr(fd, name)
 
     def setxattr(self, fd, name, raw, flags):
-        self.assertEqual(os.fstat(fd).st_ino, self.info.st_ino)
+        inode = os.fstat(fd).st_ino
+        self.assertIn(inode, self.acls)
         self.assertEqual(name, delegated_acl._XATTR)
         self.setter_calls.append(flags)
-        self.raw = raw if flags == os.XATTR_CREATE else None
+        self.acls[inode] = raw if flags == os.XATTR_CREATE else None
         mask = struct.unpack_from('<H', raw, 30)[0] if flags == os.XATTR_CREATE else 0
         os.fchmod(fd, 0o600 | mask << 3)
 
@@ -181,6 +183,80 @@ class ManagedGrantTest(unittest.TestCase):
         if 'intent_sha256' in result:
             self.assertEqual(result['intent_sha256'], sha256(payload).hexdigest())
         return result
+
+    @property
+    def raw(self):
+        return self.acls[self.info.st_ino]
+
+    def multi_role_profile(self):
+        second = self.target.with_name('inventory')
+        second.write_bytes(b'inventory')
+        second.chmod(0o600)
+        info = second.stat()
+        self.acls[info.st_ino] = None
+        self.accounts.side_effect = lambda name: SimpleNamespace(
+            pw_uid=self.uid if name == 'fixture-reviewer' else self.uid + 1)
+        self.document['roles'].extend([
+            {'name': 'inventory-editor', 'principal': 'fixture-editor',
+             'operations': ['edit-inventory'], 'scopes': ['inventory'], 'expires_at': 4102444800,
+             'resources': {'inventory': {'device': str(info.st_dev), 'inode': str(info.st_ino)}},
+             'privileged': [{'capability': 'inventory-write', 'scope': 'inventory', 'approved': True}]},
+            {'name': 'job-owner', 'principal': 'fixture-reviewer', 'operations': ['launch'],
+             'scopes': ['ordinary'], 'expires_at': 4102444800},
+        ])
+        self.document['grants'] = [self.document.pop('grant'), {
+            'capability': 'inventory-write', 'role': 'inventory-editor', 'scope': 'inventory',
+            'path': str(second), 'principal_uid': self.uid + 1, 'exclusive_admin': True,
+        }]
+        capabilities = (delegated_acl._BUILTIN, delegated_acl.FileAclCapability('inventory-write', 'edit-inventory', 2))
+        return tuple(delegated_acl.FileAclRegistration(
+            capability, 'reporting', 'r1', grant['role'], grant['scope'], grant['principal_uid'],
+            grant['path'], str(file_info.st_dev), str(file_info.st_ino), capability.access, 4102444800,
+        ) for grant, capability, file_info in zip(self.document['grants'], capabilities, (self.info, info), strict=True))
+
+    def test_registered_multi_role_profile_readback_and_effective_revoke(self):
+        registrations = self.multi_role_profile()
+        self.assertEqual(self.apply(expected=1)['code'], 'file_acl_registration_required')
+        self.document['grants'][1]['expiry'] = 'automatic'
+        self.assertEqual(self.apply(expected=1, registrations=registrations)['code'], 'automatic_acl_expiry_unsupported')
+        self.document['grants'][1]['expiry'] = 'manual'
+        self.assertEqual(self.apply(expected=1, registrations=registrations[:1])['code'],
+                         'unsupported_privileged_enforcement')
+        self.assertEqual(self.apply('--preview', registrations=registrations)['status'], 'preview')
+        self.assertFalse((self.root / 'workeros').exists())
+        result = self.apply(registrations=registrations)
+        self.assertEqual(result['status'], 'file_acl_verified')
+        current = roles_cli.commission_status('reporting', 'r1')
+        self.assertEqual([entry['grant']['access_mask'] for entry in current['file_access']], [4, 2])
+        self.assertEqual(current['setup_attachment'], 'not_checked')
+        self.assertEqual(self.apply(registrations=registrations)['grant_effect'], 'not_attempted')
+        self.assertEqual(self.setter_calls, [os.XATTR_CREATE] * 2)
+        self.document['roles'][2]['name'] = 'different-job-owner'
+        self.assertEqual(self.apply(expected=1, registrations=registrations)['code'], 'commission_intent_conflict')
+        result = roles_cli.revoke_profile('reporting', 'r1')
+        self.assertEqual(result['status'], 'revoked')
+        self.assertEqual([entry['grant']['acl_presence'] for entry in result['file_access']], ['absent'] * 2)
+        self.assertEqual(roles_cli.revoke_profile('reporting', 'r1')['grant_effect'], 'not_attempted')
+        self.assertEqual(self.setter_calls, [os.XATTR_CREATE] * 2 + [os.XATTR_REPLACE] * 2)
+
+    def test_interrupted_multi_role_profile_reports_partial_state_without_replay(self):
+        registrations = self.multi_role_profile()
+        write_record = delegated_acl._write
+
+        def lose_first_result(store, key, payload):
+            if key.record_id == 'grant_result':
+                raise OSError('fixture lost result')
+            return write_record(store, key, payload)
+
+        with patch.object(delegated_acl, '_write', new=lose_first_result):
+            self.assertEqual(self.apply(expected=1, registrations=registrations)['status'], 'unknown')
+        for observed in (roles_cli.commission_status('reporting', 'r1'),
+                         self.apply(expected=1, registrations=registrations)):
+            self.assertEqual(observed['status'], 'unknown')
+            self.assertEqual([row['grant']['acl_presence'] for row in observed['file_access']], ['present_exact', 'absent'])
+        self.assertEqual(self.setter_calls, [os.XATTR_CREATE])
+        self.assertEqual(roles_cli.revoke_profile('reporting', 'r1')['status'], 'revoked')
+        self.assertEqual(self.setter_calls, [os.XATTR_CREATE, os.XATTR_REPLACE])
 
     def test_preview_apply_readback_and_revoke(self):
         preview = self.apply('--preview')
@@ -219,6 +295,47 @@ class ManagedGrantTest(unittest.TestCase):
         self.assertEqual(self.apply(expected=1, registrations=())['code'], 'unsupported_privileged_enforcement')
         self.assertFalse((self.root / 'workeros').exists())
         self.assertFalse(self.setter_calls)
+
+    def test_installed_parser_uses_only_the_fixed_admin_registry(self):
+        parent = self.root / 'config'
+        directory = parent / 'workeros'
+        directory.mkdir(parents=True, mode=0o700)
+        registry = directory / 'file-acl-registrations.json'
+        grant = self.document['grant']
+        role = self.document['roles'][0]
+        grant['capability'] = role['privileged'][0]['capability'] = 'report-read'
+        approval = {'profile': 'reporting', 'revision': 'r1', 'role': grant['role'],
+                    'scope': grant['scope'], 'path': grant['path'], 'principal_uid': self.uid,
+                    'device': str(self.info.st_dev), 'inode': str(self.info.st_ino),
+                    'maximum_access': 4, 'expires_at': role['expires_at'],
+                    'capability': {'name': 'report-read', 'operation': 'read', 'access': 4}}
+        flag = '--registered-file-acl'
+        with patch.multiple(managed_cli, _CONFIG_PARENT=parent, _TRUSTED_UID=os.geteuid()):
+            self.assertEqual(self.apply(flag, expected=1)['code'], 'native_acl_registration_unavailable')
+            registry.write_text(json.dumps({'version': 1, 'registrations': [approval]}))
+            registry.chmod(0o666)
+            self.assertEqual(self.apply(flag, expected=1)['code'], 'native_acl_registration_untrusted')
+            registry.chmod(0o600)
+            moved = registry.with_suffix('.other')
+            registry.rename(moved)
+            registry.symlink_to(moved)
+            self.assertEqual(self.apply(flag, expected=1)['code'], 'native_acl_registration_untrusted')
+            registry.unlink()
+            moved.rename(registry)
+            registry.write_text(json.dumps({'version': 1, 'registrations': [{**approval, 'revision': 'r2'}]}))
+            self.assertEqual(self.apply(flag, expected=1)['code'], 'native_grant_outside_approval')
+            registry.write_text(json.dumps({'version': 1, 'registrations': [approval, approval]}))
+            self.assertEqual(self.apply(flag, expected=1)['code'], 'invalid_native_acl_registration')
+            self.assertFalse((self.root / 'workeros').exists())
+            self.assertFalse(self.setter_calls)
+            registry.write_text(json.dumps({'version': 1, 'registrations': [approval]}))
+            self.assertEqual(self.apply(expected=1)['code'], 'unsupported_privileged_enforcement')
+            self.assertEqual(self.apply(flag, '--preview')['status'], 'preview')
+            result = self.apply(flag)
+            self.assertEqual(result['status'], 'file_acl_verified')
+            registry.unlink()
+            self.assertEqual(delegated_acl.run('revoke', json.dumps(result['grant_plan']).encode())['status'],
+                             'acl_entry_removed')
 
     def test_registered_operation_is_limited_and_has_exact_readback_and_revoke(self):
         capability = delegated_acl.FileAclCapability('archive-data-write', 'replace-report-data', 2)

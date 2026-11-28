@@ -86,10 +86,14 @@ def main(assets, source, work, version):
     names = {wheel, f"workeros-{version}.tar.gz", f"workeros-{version}.tgz",
              f"workeros-{version}.jar", f"workeros-{version}.pom",
              f"workeros-conan-{version}.tar.gz", "SHA256SUMS"}
-    if {p.name for p in assets.iterdir()} != names or any(
+    platform = f"workeros-{version}-py3-none-linux_x86_64.whl"
+    present = {p.name for p in assets.iterdir()}
+    if platform in present:
+        names.add(platform)
+    if present != names or any(
         not (assets / name).is_file() or (assets / name).is_symlink() for name in names
     ):
-        raise SystemExit("expected exactly seven regular release assets")
+        raise SystemExit("unexpected release layout")
 
     readme = work / "readme-demo"
     metadata = work / "wheel-demo"

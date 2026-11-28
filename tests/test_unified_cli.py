@@ -1,6 +1,10 @@
 """Installed unified entry points; YAML loader is optional and fixture-only."""
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import redirect_stdout
+import errno
 from hashlib import sha256
 from importlib.metadata import version
+from io import StringIO
 import json
 import os
 from pathlib import Path
@@ -11,6 +15,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 
 class UnifiedCliTest(unittest.TestCase):
@@ -25,8 +30,9 @@ class UnifiedCliTest(unittest.TestCase):
                    '    principal: '+self.principal+'\n    operations: [read]\n    scopes: [archive]\n'
                    '    expires_at: 4102444800\n')
 
-    def call(self,name,args=(),data=None,env=None):
-        return subprocess.run([str(self.bin/name),*args],input=data,text=True,capture_output=True,timeout=8,env=env)
+    def call(self,name,args=(),data=None,env=None,*,cwd=None):
+        return subprocess.run([str(self.bin/name),*args],input=data,text=True,capture_output=True,
+                              timeout=8,env=env,cwd=cwd)
 
     def patched(self,python,entry,args,data):
         code=('import sys,runpy; import workeros.roles_cli as r; '
@@ -69,7 +75,8 @@ class UnifiedCliTest(unittest.TestCase):
                               (['roles','--help'],'grant-check'),(['roles','apply','--help'],'creates no principal'),
                               (['help','managed'],'named_uid_read_acl'),
                               (['help','managed'],'apply-a-profile-and-verify-a-file-grant'),
-                              (['help','managed'],'does not replay it'),
+                              (['help','managed'],'An exact repeat reads the stored grants'),
+                              (['help','managed'],'revoke-profile PROFILE REVISION'),
                               (['managed','--help'],'reconcile')):
             with self.subTest(args=args):
                 result=self.call('workeros',args)
@@ -92,14 +99,16 @@ class UnifiedCliTest(unittest.TestCase):
         result=self.call('workeros',['run','--json','--','/usr/bin/printf','hello\n'])
         self.assertEqual(result.returncode,0,result.stderr)
         receipt=json.loads(result.stdout)
+        self.assertEqual(receipt['version'],1)
         self.assertEqual((receipt['status'],receipt['effect']),('reported','unknown'))
         self.assertEqual(receipt['result']['terminal']['lifecycle'],'exited')
         self.assertEqual(receipt['result']['terminal']['returncode'],'0')
         self.assertEqual(receipt['result']['terminal']['cleanup']['status'],'reaped')
-        self.assertEqual(result.stderr,'hello\n')
+        self.assertEqual(result.stderr,'')
         malformed=self.call('workeros',['run','--json','/usr/bin/printf','must-not-run'])
         self.assertEqual(malformed.returncode,1)
         refused=json.loads(malformed.stdout)
+        self.assertEqual(refused['version'],1)
         self.assertEqual((refused['code'],refused['effect']),('json_command_required','not_attempted'))
         missing=self.call('workeros',['run','--json','--','/definitely/not/a/worker'])
         self.assertEqual(missing.returncode,1)
@@ -118,12 +127,112 @@ class UnifiedCliTest(unittest.TestCase):
 
     def test_structured_run_passes_piped_stdin_without_mixing_the_receipt(self):
         data = 'first line\nsecond line\n'
-        command = shutil.which('cat')
-        self.assertIsNotNone(command, 'cat is required on PATH for the piped input test')
-        result=self.call('workeros',['run','--json','--',command],data=data)
-        self.assertEqual((result.returncode,result.stderr),(0,data))
+        command = [sys.executable, '-c',
+                   'import sys; data=sys.stdin.read(); print(data); print(data, file=sys.stderr); '
+                   'raise SystemExit(data != sys.argv[1])', data]
+        result=self.call('workeros',['run','--json','--',*command],data=data)
+        self.assertEqual((result.returncode,result.stderr),(0,''))
         receipt=json.loads(result.stdout)
         self.assertEqual((receipt['status'],receipt['result']['terminal']['returncode']),('reported','0'))
+
+    def local_paths_authorized(self):
+        from workeros.result_export import can_export
+        if can_export():
+            return True
+        denied = self.call('workeros', ['run', '--json', '--stdout', 'forbidden.log', '--',
+                                        sys.executable, '-c', 'raise AssertionError("must not start")'],
+                           cwd=self.root)
+        receipt = json.loads(denied.stdout)
+        self.assertEqual((denied.returncode, receipt['code'], receipt['effect'], denied.stderr),
+                         (1, 'unprivileged_local_paths_required', 'not_attempted', ''))
+        self.assertFalse((self.root / 'forbidden.log').exists())
+        return False
+
+    def test_local_json_capture_keeps_streams_separate_and_uses_the_callers_base(self):
+        if not self.local_paths_authorized():
+            return
+        (self.root / 'working é').mkdir()
+        command = [sys.executable, '-c', 'import os, sys; print(os.getcwd()); print("child error", file=sys.stderr)']
+        result = self.call('wos', ['run', '--json', '--cwd', 'working é',
+                                  '--stdout', 'first é.log', '--stderr', 'second é.log', '--', *command],
+                           cwd=self.root)
+        self.assertEqual((result.returncode, result.stderr), (0, ''))
+        receipt = json.loads(result.stdout)
+        self.assertEqual((receipt['version'], receipt['result']['terminal']['returncode']), (1, '0'))
+        self.assertNotIn('child error', result.stdout)
+        success, error = self.root / 'first é.log', self.root / 'second é.log'
+        self.assertEqual(success.read_text(), str(self.root / 'working é') + '\n')
+        self.assertEqual(error.read_text(), 'child error\n')
+        self.assertFalse((self.root / 'working é' / error.name).exists())
+        for target in (success, error):
+            self.assertEqual(target.stat().st_mode & 0o077, 0)
+
+    def test_local_json_capture_refuses_before_work_and_discards_partial_preparation(self):
+        if not self.local_paths_authorized():
+            return
+        existing = self.root / 'existing'
+        existing.write_text('original')
+        (self.root / 'link').symlink_to(existing)
+        (self.root / 'dir-link').symlink_to(self.root, target_is_directory=True)
+        shared = self.root / 'shared'
+        shared.mkdir()
+        shared.chmod(0o777)
+        command = [sys.executable, '-c', 'from pathlib import Path; Path("ran").touch()']
+        for options, code in (
+                (['--stderr', 'existing'], 'capture_destination_exists'),
+                (['--stderr', 'new'], 'capture_destination_exists'),
+                (['--stderr', 'link'], 'capture_destination_exists'),
+                (['--stderr', 'dir-link/output'], 'capture_parent_unavailable'),
+                (['--stderr', 'missing/output'], 'capture_parent_missing'),
+                (['--stderr', 'shared/output'], 'capture_destination_denied'),
+                (['--cwd', 'dir-link'], 'working_directory_unavailable'),
+                (['--stdout', 'another'], 'invalid_local_run_options')):
+            with self.subTest(options=options):
+                result = self.call('workeros', ['run', '--json', '--stdout', 'new', *options, '--', *command],
+                                   cwd=self.root)
+                receipt = json.loads(result.stdout)
+                self.assertEqual((result.returncode, receipt['effect'], receipt['code'], result.stderr),
+                                 (1, 'not_attempted', code, ''))
+                self.assertFalse((self.root / 'new').exists())
+                self.assertFalse((self.root / 'ran').exists())
+        self.assertEqual(existing.read_text(), 'original')
+
+    def test_local_json_capture_reports_full_or_interrupted_preparation_without_start(self):
+        from workeros import quickstart
+        if not self.local_paths_authorized():
+            return
+        stdout, stderr = self.root / 'stdout', self.root / 'stderr'
+        open_original = os.open
+        for failure, expected in ((OSError(errno.ENOSPC, 'disk full'), 'capture_storage_exhausted'),
+                                  (OSError(errno.EDQUOT, 'quota reached'), 'capture_storage_exhausted'),
+                                  (KeyboardInterrupt(), 'capture_preparation_interrupted')):
+            with self.subTest(expected=expected):
+                def open_fixture(name, flags, *args, **kwargs):
+                    if name == stderr.name and flags & os.O_CREAT:
+                        raise failure
+                    return open_original(name, flags, *args, **kwargs)
+                output = StringIO()
+                with (patch.object(quickstart.os, 'open', side_effect=open_fixture),
+                      patch.object(quickstart.DirectChildSupervisor, 'start_executable') as start,
+                      redirect_stdout(output)):
+                    code = quickstart.run_json([sys.executable], stdout_path=stdout, stderr_path=stderr)
+                start.assert_not_called()
+                receipt = json.loads(output.getvalue())
+                self.assertEqual((code, receipt['code'], receipt['effect']), (1, expected, 'not_attempted'))
+                self.assertFalse(stdout.exists())
+                self.assertFalse(stderr.exists())
+
+    def test_concurrent_local_json_capture_reserves_one_destination(self):
+        if not self.local_paths_authorized():
+            return
+        options = ['run', '--json', '--stdout', 'one.log', '--', sys.executable,
+                   '-c', 'print("one attempt")']
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            receipts = list(pool.map(lambda _: self.call('workeros', options, cwd=self.root), range(2)))
+        self.assertEqual(sorted(result.returncode for result in receipts), [0, 1])
+        refused = json.loads(next(result.stdout for result in receipts if result.returncode))
+        self.assertEqual((refused['code'], refused['effect']), ('capture_destination_exists', 'not_attempted'))
+        self.assertEqual((self.root / 'one.log').read_text(), 'one attempt\n')
 
     def test_tty_guide_refuses_when_output_is_redirected(self):
         master,slave=pty.openpty()

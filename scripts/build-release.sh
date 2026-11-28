@@ -3,8 +3,10 @@ set -euo pipefail
 umask 022
 
 usage() {
-    printf 'Usage: %s [--build-only|--verify-only] [OUTPUT_DIR]\n' "$0"
+    printf 'Usage: %s [--build-only] [--owned-runtime-dir DIRECTORY] [OUTPUT_DIR]\n' "$0"
+    printf '       %s --verify-only [OUTPUT_DIR]\n' "$0"
     printf '       %s --verify-public OUTPUT_DIR\n' "$0"
+    printf 'The optional Linux x86-64 wheel takes reviewed bwrap and COPYING files from DIRECTORY.\n'
     printf 'The public check expects independently fetched release assets in OUTPUT_DIR.\n'
 }
 
@@ -13,9 +15,19 @@ case "${1:-}" in
     --build-only) mode=build; shift ;;
     --verify-only) mode=verify; shift ;;
     --verify-public) mode=public; shift ;;
+    --owned-runtime-dir) ;;
     -h|--help) usage; exit 0 ;;
     -*) usage >&2; exit 2 ;;
 esac
+runtime_dir=
+if [[ "${1:-}" == --owned-runtime-dir ]]; then
+    if [[ "$mode" == verify || "$mode" == public || $# -lt 2 || -z "$2" ]]; then
+        usage >&2
+        exit 2
+    fi
+    runtime_dir=$2
+    shift 2
+fi
 if (( $# > 1 )) || [[ "$mode" == public && $# -ne 1 ]]; then
     usage >&2
     exit 2
@@ -32,7 +44,23 @@ npm_archive="workeros-$version.tgz"
 jar="workeros-$version.jar"
 pom="workeros-$version.pom"
 native="workeros-conan-$version.tar.gz"
+platform_wheel="workeros-$version-py3-none-linux_x86_64.whl"
+runtime_packer="$root/scripts/package-owned-bwrap.py"
 assets=("$wheel" "$sdist" "$npm_archive" "$jar" "$pom" "$native")
+if [[ -n "$runtime_dir" ]]; then
+    for input in "$runtime_dir/bwrap" "$runtime_dir/COPYING"; do
+        if [[ ! -f "$input" || -L "$input" ]]; then
+            printf 'Missing reviewed regular managed runtime file: %s\n' "$input" >&2
+            exit 1
+        fi
+    done
+    runtime_dir=$(cd -- "$runtime_dir" && pwd)
+    assets+=("$platform_wheel")
+elif [[ "$mode" == verify || "$mode" == public ]]; then
+    if [[ -e "$output/$platform_wheel" || -L "$output/$platform_wheel" ]]; then
+        assets+=("$platform_wheel")
+    fi
+fi
 
 # November 26, 2026 at 00:00:00 UTC. Set a shared epoch explicitly to override it.
 export SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH:-1795651200}
@@ -74,6 +102,10 @@ build_one() {
     local source="$staging/extracted/workeros-$version"
     "$python" -I -m build --wheel --no-isolation --outdir "$destination" "$source"
     inspect wheel "$destination/$wheel" "$source"
+    if [[ -n "$runtime_dir" ]]; then
+        "$python" -I "$runtime_packer" "$destination/$wheel" "$runtime_dir/bwrap" "$runtime_dir/COPYING" "$destination"
+        "$python" -I "$runtime_packer" --verify "$destination/$wheel" "$destination/$platform_wheel"
+    fi
 
     (cd -- "$staging" && npm pack "$root/node" --offline --ignore-scripts --loglevel error \
         --cache "$staging/npm-cache" --pack-destination "$destination")
@@ -221,6 +253,18 @@ verify_node_consumer() (
         "$consumer/node_modules/workeros/examples/read-input.cjs"
 )
 
+verify_owned_runtime() {
+    local source=$1
+    local environment="$work/owned-runtime"
+    [[ -f "$output/$platform_wheel" ]] || return 0
+    "$python" -I "$runtime_packer" --verify "$output/$wheel" "$output/$platform_wheel"
+    "$python" -I -m venv "$environment"
+    pip_offline "$environment/bin/python" install --require-hashes "$source#sha256=$(asset_hash "$platform_wheel")"
+    installed_python "$environment/bin/python"
+    "$environment/bin/python" -I -m workeros.verify_install \
+        "$output/$platform_wheel" --sha256 "$(asset_hash "$platform_wheel")"
+}
+
 verify_release() {
     verify_manifest || exit 1
     local extracted="$work/verification"
@@ -243,6 +287,9 @@ verify_release() {
     "$python" -I -m venv "$pip_env"
     pip_offline "$pip_env/bin/python" install "$output/$wheel"
     installed_python "$pip_env/bin/python"
+    if [[ -f "$output/$platform_wheel" ]]; then
+        verify_owned_runtime "$("$python" -I -c 'from pathlib import Path; import sys; print(Path(sys.argv[1]).as_uri())' "$output/$platform_wheel")"
+    fi
     "$python" -I -m venv --without-pip "$uv_env"
     uv --offline --no-config --no-cache pip install --no-index --no-deps \
         --python "$uv_env/bin/python" "$output/$wheel"
@@ -363,6 +410,7 @@ verify_public() (
     "$python" -I -m venv "$pip_env"
     pip_offline "$pip_env/bin/python" install --require-hashes "$wheel_url"
     installed_python "$pip_env/bin/python"
+    verify_owned_runtime "$base/$platform_wheel"
     "$pip_env/bin/workeros-config" --schema > "$work/public-schema.json"
     cmp -- "$root/src/workeros/configuration.schema.json" "$work/public-schema.json"
     "$pip_env/bin/python" -I "$pip_env/share/workeros/examples/run_inherited_fd.py" --language python

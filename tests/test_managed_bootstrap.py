@@ -1,7 +1,7 @@
 """Installed no-start host with inherited handles and a separate synthetic provider."""
 from contextlib import ExitStack
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from hashlib import sha256
 import json
 import os
@@ -33,10 +33,21 @@ roles_cli._PARENT = managed_cli._CONFIG_PARENT = sys.argv[1]
 roles_cli._UID = managed_cli._TRUSTED_UID = os.getuid()
 if sys.argv[2]:
     managed_bootstrap._provider_is_independent = lambda uid: uid == os.getuid()
-if sys.argv[2] == 'interval-fixture':
+if sys.argv[2] in ('interval-fixture', 'interval-lost-reply', 'interval-meter-fixture', 'interval-meter-lost'):
     # Substitute only the separate-principal prerequisite in this single-UID
     # fixture; the actual SO_PEERCRED check is still enforced.
     managed_bootstrap._provider_is_independent = lambda uid: True
+if sys.argv[2] in ('interval-meter-fixture', 'interval-meter-lost'):
+    managed_bootstrap._meter_peer_is_distinct = lambda observer, meter: True
+if sys.argv[2] in ('interval-lost-reply', 'interval-meter-lost'):
+    serve = managed_cli.serve_connection
+    class LostReply:
+        def __init__(self, connection): self.connection = connection
+        def __getattr__(self, name): return getattr(self.connection, name)
+        def sendall(self, _): raise OSError('fixture reply lost after binding check')
+    def drop_reply(connection, **options):
+        return serve(LostReply(connection), **options)
+    managed_cli.serve_connection = drop_reply
 if sys.argv[2] == 'synthetic':
     managed_bootstrap._meter_peer_is_distinct = lambda observer, meter: True
 if sys.argv[2] == 'interrupt-before-finish':
@@ -110,6 +121,13 @@ class InstalledHostTest(unittest.TestCase):
             with self.subTest(peer_offset=peer_offset), tempfile.TemporaryDirectory() as directory:
                 self.exercise(Path(directory), wheel, multiple=False, interval_peer_offset=peer_offset)
 
+    def test_installed_interval_and_meter_share_one_exact_check_only_scope(self):
+        wheel = os.environ.get('WORKEROS_TEST_WHEEL')
+        if not wheel:
+            self.skipTest('exact installed wheel path required')
+        with tempfile.TemporaryDirectory() as directory:
+            self.exercise(Path(directory), wheel, multiple=False, interval_peer_offset=0, interval_meter=True)
+
     def test_apply_serve_restart_and_require_external_evidence(self):
         wheel = os.environ.get('WORKEROS_TEST_WHEEL')
         if not wheel:
@@ -138,7 +156,8 @@ class InstalledHostTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             self.exercise(Path(directory), wheel, multiple=False, stock_provider='interrupt-before-finish')
 
-    def exercise(self, root, wheel, *, multiple, stock_provider=False, interval_peer_offset=None):
+    def exercise(self, root, wheel, *, multiple, stock_provider=False, interval_peer_offset=None,
+                 interval_meter=False):
         config_dir = root/'workeros'
         config_dir.mkdir(mode=0o700)
         journal = root/'journal'
@@ -175,7 +194,7 @@ class InstalledHostTest(unittest.TestCase):
             provider.listen(4)
             provider.settimeout(0.2)
             meter = None
-            if multiple:
+            if multiple or interval_meter:
                 meter = stack.enter_context(socket.socket(socket.AF_UNIX, socket.SOCK_STREAM))
                 meter.bind(str(root/'meter.sock'))
                 meter.listen(4)
@@ -183,7 +202,8 @@ class InstalledHostTest(unittest.TestCase):
             uid = os.getuid()
             clock_id_raw = monotonic_clock_id() or 'fixture-monotonic'
             expiry = monotonic_ns() + 45_000_000_000
-            names = ('original','named','metered','meter-only') if multiple else ('workflow',)
+            names = ('original','named','metered','meter-only') if multiple else (
+                'metered' if interval_meter else 'workflow',)
             passed, scopes, appointments, expected = [], [], [], {}
             for name in names:
                 scope_id = f'{name}-scope'
@@ -238,10 +258,17 @@ class InstalledHostTest(unittest.TestCase):
                         clock_id_raw,start_ns,expiry),scope_id,start_ns,expiry)
                     meter_plan = {'device':identity.st_dev,'inode':identity.st_ino,'mount_id':mount_id,
                                   'scope':asdict(evidence_scope)}
-                    bindings.append(ProviderBinding('meter',sha256(_canonical(meter_plan)).hexdigest(),scope_id,
+                    meter_endpoint = {'socket':str(root/'meter.sock'),'peer_uid':uid}
+                    pinned_meter = meter_plan
+                    if interval_meter:
+                        plan['scope_sha256'] = sha256(_canonical(asdict(evidence_scope))).hexdigest()
+                        registration['observer']['scope_sha256'] = plan['scope_sha256']
+                        bindings[0] = replace(bindings[0], reference=sha256(_canonical(bound_plan)).hexdigest())
+                        pinned_meter = {'meter': meter_plan, 'meter_provider': meter_endpoint}
+                    bindings.append(ProviderBinding('meter',sha256(_canonical(pinned_meter)).hexdigest(),scope_id,
                                                     'cgroup-v2','fixture-meter','meters','fixture-writer'))
                     registration['meter'] = {**meter_plan,'directory_fd':meter_fd}
-                    registration['meter_provider'] = {'socket':str(root/'meter.sock'),'peer_uid':uid}
+                    registration['meter_provider'] = meter_endpoint
                     operations.append('meter')
                     refs['meters'] = {'counter':'meter'}
                 if name == 'meter-only':
@@ -263,10 +290,11 @@ class InstalledHostTest(unittest.TestCase):
                 scopes.append({**registration,'definition':asdict(definition),'policy':policy,
                                'role':'operator','binding_generation':'generation-1'})
             self.handshake(root,config_dir,journal,wheel,passed,server,provider,meter,command,run,
-                           scopes,appointments,expected,expiry,uid,stock_provider,interval_peer_offset)
+                           scopes,appointments,expected,expiry,uid,stock_provider,interval_peer_offset,
+                           interval_meter)
 
     def handshake(self,root,config_dir,journal,wheel,passed,server,provider,meter,command,run,
-                  scopes,appointments,expected,expiry,uid,stock_provider,interval_peer_offset):
+                  scopes,appointments,expected,expiry,uid,stock_provider,interval_peer_offset,interval_meter):
         document = {'version':1,'profile':'fixture','revision':'revision-1',
                     'roles':[{'name':'operator','principal':pwd.getpwuid(uid).pw_name,
                               'operations':['observe','meter'] if meter else ['observe'],
@@ -284,9 +312,14 @@ class InstalledHostTest(unittest.TestCase):
         setup_config.update({'scopes':scopes} if multiscopes else scopes[0])
         setup_path = config_dir/'managed-setup.json'
         setup_path.write_text(json.dumps(setup_config))
+        if interval_meter:
+            self.check_interval_meter_pair(setup_config, setup_path, journal, server, provider, meter,
+                                           run, command, passed, expected, expiry, uid)
+            return
         if interval_peer_offset is not None:
             self.check_interval_registration(setup_config, setup_path, journal, provider, run,
-                                             passed, expected, expiry, interval_peer_offset)
+                                             passed, expected, expiry, interval_peer_offset,
+                                             server, command, document, uid)
             return
         refused = run('serve-setup','--describe',passed=passed,code=1,synthetic=False)
         self.assertEqual((refused['status'],refused['code']),('unavailable','provider_requires_distinct_uid'))
@@ -487,7 +520,8 @@ class InstalledHostTest(unittest.TestCase):
         self.assertGreaterEqual(len(requests),4)
         self.assertEqual(len(requests),len(set(requests)))
 
-    def check_interval_registration(self, config, path, journal, provider, run, passed, expected, expiry, peer_offset):
+    def check_interval_registration(self, config, path, journal, provider, run, passed,
+                                    expected, expiry, peer_offset, server, command, document, uid):
         original = config['scopes'][0]
         self.assertEqual(len(expected), 1)
         request_pins, = expected.values()
@@ -517,6 +551,8 @@ class InstalledHostTest(unittest.TestCase):
                 challenge = request.pop('request_id')
                 self.assertRegex(challenge, r'^[0-9a-f]{32}$')
                 self.assertEqual(request, request_pins)
+                if changes is None:
+                    return
                 reply = _canonical({**request, 'request_id':challenge, 'source':'fixture-provider',
                     'status':'verified', 'evidence_sha256':'1'*64, 'valid_until_ns':str(expiry), **changes})
                 connection.sendall(struct.pack('!I', len(reply)) + reply)
@@ -551,6 +587,7 @@ class InstalledHostTest(unittest.TestCase):
                 ({'status':'unverified'}, 'independent_evidence_invalid'),
                 ({'definition_sha256':'0'*64}, 'independent_evidence_invalid'),
                 ({'request_id':'0'*32}, 'independent_evidence_invalid'),
+                ({'generation':'wrong-generation'}, 'independent_evidence_invalid'),
                 ({'valid_until_ns':'1'}, 'independent_evidence_invalid'),
                 ({'capability':'point'}, 'independent_evidence_invalid')):
             with self.subTest(changes=changes), ThreadPoolExecutor(max_workers=1) as replies:
@@ -559,6 +596,177 @@ class InstalledHostTest(unittest.TestCase):
                 sent.result()
                 self.assertEqual(result['scopes'][0]['code'], expected_code)
                 self.assertEqual(result['status'], 'incomplete' if changes else 'bindings_verified')
+
+        def describe():
+            return run('serve-setup', '--check-bindings', '--describe', passed=passed,
+                       synthetic='interval-fixture')
+
+        def exchange(metadata, operation='check-bindings', *, code=1, lost=False):
+            client = {'version': 1, 'socket': server.getsockname(), 'peer_uid': uid,
+                      'profile': metadata['profile'], 'scopes': metadata['scopes'],
+                      'identity': metadata['identity'], 'operation_key': config['operation_key'],
+                      'binding_check': metadata['binding_check']}
+            host = subprocess.Popen(command('serve-setup', '--check-bindings', '--listen-fd',
+                                            str(server.fileno()),
+                                            synthetic='interval-lost-reply' if lost else 'interval-fixture'),
+                                    pass_fds=(*passed, server.fileno()), stdout=subprocess.PIPE,
+                                    stderr=subprocess.PIPE, text=True)
+            try:
+                result = run(operation, code=code, client_config=client)
+                out, err = host.communicate(timeout=8)
+                self.assertEqual(host.returncode, int(lost), out + err)
+                return result
+            finally:
+                if host.poll() is None:
+                    host.kill()
+                    host.wait(timeout=3)
+
+        no_journal = {k: v for k, v in config.items() if k != 'journal_directory'}
+        no_appointments = {k: v for k, v in document.items() if k != 'appointments'}
+        no_appointments['profile'] = 'no-appointment'
+        receipt = run('apply-profile', data=json.dumps(no_appointments))
+        approval = {k: receipt[k] for k in ('declaration_sha256', 'intent_sha256')}
+        path.write_text(json.dumps({**no_journal, 'profile': 'no-appointment', 'local_approval': approval}))
+        records = path.parent / 'profiles'
+        before = {record.name: record.read_bytes() for record in records.iterdir()}
+        denied = exchange(describe())
+        self.assertEqual((denied['code'], denied['effect']), ('role_appointment_unverified', 'not_attempted'))
+
+        path.write_text(json.dumps(no_journal))
+        metadata = describe()
+        self.assertEqual(metadata['binding_check']['scope_digests'],
+                         {original['definition']['name']: request_pins['definition_sha256']})
+        for operation in ('setup', 'readback', 'reconcile'):
+            denied = exchange(metadata, operation)
+            self.assertEqual((denied['status'], denied['effect'], denied['scopes'][0]['code']),
+                             ('refused', 'not_attempted', 'binding_check_only'))
+        provider.settimeout(0.02)
+        with self.assertRaises(TimeoutError):
+            provider.accept()
+        for changes, status, code in (({}, 'bindings_verified', None),
+                                      ({'generation': 'wrong-generation'}, 'incomplete', 'independent_evidence_invalid'),
+                                      (None, 'incomplete', 'manager_selection_unavailable'),
+                                      ({}, 'unknown', 'response_unconfirmed')):
+            with self.subTest(status=status, code=code), ThreadPoolExecutor(max_workers=1) as replies:
+                sent = replies.submit(respond, changes)
+                result = exchange(metadata, code=int(status != 'bindings_verified'), lost=status == 'unknown')
+                sent.result()
+                self.assertEqual((result['status'], result['effect'], result['readiness']),
+                                 (status, 'not_attempted', 'not_checked'))
+                self.assertEqual(result['scopes'][0]['code'] if status == 'incomplete' else result['code'], code)
+        self.assertEqual({record.name: record.read_bytes() for record in records.iterdir()}, before)
+        self.assertEqual(list(journal.iterdir()), [])
+
+    def check_interval_meter_pair(self, config, path, journal, server, observer, meter,
+                                  run, command, passed, expected, expiry, uid):
+        missing_journal = path.parent / 'check-only-must-not-open'
+        config = {**config, 'journal_directory': str(missing_journal)}
+        path.write_text(json.dumps(config))
+        before = {record.name: record.read_bytes() for record in (path.parent/'profiles').iterdir()}
+        arguments = ('serve-setup', '--check-bindings')
+        mode = 'interval-meter-fixture'
+        unavailable = run('serve-setup', '--describe', code=1, synthetic=mode, passed=passed)
+        self.assertEqual(unavailable['code'], 'interval_check_only')
+        metadata = run(*arguments, '--describe', synthetic=mode, passed=passed)
+        self.assertEqual(len(metadata['scopes']), 1)
+        meter_pins, = expected.values()
+        self.assertEqual(metadata['binding_check']['scope_digests'],
+                         {metadata['scopes'][0]: meter_pins['definition_sha256']})
+
+        def configured_refusal(edit, code, *, synthetic=mode):
+            changed = json.loads(json.dumps(config))
+            edit(changed['scopes'][0])
+            path.write_text(json.dumps(changed))
+            result = run(*arguments, code=1, synthetic=synthetic, passed=passed)
+            self.assertEqual((result['status'], result['effect'], result['code']),
+                             ('unavailable', 'not_attempted', code))
+            self.assertEqual(result['runtime_evidence'], 'not_requested')
+
+        configured_refusal(lambda scope: scope.pop('meter_provider'), 'interval_registration_mismatch')
+        configured_refusal(lambda scope: None, 'meter_provider_requires_separate_principal',
+                           synthetic='interval-fixture')
+        configured_refusal(lambda scope: scope['meter_provider'].update(socket='/unapproved/meter.sock'),
+                           'meter_plan_mismatch')
+
+        def crossed(scope):
+            # Keep the same scope name, but bind the meter to a different run.
+            scope['meter']['scope']['run']['run_id'] = 'different-run'
+            meter_plan = {key:value for key,value in scope['meter'].items() if key != 'directory_fd'}
+            scope['definition']['providers'][1]['reference'] = sha256(_canonical({
+                'meter': meter_plan, 'meter_provider': scope['meter_provider']})).hexdigest()
+
+        configured_refusal(crossed, 'interval_meter_scope_mismatch')
+        for listener in (observer, meter):
+            listener.settimeout(0.02)
+            with self.assertRaises(TimeoutError):
+                listener.accept()
+        path.write_text(json.dumps(config))
+
+        client = {'version': 1, 'socket': server.getsockname(), 'peer_uid': uid,
+                  'profile': metadata['profile'], 'scopes': metadata['scopes'],
+                  'identity': metadata['identity'], 'operation_key': config['operation_key'],
+                  'binding_check': metadata['binding_check']}
+
+        def reply(listener, changes):
+            interval = listener is observer
+            listener.settimeout(5)
+            connection, _ = listener.accept()
+            with connection:
+                deadline = monotonic() + 5
+                size, = struct.unpack('!I', _read_exact(connection, 4, deadline))
+                request = json.loads(_read_exact(connection, size, deadline))
+                challenge = request.pop('request_id')
+                self.assertRegex(challenge, r'^[0-9a-f]{32}$')
+                pins = {**meter_pins, 'version': 2, 'capability': 'interval'} if interval else meter_pins
+                self.assertEqual(request, pins)
+                if changes is None:
+                    return
+                if not interval:
+                    del request['version']
+                body = _canonical({**request, 'request_id': challenge,
+                    'source': 'fixture-provider' if interval else 'fixture-meter',
+                    'status': 'verified', 'evidence_sha256': ('1' if interval else '2') * 64,
+                    'valid_until_ns': str(expiry if interval else expiry - 1_000_000_000), **changes})
+                connection.sendall(struct.pack('!I', len(body)) + body)
+
+        for first, second, status, reason in (
+                ({}, {}, 'bindings_verified', 'bindings_verified'),
+                ({'valid_until_ns': '1'}, False, 'incomplete', 'independent_evidence_invalid'),
+                ({}, {'generation': 'different'}, 'incomplete', 'manager_selection_unavailable'),
+                ({}, None, 'incomplete', 'manager_selection_unavailable'),
+                ({}, {}, 'unknown', 'response_unconfirmed')):
+            lost = status == 'unknown'
+            with self.subTest(status=status, reason=reason), ThreadPoolExecutor(max_workers=2) as replies:
+                sent = [replies.submit(reply, observer, first)]
+                if second is not False:
+                    sent.append(replies.submit(reply, meter, second))
+                host = subprocess.Popen(command(*arguments, '--listen-fd', str(server.fileno()),
+                                                synthetic='interval-meter-lost' if lost else mode),
+                                        pass_fds=(*passed, server.fileno()), stdout=subprocess.PIPE,
+                                        stderr=subprocess.PIPE, text=True)
+                try:
+                    result = run('check-bindings', code=int(status != 'bindings_verified'), client_config=client)
+                    out, err = host.communicate(timeout=8)
+                    self.assertEqual(host.returncode, int(lost), out + err)
+                finally:
+                    if host.poll() is None:
+                        host.kill()
+                        host.wait(timeout=3)
+                for future in sent:
+                    future.result()
+                self.assertEqual((result['status'], result['effect'], result['readiness'],
+                                  result['independence'], result['runtime_evidence']),
+                                 (status, 'not_attempted', 'not_checked', 'unverified', 'not_requested'))
+                self.assertEqual(result['code'] if lost else result['scopes'][0]['code'], reason)
+                if status == 'bindings_verified':
+                    self.assertEqual(result['observation']['valid_until_ns'], str(expiry - 1_000_000_000))
+                if second is False:
+                    meter.settimeout(0.02)
+                    with self.assertRaises(TimeoutError):
+                        meter.accept()
+        self.assertEqual({record.name: record.read_bytes() for record in (path.parent/'profiles').iterdir()}, before)
+        self.assertEqual(list(journal.iterdir()), [])
+        self.assertFalse(missing_journal.exists())
 
     def check_stock_provider(self, root, journal, passed, server, provider, command, run,
                              setup_config, scope, uid, interrupt):

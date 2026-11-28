@@ -19,12 +19,26 @@ the same job with the candidate's structured result:
 .venv-0.8.0/bin/workeros run --json -- /usr/bin/printf 'hello\n'
 ```
 
-The child prints `hello` to stderr; stdout contains one JSON object. Look for
+Machine mode emits one versioned JSON result on stdout and omits the
+child's output by default. Use the ordinary command without `--json` to
+see the child's `hello`. In the JSON result, look for
 `status: reported` and `result.terminal` with `lifecycle: exited`,
 `returncode: "0"`, and `cleanup.status: reaped`. `effect` remains `unknown`: a successful exit does
 not prove what a command changed. See the [v0.8.0 install instructions](../install-0.8.0.md#offline-install).
 If the reply is unavailable or cleanup is not confirmed, don't replay
 automatically; follow the [recovery steps](../support.md#troubleshooting).
+
+For local machine mode, choose a working directory or capture child output
+in new files:
+
+```sh
+.venv-0.8.0/bin/workeros run --json --cwd . --stdout job.out --stderr job.err -- /usr/bin/printf 'hello\n'
+```
+
+Relative capture paths use your current directory, even when the child
+runs in a different one. Use an existing directory you own and fresh
+filenames. Capture files contain raw workload output. The JSON result
+reports the child's outcome and cleanup separately.
 
 ## See a timeout
 

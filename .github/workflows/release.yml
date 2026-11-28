@@ -138,11 +138,19 @@ jobs:
             "workeros-$VERSION.pom"
             "workeros-conan-$VERSION.tar.gz"
           )
+          platform_wheel="workeros-$VERSION-py3-none-linux_x86_64.whl"
+          if [[ -e "$platform_wheel" || -L "$platform_wheel" ]]; then
+            packages+=("$platform_wheel")
+          fi
           assets=("${packages[@]}" SHA256SUMS)
           for asset in "${assets[@]}"; do [[ -f "$asset" && ! -L "$asset" ]]; done
           [[ "$(find . -mindepth 1 -maxdepth 1 -printf '.' | wc -c)" == "${#assets[@]}" ]]
           diff -u <(LC_ALL=C sort SHA256SUMS) <(sha256sum "${packages[@]}" | LC_ALL=C sort)
           sha256sum --strict --check SHA256SUMS
+          if [[ -f "$platform_wheel" ]]; then
+            python3 -I "$GITHUB_WORKSPACE/scripts/package-owned-bwrap.py" --verify \
+              "workeros-$VERSION-py3-none-any.whl" "$platform_wheel"
+          fi
 
           verify_protected_main() {
             gh api "repos/$GH_REPO/branches/main" |

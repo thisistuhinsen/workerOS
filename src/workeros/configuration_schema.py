@@ -1,6 +1,6 @@
 """Machine schema for the installed, versioned controller JSON contract."""
 
-from .configuration import _OPTIONS
+from .configuration import _REQUEST_OPTIONS
 from .evidence import ScopePhase
 from .managed import EffectStatus
 
@@ -44,12 +44,13 @@ def configuration_schema():
         "retention": {"anyOf": [retention, {"type": "null"}]},
     }, ("key", "evidence_type", "sha256", "size", "committed_ns"))
     fields = dict.fromkeys(("name", "scope", "run_id", "record_id", "type", "destination", "attempt_id",
-                            "require_terminal_from"), name)
+                            "require_terminal_from", "alias"), name)
     fields.update(dict.fromkeys(("supervise", "custody", "sync"), boolean))
     fields.update(dict.fromkeys(("block_size", "timeout_ms", "cleanup_ms"), positive))
     fields.update({
         "expected_size": integer,
         "data": data,
+        "data_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
         "effect": {"enum": [status.value for status in EffectStatus]},
         "phase": {"enum": [phase.value for phase in ScopePhase if phase is not ScopePhase.OBSERVATION]},
         "subject": {"enum": ["slot", "name", "process"]},
@@ -74,7 +75,7 @@ def configuration_schema():
         }, ("name", "media_type"))),
     }, ("version", "destinations", "routes"))
     choices = []
-    for operation, (required, optional) in _OPTIONS.items():
+    for operation, (required, optional) in _REQUEST_OPTIONS.items():
         fields_for_operation = {key: fields[key] for key in (required + " " + optional).split()}
         choices.append({
             "if": {"properties": {"operation": {"const": operation}}},
@@ -88,7 +89,7 @@ def configuration_schema():
         "title": "WorkerOS controller request version 1",
         **_object({
             "version": {"const": 1},
-            "workflow": name, "role": name, "operation": {"enum": list(_OPTIONS)},
+            "workflow": name, "role": name, "operation": {"enum": list(_REQUEST_OPTIONS)},
             "options": {"type": "object"}, "recorder": policy,
         }, ("version", "workflow", "role", "operation")),
         "allOf": choices,

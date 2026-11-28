@@ -8,6 +8,7 @@ import sys
 
 from . import roles_cli as roles
 from .enrollment import _operations
+from .managed_launch import LaunchPlan, LaunchRolePolicy
 from .profile_setup import ProfileDefinition
 from .recording import EvidenceType, Persistence, RecordError, _name
 
@@ -19,6 +20,27 @@ def definition_sha256(definition):
     if type(definition) is not ProfileDefinition:
         raise ValueError('expected a trusted profile definition')
     return sha256(roles._canonical(asdict(definition))).hexdigest()
+
+
+def launch_scope_sha256(role, scope, operations):
+    """Pin the selected scope and operations, including any exact role aliases."""
+    return sha256(roles._canonical({'role': role, 'scope': scope, 'operations': sorted(operations)})).hexdigest()
+
+
+def launch_plan_sha256(plan):
+    if type(plan) is not LaunchPlan:
+        raise ValueError('expected an exact launch plan')
+    payload = asdict(plan)
+    if payload['principal_uid'] is None:
+        del payload['principal_uid']  # Preserve the exact old one-attempt approval.
+    return sha256(roles._canonical(payload)).hexdigest()
+
+
+def launch_policy_sha256(policy):
+    """Pin the reusable approval independently of any invocation key."""
+    if type(policy) is not LaunchRolePolicy:
+        raise ValueError('expected an exact reusable launch policy')
+    return sha256(roles._canonical({'version': 1, 'launch_role_policy': asdict(policy)})).hexdigest()
 
 
 def _validate(data):
@@ -37,14 +59,21 @@ def _validate(data):
     seen = set()
     for entry in entries:
         roles._fields(entry, ('workflow', 'workflow_revision', 'definition_sha256',
-                              'role', 'principal', 'scope', 'generation', 'operations'))
+                              'role', 'principal', 'scope', 'generation', 'operations'), ('launch',))
         for field in ('workflow', 'workflow_revision', 'role', 'scope', 'generation'):
             _name(entry[field])
         roles._principal(entry['principal'], resolve=False)
         digest = entry['definition_sha256']
         if type(digest) is not str or not roles._DIGEST.fullmatch(digest):
             raise roles.Refusal('invalid_appointment_definition')
-        _operations(entry['operations'])
+        operations = _operations(entry['operations'])
+        if 'launch' in entry:
+            approval = entry['launch']
+            roles._fields(approval, ('scope_sha256',), ('plan_sha256', 'policy_sha256'))
+            if (len(approval) != 2 or 'launch' not in operations or
+                    any(type(value) is not str or not roles._DIGEST.fullmatch(value)
+                        for value in approval.values())):
+                raise roles.Refusal('invalid_launch_appointment')
         if entry['workflow'] in seen:
             raise roles.Refusal('duplicate_appointment_workflow')
         seen.add(entry['workflow'])
@@ -63,8 +92,13 @@ def _check_approval(document, receipt, declaration):
     for entry in document['appointments']:
         role = declared.get(entry['role'])
         if (role is None or entry['principal'] != role['principal'] or entry['scope'] not in role['scopes']
-                or not set(entry['operations']) <= set(role['operations'])
-                or role.get('resources') or role.get('independent_of') or role.get('privileged')):
+                or not set(entry['operations']) <= set(role['operations'])):
+            raise roles.Refusal('appointment_outside_declaration')
+        if 'launch' in entry:
+            if entry['launch']['scope_sha256'] != launch_scope_sha256(role, entry['scope'], entry['operations']):
+                raise roles.Refusal('launch_scope_outside_declaration')
+        elif (role.get('resources') or role.get('independent_of') or role.get('privileged')
+              or role.get('operation_aliases')):
             raise roles.Refusal('appointment_outside_declaration')
 
 

@@ -131,7 +131,7 @@ non-inheritable first unless passing it on is intentional.
 | `Identity(device, inode)` and `observe(fd)` | `Identity` names a file by device and inode. `observe` borrows the FD and returns an `Observation` with identity, access flags, owner UID, file mode, size, link count, inheritable flag, and timestamps. It reads metadata only. |
 | `Original(fd, identity)` | Takes ownership of an exact non-inheritable read-only regular-file FD. `fileno()` borrows the numeric slot, `close()` releases it, and `detach()` transfers it to the caller. |
 | `Original.read_and_close(sink, *, due_ns, expected_size=None, block_size=65536)` | Reads positionally into a binary sink, checks EOF and metadata, and closes the descriptor on completion or failure. Returns `ReadResult(original, bytes_read, eof_observed_ns, closed_ns)` on success. |
-| `Writer(fd, identity)` | Takes ownership of an exact non-inheritable writable regular-file FD owned by the caller's actual Linux UID. `write(data)` writes bytes at the current position or in append mode. `flush(sync=True)` calls `fsync`. `fileno()` borrows the slot. |
+| `Writer(fd, identity)` | Takes ownership of an exact non-inheritable writable regular-file FD owned by the caller's actual Linux UID. `write(data)` uses the descriptor's current position and mode. `append(AppendWrite(data), due_ns=deadline)` makes one kernel-selected EOF write. `flush(sync=True)` calls `fsync`. `fileno()` borrows the slot. |
 
 Use context managers to close owned wrappers. The constructors may close a
 validly passed FD when validation fails. Pass a duplicate if you need to keep
@@ -144,6 +144,90 @@ partially take effect. Stage data if your application publishes it only after
 a successful read. Metadata checks cannot account for every intervening
 change. `HandoffError` represents a rejected contract. A syscall can
 also raise `OSError`, and a blocking operation can outlast a deadline check.
+
+Keep `Writer` private to the trusted owner. `AppendWrite` exposes no offset.
+The append call uses Linux `pwritev(RWF_APPEND)` on the retained inode. A
+separately opened read-only handle to that inode can see the new bytes even
+after a path rename. Append leaves the descriptor position and status flags
+unchanged. The Python build, kernel and filesystem must support the syscall.
+Check the returned count and reconcile any short or uncertain result before
+another attempt. A live worker append grant and independent custody each need
+separate host enforcement and evidence.
+
+### Run an enrolled owner append
+
+The enrolled operation keeps the writer in its existing Linux owner process.
+The administrator approves the workflow, role, operation alias, and exact
+resource. A separate custody observer holds the same original read-only and
+authenticates coverage through the append deadline. A writable stream alias
+uses a separate capability and offers different access.
+
+For example, this policy lets the role `report-owner` select `add_entry`.
+The enrollment supplies the existing registration named `report-original`.
+
+```yaml
+version: 1
+roles:
+  report-owner:
+    operations: [owner_append, owner_append_status]
+workflows:
+  compile-reports:
+    role: report-owner
+    operations: [owner_append, owner_append_status]
+    bindings:
+      owner_appends:
+        add_entry: report-original
+```
+
+For the installed controller, the administrator places the registration at
+`/etc/workeros/owner-append.json` in the protected WorkerOS directory. The
+registration contains:
+
+- `version` (1) and `policy_sha256` for the exact policy file bytes.
+- `workflow`, `role`, `alias`, `reference`, `scope`, and `generation`.
+- The approved non-root `owner_uid`, original `device` and `inode`, absolute
+  monotonic `expires_ns`, and existing private `journal_directory`.
+- The preheld `writer_fd` and `reader_fd` in the appointed owner process, plus
+  `observer_fd` for a connected custody socket with pinned `observer_pid`
+  and `observer_uid`.
+
+Use decimal strings for large integer values. The registration must be owned
+by the administrator, readable by the appointed owner, and writable only by
+the administrator. The owner starts the command with those already-held
+slots. A fresh install supplies the loader; enrollment supplies the original,
+the observer, and the matching clock.
+
+```sh
+workeros config --check-policy append.yaml --format yaml --registered-owner-append
+workeros config --run-policy append.yaml --format yaml --registered-owner-append < append.json
+```
+
+`--check-policy` checks the protected registration and the local original
+handles. The append request itself requires the live custody approval.
+
+```json
+{
+  "version": 1,
+  "workflow": "compile-reports",
+  "role": "report-owner",
+  "operation": "owner_append",
+  "options": {"alias": "add_entry", "attempt_id": "report-202", "data": "bm90ZQo="}
+}
+```
+
+Trusted Python hosts can supply an `OwnerAppendBinding` from
+`workeros.owner_append` in `HostBindings.owner_appends`, keyed by the binding's
+`registry_reference`. They can execute the same
+request with `compile_policy(document, host).execute(parse_request(request))`
+from `workeros.enrollment` and `workeros.configuration`.
+
+To reconcile, use `owner_append_status` with the same alias and attempt ID and
+`data_sha256` in place of `data`. This reads the matching owner journal without
+another append. A known byte count is separate from completion timing.
+`late` means completion was observed at or after the deadline. A short write
+reports its known count. An uncertain syscall or missing outcome record stays
+unknown on readback. The journal records the reported effect; file durability
+requires a separate sync policy.
 
 ## Transfer an original over a Unix stream
 

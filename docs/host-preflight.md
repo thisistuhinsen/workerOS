@@ -231,6 +231,721 @@ request through an administrator-provided listener. The host still supplies
 the approved registry, appointments, and independent readback. Policy alone
 supplies no OS access.
 
+### Invoke an approved launch through an existing host backend
+
+A trusted in-process integrator can optionally construct `ManagedHostAdapter`
+with a `workeros.managed_launch.LaunchRegistration`. This registers one
+explicit `launch_approved()` invocation. Neither setup, binding checks nor
+the managed CLI invoke it. A stock installation has no such registration.
+
+To use the installed administrator profile and appointment store, use
+`workeros.managed_bootstrap.open_approved_launch(registration,
+executable_argv=approved_argv)` in the trusted administrator process. It opens
+the same protected `managed-setup.json` and holds the inherited bindings for
+the returned adapter's lifetime. The installed approval store must already
+contain the exact active profile and one appointment with a `launch` object
+containing `plan_sha256` and `scope_sha256`. Compute these with
+`workeros.appointment_registry.launch_plan_sha256(plan)` and
+`launch_scope_sha256(role, scope, operations)`. The latter pins the full
+approved role and the selected scope and operations. Updating any of those
+pins requires a newly approved appointment. If the selected role scopes a
+file, the stock observer must hold that exact device and inode. The appointed
+worker and the stock evidence providers must use distinct UIDs. The stock
+entry rereads the appointment under the approval lock before dispatch. It
+does not establish permissions or bypass a pending file ACL cleanup.
+
+#### Approve a reusable role
+
+For repeated explicit requests, register a `LaunchRolePolicy` instead of a
+`LaunchPlan`. It pins the existing account name and numeric Linux UID, the
+exact definition and generation, the approved executable and scope digests,
+and the launcher and independent authority identities. The selected scope
+digest includes the whole approved role with its capability selections,
+expiry and separation constraints. The appointment's `launch` object uses
+`policy_sha256` from `appointment_registry.launch_policy_sha256(policy)`
+alongside `scope_sha256`. Approve it through the same appointment registry.
+A changed generation, approval, scope or account binding needs new approval.
+
+In trusted deployment code, use `new_launch_request()` from
+`workeros.managed_launch` and retain the ID before requesting the launch.
+Pass it to `adapter.launch_approved(request_id=request_id)` on the adapter
+from `open_approved_launch()`. Each new ID derives a separate invocation
+key pinned to this exact profile, policy and clock. WorkerOS rereads the
+active approval and commits the reservation in the protected profile
+store before requesting a ticket. The enforcing backend must still
+atomically consume the exact ticket and enforce scope at dispatch.
+
+If the response is lost, call `adapter.read_launch(request_id=request_id)`
+for the same ID. Repeating an already reserved ID can only read that
+invocation. Use a new ID only for intentionally new work. Verified
+readback must match both account name and numeric UID. An uncertain
+reservation or unconfirmed result stays unknown. A still-open adapter can
+read the exact historical result after revocation. Reopening the launch
+adapter requires active approval and the same live bindings. If those
+are gone, use the approved authority's historical store for that key.
+
+#### Register a named systemd workflow
+
+An administrator can enroll a named workflow for several preheld
+regular files with exact mode `read`, `write` or `read-write`.
+Each selected file has its own resource and mapped owner. The
+role explicitly permits the operations and names each device and
+inode. The selected workflow compiles `launch` and any selected
+evidence operations. Its `streams` provider has capability
+`systemd-fd` and pins the aggregate service digest. Keep the
+executable and scoped-launch supervisor pins. Live descriptor
+numbers are excluded from reusable approval.
+
+The version-2 `launch-executor.json` keeps `profile`, `revision`,
+`wheel_path` and `wheel_sha256` at the top level. Each entry in its
+`workflows` object has:
+
+- `policy`, the existing `LaunchRolePolicy` for that exact named workflow
+- `authority`, the pinned Unix socket path and UID of the independent authority
+- `service`, the `ServiceScope` fields `root_directory`, `root_device`,
+  `root_inode`, `executable` inside that root, `principal_gid`, `mode`,
+  `original_device`, `original_inode`, `original_fd` and the protected `parent`
+- `run_uids` and `result_uids`, independent lists of authorized caller UIDs
+
+The multi-file `service` form replaces `mode`, `original_device`,
+`original_inode` and `original_fd` with `descriptors`. Each entry has
+`slot` (`stdin`, `stdout` or `stderr`), `scope`, `owner_uid`,
+`mode`, `device`, `inode` and the live `fd`. Repeated slots,
+scopes, owners and originals refuse. The same protected object
+sets separate `active_ms` and `cleanup_ms`, plus `metered` to
+select lifecycle accounting. If the workflow selects a file
+observer, `observation_scope` names the corresponding resource.
+With aggregate provider name `original`, use
+`{"stdin":"original.stdin","stdout":"original.stdout"}`
+as the stream binding for those two slots. The `parent` object is
+shared by both forms. For `guarded-service-v1`, set `unit` to the appointed
+guard's system-level `.service` and pin its exact `control_group`, `device`,
+`inode`, and `mount_id`. These five values enter the protected service
+digest. WorkerOS authenticates PID 1 on the system bus and checks the active
+unit, invocation ID, delegation, exact cgroup v2 directory, and live guard
+principal. Existing slice pins remain valid for supported historical
+readback. A slice, user manager, or `.scope` cannot admit a new guarded run.
+
+Historic single-file records retain their existing digest and
+`{"stdin":"original"}` binding. For a new stock manager launch
+registration with that configuration, include a `limits` object with
+`active_ms`, `cleanup_ms`, and `metered`, and the named `parent`.
+Existing historical records keep their original service digest.
+
+The approved root is a separate administrator-owned runtime directory.
+Provision it with only the approved program and its runtime files. Its
+device and inode, the executable digest, and the existing non-root
+UID and primary GID must match. The service account must have no additional
+groups. The system manager enforces a read-only service root and passes
+the selected preheld standard descriptors. The worker can use `pread`
+or `pwrite` with explicit offsets. The holder supplies the exact
+descriptors with matching access flags. This can grant write on a
+descriptor while its pathname remains inaccessible. The backend
+refuses O_APPEND and confers no ambient Linux capabilities.
+
+Use the existing Linux system manager and system bus. The host must
+entitle the existing operator to create the fixed transient service
+and provide an administrator-owned inherited Unix stream listener
+and the held originals. `workeros managed serve-launch --listen-fd FD`
+serves one explicit request. Setup and `serve-setup` remain no-start.
+The host-side roles supply their real independent evidence as selected.
+For example, a point provider, a meter, or a registered interval and
+meter pair can be required. An unselected observer is unnecessary.
+Selected observers must bind the same original as the service.
+
+In the caller environment, the administrator's client routing document contains
+version `1`, `profile`, `revision`, `socket`, `peer_uid` and a
+`workflows` map of workflow names to reusable policy digests. The caller
+supplies the enrolled name and retained request ID. An optional report
+destination stays in the caller process.
+On a clean host, include it as `launch_client` in the approved provisioning
+bundle. WorkerOS checks it against the version-2 executor and writes
+`/etc/workeros-launch-client.json` for local callers to read. The file contains
+only routing and policy identifiers. The protected setup, executor, caller
+rights and role-store files keep their private permissions. An earlier
+installation can still use `/etc/workeros/launch-client.json` when the new
+client routing file is absent.
+
+Generate the request ID once from the trusted WorkerOS environment before
+submitting. Keep it for every status request for that invocation.
+
+```sh
+id=$(python -I -c 'from workeros.managed_launch import new_launch_request; print(new_launch_request())')
+workeros managed run-approved --workflow report-writer --request-id "$id"
+workeros managed launch-status --workflow report-writer --request-id "$id"
+```
+
+Use the same `workflow` and `request_id` fields with `version: 1` for
+JSON or YAML standard input. Application code calls
+`registered_launch(request_id, workflow="report-writer")` or passes
+`readback=True` for status. A lost reply leaves the effect unknown.
+Keep the retained ID and reconcile through the separately authorized
+result right, even if the role has since been revoked.
+A caller with run rights only receives no effective-state or cleanup
+receipt from the run command. An approved result reader retrieves it.
+
+An approved result reader receives the selected workflow, role, and
+registered scopes in `selection`. A pending guarded invocation can also
+include a `phase_observation` with the invocation, clock, cgroup, monotonic
+release and observation times, and population at that observation. Release
+means the guard sent its one-way command. Population is a point sample
+and by itself establishes neither worker execution nor ongoing activity.
+Without a qualifying sample, the field is omitted. A guard's reaped
+child status and verified cleanup can appear in `provider_report` while
+the workload effect remains unknown.
+
+#### Save a caller-owned copy of the result
+
+Use `--report FILE` on `run-approved` or `launch-status` to save a copy of
+the versioned result. For example, use the retained request ID to read and
+save the result without launching a worker:
+
+```sh
+workeros managed launch-status --workflow report-writer --request-id "$id" \
+  --report ./report-result.json
+```
+
+For structured input, add `"report": "./report-result.json"` in JSON or
+`report: ./report-result.json` in YAML alongside `version`, `workflow`, and
+`request_id`. An explicit `--report` overrides the destination in structured
+input. In Python, pass `report="./report-result.json"` to `registered_launch`.
+Relative paths use the caller's current directory, including for requests
+read from standard input. Choose a new filename in an existing directory
+you own, with group and other writes disabled.
+The destination's directory path cannot contain symbolic links.
+
+For a reusable request document, use `--format json --input request.json`
+or the YAML equivalent. A relative `report_default` uses the directory
+containing that file. For a document read from standard input, specify an
+absolute `base_dir` or an absolute default. Python callers can supply
+`report_default` and `base_dir` to `registered_launch`. An explicit
+`report` takes precedence over the default and resolves from the caller's
+working directory.
+
+The caller writes the copy with its own permissions after getting the result.
+WorkerOS refuses an elevated caller's export request before dispatch. Use your
+ordinary account. WorkerOS leaves existing files intact and keeps the
+destination out of the privileged launch request. The copy has at most
+owner read/write permissions and contains only the result that account
+may already read. The manager's retained receipt remains authoritative.
+
+The result has `version: 1`. The command's JSON reply or Python return value
+adds an `export` disposition. A failed or uncertain export leaves the run's
+effect and cleanup as reported. The command exits nonzero if export fails or
+its durability is unconfirmed. In the latter case a copy may already exist.
+To try another destination, use
+`launch-status` with the **same request ID** and a new filename. An unknown
+run result means the current evidence is insufficient to confirm its outcome.
+
+#### Read historical results after a revision changes
+
+When a live guarded result is independently verified, the managed listener
+records its proof and the exact revision's authorized result-reader UIDs in
+protected storage. Check that `history.status` is `recorded`. A result whose
+history could not be committed remains usable as a live receipt while the
+qualified providers remain available.
+
+The administrator can serve one archived lookup with
+`workeros managed serve-launch --history` using the trusted client socket.
+Keep that client routing registered for the original profile. From the
+ordinary result-reader account, run:
+
+```sh
+workeros managed launch-status --workflow report-writer --revision "$revision" --request-id "$id"
+```
+
+Use the original revision and ID. JSON and YAML use `revision` with
+`workflow` and `request_id`. Python uses `readback=True` and `revision=...`.
+Only the archived revision's originally entitled OS user accounts can read
+the result. The archived lookup neither connects to the former witness nor
+uses the current launch policy. It cannot dispatch a worker. An absent
+record and an unauthorized lookup return the same unavailable result.
+
+Add `--summary-id` for each other request to include, or supply
+`summary_ids` in JSON/YAML or Python. The count covers that explicit set
+and the primary request, once per ID. If any requested record is unavailable
+to the caller or belongs to a different role or resource selection, the
+count is unavailable. Archived evidence describes an already verified
+outcome and carries no current activity claim.
+
+### Verify an independent result for a guarded workflow
+
+To require independently verified results for a guarded workflow, add
+`result_observer` to its protected `launch_executor.workflows` entry. Supply
+the appointed observer's `source`, Unix `socket`, and `uid`. The observer
+must be distinct from the launch authority, worker, administrator endpoint,
+and identities with run rights. Set `expected_effect_sha256` when the approved
+workflow has a known expected effect digest. Preview shows the selected
+observer. Apply pins the complete executor revision. The same run and status
+commands use the selected observer without caller-supplied addresses or proofs.
+
+For the installed witness, set `result_observer.handoff` to `true` and pin
+the expected effect digest. Start `workeros managed serve-witness --commissioned
+WORKFLOW` under the observer's registered UID with the two protected
+registration descriptors (`workeros-setup` and `workeros-executor`) and
+the exact original output opened read-only as `workeros-observed-output`.
+Use the same narrowly scoped socket access as for a commissioned holder.
+The guard transfers the placed process and read-only cgroup handles once.
+It releases the worker after the witness acknowledges the exact live attempt
+and retires the leaf after the witness confirms emptiness and captures output.
+The witness closes its handles and serves readbacks of that invocation for
+the remainder of the approved evidence window.
+
+The observer uses the same bounded, nonce-matched authority transport. It
+answers `read_result` for the exact `invocation` in the request using its own
+independently retained evidence. The response `result` is an object with a
+terminal `LaunchReadback` as `observation`, the independently observed
+`effect_sha256`, and integer monotonic `verified_ns` and `expires_ns`.
+The observation's source pin uses `authority_pin(source, socket, uid)`.
+The service evidence must identify the same delegated run and cgroup, bind the
+effective executable, principal and resource scope, and support terminal,
+emptiness, handle closure, retirement, and any selected meter readings within
+the approved cuts. A point or setup-binding receipt cannot answer this request.
+
+A verified reply reports `independent_service_result_verified` and the
+observer's effect and receipt digests. WorkerOS also checks that the retained
+leaf is absent. `effect: dispatched` describes execution. The independently
+observed digest records the workflow-specific effect. Missing, stale, invalid,
+or unconfirmed evidence leaves the effect unknown. Keep the original request
+ID and use `launch-status` to read again. This does not re-arm or re-submit a
+worker. The result reader can reconcile after a profile revoke, with the
+same protected executor pins and result rights.
+
+An observer that is separate from the reaper can report only its own
+effect and closure evidence. In the same `read_result` response, its
+`observation` carries `invocation`, `source`, `source_sha256`,
+`receipt_sha256`, and `cleanup` instead of a terminal `LaunchReadback`.
+The cleanup record binds the guarded reaper's exact sandbox process
+incarnation, manager run, service scope and leaf. It records live pinning,
+pidfd exit readiness, observed emptiness and retirement, effect observation,
+and closure of the observer's own handles. Readiness carries no exit
+status. In the combined result `terminal_source` identifies the legitimate
+reaper. Its receipt and terminal status remain in the main service result.
+The observer's own receipt and closure remain in `observer_result`.
+The manager's meter samples, if selected, stay attributed to the manager.
+
+For an already-appointed in-process observer,
+`workeros.managed_service_witness.observe_effect_cleanup` consumes preheld
+read-only handles for the exact pidfd, leaf, process list, population
+counter, and approved output. It compares a live pre-effect baseline with
+the expected post-exit digest held under the existing custody agreement.
+The authorized scope owner can synchronize release and leaf removal with
+the live and empty notifications, within the existing deadlines. A finite
+`serve_witness_result` connection uses the retained native observation
+after guard retirement. It accepts only the enrolled administrator launcher
+and the same invocation. The venue must already supply the distinct witness,
+exclusive output custody, and these preheld handles. This path does not
+appoint an observer or acquire a new grant.
+
+An already entitled manager can opt in by setting
+`authority.enforcement` to `guarded-service-v1` in the protected
+workflow entry. Use the existing approved socket, UID and policy pin.
+That provider must already own the registered preheld resources and
+implement guarded admission. The client passes only the recorded
+invocation and service pins. It sends no user-provided path, executable
+arguments, or file descriptors. With no opted-in provider, the
+stock path returns `service_deadline_guard_provider_unavailable`
+before requesting a ticket, creating a launch reservation, or submitting
+a unit.
+
+The provider uses the existing bounded, nonce-matched version-1 socket
+frames on the authenticated endpoint. The request's `invocation` carries
+the fixed invocation key, clock and both absolute deadlines. Its
+`service` object carries `enforcement`, `scope_sha256`, the full
+`parent` pin, the generated `unit`, and its direct child `leaf` path.
+On submit only, the stock administrator launcher also passes its locked
+role-store directory descriptor. The verified caller holds this lock from
+the durable approval check. The guard pins the same directory and keeps
+the kernel lock through the final protected release, including when the
+launcher loses the reply. The caller's request supplies no descriptor.
+
+1. `read_service` returns an `observation` using the existing
+   launch-readback schema and an `arm` record, or `null` for
+   `arm` when there is no armed reservation. Report `not_started`
+   only for a key with no arm. A started or terminal observation must
+   carry the same arm and bind its lifecycle to the exact cgroup.
+2. After WorkerOS durably reserves the invocation, `arm_service`
+   returns an `approval` using the existing launch-authorization schema
+   plus `arm`. An arm contains `binding_sha256` (SHA-256 of the
+   canonical JSON object with keys `invocation` and `service`),
+   the matching `guard_sha256`, `armed_ns`, and `leaf` (a
+   cgroup identity of device, inode and mount ID). The manager must
+   reserve the exact empty leaf and arm both cutoffs before replying.
+   Leave the leaf empty through the client's pre-submit check. An
+   explicit null result declines the request without an arm.
+3. `submit_service` sends the same invocation, service pins and
+   arm with `ticket_sha256`. The manager must atomically consume
+   the ticket once, recheck active approval and exact resources,
+   admit only under the still-armed cutoffs, and enforce bounded
+   cleanup independently of the client. WorkerOS checks the
+   pinned empty leaf before submit. A submit receipt does not settle
+   worker effect. Lost replies reconcile through `read_service`
+   on the same key. No direct systemd start or retry follows.
+
+Where policy permits same-parent bootstrap migration, the appointed
+manager must consume the ticket in `submit_service` before staging a
+child into the leaf. Recheck exact membership and the cutoff before
+any protected release. The abort-only bootstrap context retains reaping
+ownership, and its pidfd cannot be adopted as a workload for that
+invocation.
+
+### Run the installed delegated guarded authority
+
+`workeros managed serve-guard` serves the protocol above inside an already
+appointed authority process. It requires the authority's existing Unix stream
+listener, protected read-only registration descriptors, and the approved
+read-only original. The authority UID is separate from the administrator's
+launch client and the worker UID. The host's existing approved credential and
+cgroup controls must let the authority place and reap its direct child.
+
+```sh
+workeros managed serve-guard --config-fd "$guard_fd" --setup-fd "$setup_fd" \
+  --executor-fd "$executor_fd" --listen-fd "$guard_listener_fd"
+```
+
+The guard registration contains `version` (1), `profile`, `revision`,
+`workflow`, `managed_setup_sha256`, `launch_executor_sha256`, and an
+existing authority-owned `journal_directory`. Set `role_store_lock` to the
+administrator-verified `device` and `inode` of the exact role-store lock
+directory (`/var/lib/workeros` in the installed configuration). Use the canonical configuration
+digests from `profile-status --registered-managed`. The other registration
+descriptors are the same linked, administrator-owned, read-only files named
+by that receipt. They can remain private to the administrator. The holder
+supplies the listener from the appointed authority's own UID.
+
+An administrator can also start the existing finite endpoints without writing
+a descriptor wrapper. In the already authorized systemd service, use
+`workeros managed serve-guard --commissioned` for the guard service and
+`workeros managed serve-launch --commissioned WORKFLOW` for the administrator
+listener. Launch the guard as the pinned non-root `User=` and service main
+process under `Type=simple`. Set `Delegate=` and use `DelegateSubgroup=` (systemd 254 or later)
+to place it in an owned direct subgroup before it starts. The service root
+must be an empty cgroup v2 domain in the sense of having no direct processes.
+WorkerOS checks the delegation marker and performs worker cgroup operations
+only on its exact child leaf. If accounting is selected, the administrator's
+delegated service must already expose the memory controller to its children.
+WorkerOS does not change service-root or slice controllers. The guard must
+already be able to switch the child to the worker's registered credentials.
+The commands
+create their respective registered listeners in existing protected directories.
+The guard's directory must be owned by that guard and accessible only to it
+and the administrator. The administrator listener checks the calling UID
+against the enrolled workflow rights. Each command removes its own listener
+on normal exit. There is no automatic restart or worker start.
+
+Use the activation mode that matches the service:
+
+- **The service's exact cgroup identity is already pinned.** Start
+  `serve-guard --commissioned` without any `--commissioning-*` options.
+  The system service can deliver the three administrator registrations through
+  systemd `OpenFile=` entries with `read-only` (systemd 253 or later) and
+  descriptor names `workeros-guard`, `workeros-setup`, and
+  `workeros-executor`. The guard checks ownership and registered digests
+  after delivery.
+- **Discover the exact identity of a new service.** Start its main process
+  with `serve-guard --commissioned --commissioning-unit UNIT
+  --commissioning-directory DIRECTORY --commissioning-deadline-ns DEADLINE`.
+  Leave the three registration descriptors out of the service's activation
+  inputs in this mode. A direct activation can still supply the approved
+  original descriptors. Use the administrator's existing protected
+  directory and an absolute deadline on the host monotonic clock. Keep
+  `DIRECTORY/registration` absent at start.
+
+In discovery mode, the host operator must already be authorized to run the
+appointed guard in a delegated system service. The following steps enroll
+that exact service incarnation.
+The subprocess reports `guard_parent_pinned` after PID 1 and the actual guard
+process and cgroup agree. Use that exact `parent` when you
+[prepare the guarded bundle](#prepare-a-guarded-commissioning-bundle).
+Once the administrator has applied the approved revision and generated the
+guard registration, atomically
+publish the completed `registration` subdirectory with the three linked,
+administrator-owned JSON files named `workeros-guard.json`,
+`workeros-setup.json`, and `workeros-executor.json`. Keep the directories
+administrator-owned and protected from group or other writes. The guard needs
+directory traversal and read access to those files. The same MainPID rechecks
+its native invocation, the approved five-field pin and selected metering before
+opening its listener. If the deadline expires or the pins differ, activation
+refuses. Use the normal protected appointment and approval procedure.
+For direct activation, the approved original owners supply the exact held
+descriptors to both services under their named `workeros-original-stdin`,
+`workeros-original-stdout`, or `workeros-original-stderr` slots. WorkerOS
+verifies each resulting descriptor against the approved identity and access
+mode. A [registered holder](#activate-a-live-holder-and-overlap-distinct-workflows)
+can supply the originals instead. Use the separately approved owner and witness
+bindings for the workflow. For historical readback after the owners close the
+originals, start the guard with `--commissioned --readback-only` and supply just its
+three administrator registration descriptors. Run the launcher without
+original descriptors for that readback. Any new run then refuses.
+
+### Activate a live holder and overlap distinct workflows
+
+For a descriptor bundle, the protected workflow can name `holder` with the
+appointed holder's non-root `uid` and dedicated Unix `socket`. The existing
+manager supplies the holder's linked read-only `workeros-executor` registration.
+Start the finite
+holder as that appointed identity using
+`workeros managed serve-holder --commissioned WORKFLOW`. Its protected
+directory and every initial recorded descriptor must already exist.
+
+The manager can deliver the live `workeros-original-*` descriptors, or the
+appointed holder can open the existing approved files with
+`--original-stdin`, `--original-stdout`, and `--original-stderr` for exactly
+the slots in the registration. Supply absolute paths. This opens with the
+holder's own OS permissions and the registered access modes, verifies the
+owner, device and inode, and holds the result across both transfers. It
+does not create or truncate a file. Use one method per activation.
+The appointed witness can similarly use `--observed-output ABSOLUTE_PATH`
+instead of its inherited output descriptor. It always opens it read-only.
+See the [disposable commissioning walkthrough](guarded-walkthrough.md) for
+the systemd commands.
+
+The holder socket needs Linux POSIX ACL support. Its dedicated holder-owned
+directory must have owner `rwx`, a single named execute-only entry for the
+commissioned guard UID, a matching ACL mask, and zero group and other rights.
+Do not set a default ACL there. Existing trusted ancestors must be searchable
+and have no extended access ACL. WorkerOS verifies the directory as supplied.
+It creates the socket with owner read/write and one named write-only entry for
+the same guard UID. It verifies that ACL before listening and removes only its
+own socket when the holder exits. The connection still needs the enrolled
+kernel peer credentials and request pins. A failed ACL or traversal check returns
+`service_holder_access_unverified` before listening.
+
+The guard and launcher request copies from the registered holder. The holder
+checks the kernel credentials and exact profile, revision, workflow and scope.
+It sends one copy to each entitled consumer without reopening a pathname. The
+receiver verifies every descriptor's owner, access mode and device/inode.
+When using a holder, pass no original descriptors directly to the guard or
+launcher. The independent Observer remains separately enrolled where required.
+
+To serve two distinct scopes in one profile, provision distinct original
+identities and dedicated holder and guard endpoints for both workflows. Start
+those guards through `serve-guard --commissioned`, then run the launcher with
+`--commissioned WORKFLOW_A --commissioned WORKFLOW_B`. The list limits the
+batch to two requests. Submit one for each workflow with different
+request IDs. The approval lock is held through each release. A guard retains
+ownership through the bounded reap and retirement, so a second scope can
+start after the first release and before its retirement. A reply can still
+be `UNKNOWN` while the guard retires the scope. Use the same request ID for
+readback. Each holder-backed guard processes one claimed run per activation.
+
+Setup and guard registrations must be updated together for this installed
+guard to accept submit. The guard refuses a missing or different role-store
+lock, rechecks the current protected registration immediately before release,
+and retires an unstarted arm. A revocation that wins the role-store lock
+prevents new submission. Once the guarded release owns that lock, revocation
+is ordered after the release. Previously released jobs remain owned by the
+guard for drain and historical readback. If an armed operation has no durable
+no-effect proof, the same-key readback remains unknown.
+
+This stock release uses the protected Bubblewrap backend. It snapshots the
+approved static executable named by the service scope beneath the protected
+root. The service can use its approved legacy stdin or a descriptor bundle
+selecting stdin, stdout, and stderr. WorkerOS retains the declared access and
+owner of each exact file; unused streams stay inert. Scope and role checks
+apply before release. Capabilities beyond those held descriptors require
+a backend authorized to enforce them.
+
+The manager reserves the empty cgroup and both cutoffs, then persists the
+matching submit before passing any worker descriptor to its verified gated
+child. The same owner reaps it and retires its exact leaf. The original
+abort-only bootstrap remains available for no-start staging. If a placed
+gate is reaped before any release attempt and the exact leaf is observed
+empty and retired, the same key can report `service_bootstrap_unreleased`
+with no worker effect. That terminal result leaves its submit consumed.
+An uncertain release stays unknown.
+
+A delegated terminal receipt names its manager run separately from systemd's
+InvocationID. The outer client's `provider_report` preserves that authenticated
+same-key observation if it can also corroborate leaf removal. The effect
+remains `unknown` at the outer boundary until the required independent worker
+evidence is available.
+
+The provider must retain the identical leaf through emptiness and
+selected final meter sampling before removal. Readback reports terminal,
+final counters and removal separately. WorkerOS corroborates the
+running or terminal state from the native manager when still available.
+When the pinned leaf is already absent, it may preserve authenticated
+history under `provider_report` with code `service_terminal_reported`.
+Effect and state remain unknown. Local absence only confirms current absence.
+It cannot corroborate earlier final sampling or historical termination.
+For a retired delegated service, same-key readback checks present absence
+on the pinned cgroup mount without requiring a running guard service.
+A replacement at the same path with a different cgroup identity leaves
+retirement unconfirmed.
+Relative runtime limits, an exited unit record and a guard digest by
+itself cannot satisfy this contract.
+
+[systemd cgroup delegation](https://systemd.io/CGROUP_DELEGATION/) ·
+[systemd D-Bus manager contract](https://www.freedesktop.org/software/systemd/man/latest/org.freedesktop.systemd1.html)
+
+An existing manager can use `workeros.delegated_service_leaf.DelegatedServiceLeaf`
+for a pre-existing, exclusively owned cgroup v2 leaf. It checks the exact
+registered parent and leaf, opens the scoped kill control, and arms two
+absolute monotonic kernel timers. Supply only an owned, waitable direct
+child that was already confined and gated before worker effects. The
+manager owns the wait and bounded reap independently of the client. Use
+`finish()` to collect local terminal and empty-leaf observations and any
+required final counters while retaining the leaf. `retire()` then verifies
+the pinned empty leaf, removes it, and observes absence. Close local handles
+separately. These local observations do not supply independent readback.
+
+When the venue already authorizes migration of a trusted bootstrap within
+the same delegated parent, the manager can use `stage_trusted_bootstrap()`
+to hold a fixed child on a private gate. It passes only the gate and the
+already-armed active timer, with standard streams on `/dev/null`. It moves
+only its direct bootstrap child into the exact leaf and verifies membership
+before returning the borrowed waitable pidfd. The context exposes no
+worker release, executable selection, service readiness or worker data.
+The child exits when the gate closes or the active timer expires. Closure
+reaps the direct child within the cleanup window or reports unconfirmed.
+
+Stock WorkerOS still needs the appointed manager's authorized pre-effect
+admission operation. A venue that requires birth in the leaf still needs
+atomic native placement. The bootstrap context does not replace the
+authenticated arm or independent evidence path and is unavailable as a
+stock launch operation. A later reap or empty-leaf observation leaves the
+active cutoff unconfirmed, even when bounded cleanup succeeds.
+
+#### Retain resources from an existing invocation
+
+In a trusted host process, `workeros.incumbent.retain_incumbent(pins,
+handles)` checks and retains five preheld descriptors. The protected
+`IncumbentPins` includes the selected profile, invocation and clock
+window, directory identity, existing writer and reader incarnations,
+pinned Unix phase peer, and cgroup meter directory. The
+`IncumbentHandles` comes from the existing scope owner. Keep the
+context through the owner's use of those handles, then leave the context
+or close the retained copies as part of the same outer close. Release
+the copies before checking EOF or closure. The invocation pins remain
+available after release. Keep descriptor values local.
+
+This check verifies current identities and holds the exact objects. It
+cannot appoint an owner, acknowledge a phase, settle the original,
+certify process retirement, or supply independent close evidence. The
+assigned incumbent owner must supply an authenticated, invocation-scoped
+handoff, and the appointed independent evidence source must verify that
+invocation's close. The stock authority's authorize and readback
+operations do not supply those operations. The terminal, JSON/YAML,
+and Python launch front doors continue to use the existing grant
+semantics.
+
+#### Register one read-only Bubblewrap worker
+
+The stock executor supports one read-only regular file and one static
+ELF64 x86_64 or AArch64 executable. It runs as the approved existing
+non-root UID and primary GID with supplementary groups cleared. The
+native Linux host or WSL guest must provide trusted non-setuid
+`/usr/bin/bwrap` 0.12 or newer and allow unprivileged namespaces.
+Verify both on the deployment host. The
+[Bubblewrap documentation](https://github.com/containers/bubblewrap#sandbox-security)
+describes the namespace mechanism.
+
+Keep the fixed administrator-owned `/etc/workeros/launch-executor.json`
+beside the existing `managed-setup.json`. Its version-1 fields are
+`profile`, `revision`, `policy` (the approved `LaunchRolePolicy`),
+`principal_gid`, `executable`, `wheel_path`, `wheel_sha256` and
+`authority` (a Unix `socket` path and numeric `uid`). Pin the authority
+using `workeros.managed_executor.authority_pin(name, socket, uid)`.
+The authority UID must differ from the host process and worker UID.
+The executable and its parent directories must be administrator-owned
+and protected from group and other writes. WorkerOS seals the exact
+executable bytes after hashing them and accepts files up to 64 MiB.
+
+The selected workflow must approve `launch` and `observe` for the same
+scope, with its existing point provider and approved named original.
+The existing host retains the pinned readable descriptor. The input
+must be administrator-owned, non-executable, protected from group and
+other writes, and readable by the worker under existing permissions.
+The sandbox exposes it at `/input` and runs `/worker` with no
+caller-supplied arguments or environment. It supplies no host root,
+network namespace sharing, libraries, procfs or devices. This backend
+does not supply privileged capabilities, interval custody or scope retirement.
+
+Use these commands in the entitled host context that already holds
+the approved descriptors. Generate and retain one ID before invoking.
+
+```sh
+id=$(python -c 'from workeros.managed_launch import new_launch_request; print(new_launch_request())')
+workeros managed run-approved --request-id "$id"
+workeros managed launch-status --request-id "$id"
+```
+
+An equivalent JSON request on standard input uses
+`{"version":1,"request_id":"<the retained ID>"}` with `--format json`.
+Use the same fields with `--format yaml` and the optional PyYAML
+dependency. Application code calls
+`workeros.managed_executor.registered_launch(request_id)` or passes
+`readback=True` for historical status. Setup and ordinary managed client
+actions still start nothing.
+
+An entitled Python manager can pass the same approved executor and
+host registrations to `open_managed_worker(executor_config,
+host_config=host_config)` and call `adapter.launch_approved(request_id=id)`.
+This uses the same installed sandbox and authority socket without looking
+up the two configuration files. The existing approval store is still
+required. The administrator chooses the role name. Keep both registration
+objects inside the trusted manager.
+
+The host commissions an independent authority at the pinned socket.
+WorkerOS checks the peer UID before sending framed JSON. A request
+contains version `1`, operation `authorize` or `readback`, a fresh
+nonce and an exact typed invocation. The reply echoes version, operation
+and nonce and carries the typed result as `result`. The authority owns
+one-time tickets and independent effective-state observations. It must
+authenticate the sending host and bind any authorization or readback
+to the invocation key. The stock executor records each ticket durably
+under the existing approval lock before dispatch. A second request
+cannot reuse that ticket. An approved workflow with `cleanup_ms` uses
+that budget within the authorized deadline to stop and reap its exact
+direct child. Keep the
+protected executor registration and historical authority available
+after revocation. `launch-status` reads the exact reserved result
+without live approval or inherited worker handles. It cannot issue a
+new ticket.
+
+#### Supply the enforcing backend and verify each invocation
+
+The administrator supplies a `LaunchPlan` for the exact workflow definition
+digest, role, appointed principal, generation, executable pin, resource
+scope pin and fresh durable invocation key for the single-invocation form.
+The reusable form derives a plan with the same policy pins and its reserved
+key. In either case the enrolled policy must allow
+`launch`. Its executable provider reference must equal the executable
+SHA-256. Its supervisor provider must name the appointed launcher with
+capability `scoped-launch`, and its reference must hash the administrator's
+exact resource and allowed-operation manifest. Both providers must belong to
+the definition's scope. The manager must support the existing live binding,
+scope attestation and role-appointment checks.
+
+Trusted deployment code must authenticate the launcher and an independent
+authority before registering callbacks. The authority's name and credential
+fingerprint are pinned in the plan. Its `authorize(invocation)` callback
+verifies current scope and returns an exact, bounded `LaunchAuthorization`
+with a single-use ticket reference. The launcher receives that invocation
+and ticket, with no caller-supplied paths, commands or identities. It must
+recheck authority and lifetime at dispatch, enforce the executable, principal
+and resources, and durably reserve the exact key before any effect. This
+requirement applies across restarts. The host provides that backend separately.
+
+The stock entry requires `bounded=True` on the registration. The three
+backend callbacks accept the absolute monotonic `deadline_ns` keyword.
+The stock path shares the existing five-second managed request budget with
+binding evidence, authorization, submission and readback. A shorter enclosing
+budget or ticket lifetime limits use. The endpoint implementations must bound
+their I/O themselves and durably reserve the invocation before irreversible
+work. The argv used to check the compiled policy comes from the trusted host;
+the stock adapter never executes it or accepts it from a managed client.
+
+The independently authenticated `readback(invocation)` callback supplies a
+`LaunchReadback` from the authoritative record. For a started or terminal
+invocation, it returns effective principal, executable and scope pins measured
+by the authority, and the receipt digest. The adapter compares these pins
+with the approved plan and derives the result from readback. Lost or
+inconsistent evidence stays `unknown`. Use `read_launch()` for historical
+reconciliation, including after revocation. A terminal launch receipt alone
+does not establish successful work, continuous custody or scope retirement.
+
 ### Choose a journey
 
 - **Run a job:** `workeros help run` shows the local Python controller. The
@@ -520,6 +1235,15 @@ observation. Revalidate independent, exact evidence at use. Any interval or
 retirement requirement still needs its own independently qualified provider and
 venue evidence.
 
+For a point-only approved launch scope, the selected point observer can
+serve a definition that also carries one exact executable pin and one
+`scoped-launch` supervisor pin for the same launcher and scope. The observer
+must have its own principal and a UID distinct from the observed worker.
+Each request and response pins the full definition, including both launch
+records. The provider serves the point observer only. The enforcing launcher,
+ticket authority and effective invocation readback still belong to the
+approved deployment.
+
 This setup checks associations and current provider attestations. A named
 directory entry is a point observation. Interval custody, worker-to-worker
 handoff, writer state, dedicated-run meter deltas and whole-scope retirement
@@ -564,15 +1288,51 @@ reference hashes compact, sorted JSON containing the `observer` plan
 (excluding all descriptor numbers) and the exact `interval_provider` object.
 Provision the appointment against that exact definition digest.
 
+This check-only mode also accepts one independently registered
+`cgroup-v2` meter alongside the interval observer **in the same definition**.
+Include `meter` and `meter_provider` and select both `observe` and `meter`
+in the workflow. Both bindings must name the definition's exact scope ID
+and specify `independent_of`. Pin distinct provider principal names,
+endpoint paths and Linux UIDs. Set the observer's `scope_sha256` to the
+SHA-256 of the compact sorted JSON for the entire meter `scope`
+(`EvidenceScope`, including its run and clock). A shared name alone cannot
+join different runs. Hash the paired meter reference as compact sorted
+JSON containing `{"meter": plan, "meter_provider": endpoint}`, where
+`plan` is the meter plan without `directory_fd`. The stock meter provider
+derives the endpoint from its preopened listener and registered UID.
+Ordinary point/meter references keep their existing format.
+
 The separately controlled provider must implement the bounded Unix-stream
 attestation exchange above with `version: 2` and `capability: "interval"` in
 both request and verified reply. It must independently verify its current
 appointment and exact evidence before replying. The bundled point/meter
-provider does not implement this exchange. The host authenticates the pinned
+provider can serve the meter binding but does not implement the external
+interval exchange. Both providers must attest the same current definition,
+role, generation, and clock, with the earlier valid expiry governing
+the check. The host authenticates the pinned
 peer before sending the challenge and refuses a mismatched or expired reply.
 Success verifies the current binding only. Readiness remains `not_checked`,
 independence remains `unverified`, and runtime evidence is `not_requested`.
-Registration is unavailable in listen, describe and recovery modes.
+The check-only mode needs no setup journal. It ignores `journal_directory`
+if the configuration includes one.
+
+Run `workeros managed serve-setup --check-bindings` for a local result.
+For the ordinary authenticated client, obtain the exact client pins using
+`workeros managed serve-setup --check-bindings --describe` with the same
+approved resources and inherited handles. This describes the configured
+pins without contacting a provider. Enter the pins in the administrator
+client configuration below. Then have the authorized host run
+`workeros managed serve-setup --check-bindings --listen-fd FD` with its
+preopened listener and approved handles, and run
+`workeros managed check-bindings` from the enrolled client.
+
+The check-only listener serves one authenticated request. Setup, mapping
+readback and reconciliation requests receive `binding_check_only` and
+`effect: not_attempted`. A missing role appointment refuses before querying a
+provider. A changed generation, expired provider observation, or unconfirmed
+reply leaves the binding unverified. It takes fresh verified evidence to
+qualify a future use. Bare setup listen, describe and recovery modes continue
+to refuse interval registrations.
 
 #### Existing custom host integration
 
@@ -602,9 +1362,10 @@ scope digests, and clock context in the reply. It checks bindings without
 creating or reading a setup attempt. Exit zero means `bindings_verified`
 at the reported observation time, with `readiness: not_checked` and
 `runtime_evidence: not_requested`. When a reply cannot be confirmed,
-verify the host and its pins before using the bindings. The stock bootstrap's
-interval registration is a local check only. An existing trusted host with
-an already authorized typed interval provider can use this client command.
+verify the host and its pins before using the bindings. A stock check-only
+listener with an independently authorized registered interval provider supports
+this command. An existing trusted host can also supply an authorized typed
+provider directly.
 
 Use a dedicated authorized host UID where other processes must not impersonate
 that service. The command verifies the connected peer's Linux `SO_PEERCRED` UID
@@ -695,6 +1456,249 @@ changed mappings and revoke the old declaration to disable its registration.
 An unavailable store or uncertain write requires `appointment-status` before
 another attempt. `registered` reports local administrator intent and leaves runtime
 readiness and independence unverified.
+
+When the administrator already supplied protected `managed-setup.json` and
+`launch-executor.json`, compare both to the exact approved profile before
+commissioning its role and appointments:
+
+```sh
+workeros managed apply-profile --registered-managed --preview < profile.json
+workeros managed apply-profile --registered-managed < profile.json
+workeros managed profile-status --registered-managed PROFILE REVISION
+```
+
+This path compares the approved profile, backend, and installed wheel with
+the two current files. Apply records the role and appointments. Status reads
+back those records and reports the current matching configuration digests.
+The check opens no backend connection and starts no workload. Live provider
+authority and execution require separate proof.
+
+On a fresh installation, the administrator supplies an approved
+`bundle.json` with `version: 1`, the approved `profile` with its appointments,
+`managed_setup`, and `launch_executor`. To provision
+the stock named client on a clean host, include its
+[`launch_client` routing document](#register-a-named-systemd-workflow) in that
+bundle. Once these inputs are ready, run:
+
+```sh
+workeros managed apply-profile --provision-managed --preview < bundle.json
+workeros managed apply-profile --provision-managed < bundle.json
+workeros managed profile-status --registered-managed PROFILE REVISION
+```
+
+Preview checks the configuration before writing. First apply installs
+absent fixed files and records their canonical digests in the approved
+revision. Guarded launch requires those pins. A changed setup or executor requires a new approved
+revision, including changes to allowed callers. Historical access uses the
+pinned executor and result rights after revocation.
+
+#### Prepare a guarded commissioning bundle
+
+The installed draft example builds the linked JSON objects for a guarded
+workflow from administrator-supplied inputs. Run it in the trusted WorkerOS
+environment on the target host. Have the approved worker account, exact
+originals, executable, endpoints, and cgroup parent ready. For a new service,
+get that parent from the running guard's `guard_parent_pinned` reply.
+
+Here is the input shape for one named writer. Replace the example labels and
+paths with the approved values. Fill every zero and every angle-bracket
+placeholder from the administrator's actual inputs before drafting.
+
+```json
+{
+  "profile": "reports",
+  "revision": "review-1",
+  "workflow": "report-writer",
+  "workflow_revision": "v1",
+  "generation": "review-1",
+  "role": "report-editor",
+  "principal": "report-worker",
+  "launcher": "report-launcher",
+  "manager": "report-manager",
+  "authority": "report-guard",
+  "authority_socket": "/run/workeros/report-guard/guard.sock",
+  "authority_uid": 0,
+  "client_socket": "/run/workeros/report-client/launch.sock",
+  "wheel_path": "/srv/workeros/approved/workeros.whl",
+  "wheel_sha256": "<approved wheel SHA-256>",
+  "executable_sha256": "<approved executable SHA-256>",
+  "expires_at": 0,
+  "expires_ns": 0,
+  "operation_key": "<retained 64-hex setup key>",
+  "run_uids": [0],
+  "result_uids": [0],
+  "journal_directory": "/var/lib/workeros/managed-journal",
+  "service": {
+    "root_directory": "/srv/workeros/report-root",
+    "root_device": 0,
+    "root_inode": 0,
+    "executable": "/write-report",
+    "principal_gid": 0,
+    "active_ms": 0,
+    "cleanup_ms": 0,
+    "metered": false,
+    "parent": {
+      "unit": "report-guard.service",
+      "control_group": "/system.slice/report-guard.service",
+      "mount_id": 0,
+      "device": 0,
+      "inode": 0
+    },
+    "descriptors": [
+      {"slot": "stdout", "scope": "report-output", "owner_uid": 0,
+       "mode": "write", "device": 0, "inode": 0, "fd": 3}
+    ],
+    "elevated_capabilities": [
+      {"name": "write_report", "scope": "report-output", "operation": "write"}
+    ]
+  }
+}
+```
+
+Use the role's Unix expiry in seconds for `expires_at` and its approved
+cutoff on this host's monotonic clock in nanoseconds for `expires_ns`. The
+monotonic cutoff cannot extend the role's lifetime. Keep one `operation_key`
+for the exact setup attempt. List the approved caller and reader UIDs
+separately. The `descriptors` pin the original owner and exact file identity.
+Named activation binds each slot to its delivered original. The `fd`
+number is excluded from the reusable scope digest. The optional
+`holder` and `result_observer` entries use the protected forms described in
+the [holder](#activate-a-live-holder-and-overlap-distinct-workflows) and
+[independent result](#verify-an-independent-result-for-a-guarded-workflow)
+sections.
+
+For several workflows in one revision, put their draft inputs in a
+`{"workflows": [...]}` document. Use the same profile, revision, wheel,
+operation key, setup journal, and client socket, with a distinct workflow
+and role for each entry. Keep each registered original and guard separate.
+
+```sh
+example=$(python -I -c 'import sysconfig; print(sysconfig.get_path("data") + "/share/workeros/examples/draft_guarded_profile.py")')
+umask 077
+python -I "$example" draft spec.json > bundle.draft.json
+```
+
+The draft prints the bundle. The administrator first previews it, then applies
+the same reviewed bytes and captures the status. Set `profile`, `revision`,
+and `workflow` to the chosen names, and `guard_journal` to the guard's private
+journal directory.
+
+For example, when an administrator has placed the verified install at
+`/opt/workeros-qual/venv` and the reviewed bundle at
+`/etc/workeros/approved-role.json`, the approval command is:
+
+```sh
+sudo -- /bin/sh -c 'exec /opt/workeros-qual/venv/bin/workeros managed apply-profile --provision-managed --preview < /etc/workeros/approved-role.json'
+sudo -- /bin/sh -c 'exec /opt/workeros-qual/venv/bin/workeros managed apply-profile --provision-managed < /etc/workeros/approved-role.json'
+```
+
+The OS handles administrator authentication. Ordinary callers use the
+installed client for preauthorized invocations. The grant specifies
+admin-defined combinations of operations and exact resources enforced by
+the registered backend. A new or increased grant requires administrator
+approval. An ordinary caller's inability to open a protected original does
+not prevent its approved owner from supplying that exact descriptor to a
+scoped worker.
+
+```sh
+# Run inside the trusted administrator shell.
+workeros managed profile-status --registered-managed "$profile" "$revision" > status.json
+python -I "$example" guard bundle.draft.json status.json "$workflow" \
+  --journal "$guard_journal" > workeros-guard.json
+```
+
+The guard step matches the bundle to the captured status pins and reads the
+identity of the administrator's role-store lock at `/var/lib/workeros`.
+Run it in the administrator's trusted environment with access to that
+store. Deliver `workeros-guard.json` and the matching setup and executor files
+through the [guard's selected activation mode](#run-the-installed-delegated-guarded-authority).
+The draft and readback do not supply OS authority, live originals, or a
+running guard.
+
+For an intentional revision change of the same managed profile, prepare a
+complete new bundle and use its top-level `rotate_from` object. Include the
+exact old `revision`, `managed_setup_sha256`, `launch_executor_sha256`,
+and `launch_client_sha256` from the current registrations. For the draft
+example's batch input, put `rotate_from` beside `workflows`. Revoke the old
+revision before applying the new one. Preview then verifies the old
+revocation and file pins, and apply publishes the new client routing last.
+Check `managed_rotation.status` for `verified`. If a cutover is incomplete,
+check `profile-status --registered-managed` for the same revision and use only
+the exact retained approved bundle to reconcile it. Retained history uses the
+original result rights and remains available through the history listener.
+
+New stock v1 launches also require the setup and executor pins from the
+approved revision. Status reads can use the pinned executor after revocation
+or expiry without reopening live setup. An old unpinned v1 record remains
+readable through its exact historical invocation. Only an explicit trusted
+in-process host registration can still run an unpinned v1 configuration.
+
+For a managed service with registered file descriptors, an administrator can
+name a scoped operation in the role declaration. Include the name in the
+role's `operations`, and register it in `operation_aliases`. For example,
+`index_inventory` can select `read` on a role resource named `inventory-source`:
+
+```json
+{
+  "index_inventory": {
+    "capability": "read",
+    "scope": "inventory-source",
+    "provider_sha256": "<approved ServiceBundle digest>"
+  }
+}
+```
+
+The role's `resources` must pin that scope's device and inode. Supply the matching
+launch appointment in the same JSON or YAML document to `managed apply-profile`.
+The appointment pins the full role, including the alias, and the workflow
+definition pins the existing stream provider. The service manager verifies the
+same bundle digest, descriptor identity and access mode before requesting an
+invocation ticket. Aliases support the bundle's existing `read` and `write`
+rights. Adding an alias grants no new access. The workflow and appointment
+still use the typed `launch` operation, and Terminal, JSON/YAML requests and
+Python select that same approved workflow. Changes require a new approved
+revision.
+
+To authorize elevated access through the guarded service, add the exact
+admin-named operation to the selected workflow's protected `service`
+registration in `launch_executor`:
+
+```json
+"elevated_capabilities": [
+  {"name": "index_inventory", "scope": "inventory-source", "operation": "read"}
+]
+```
+
+The role must list `index_inventory` in `operations` and `operation_aliases`,
+and include `{"capability":"index_inventory","scope":"inventory-source","approved":true}`
+in `privileged`. Pin the new bundle digest in the alias and workflow definition.
+The complete capability list must match the role and the read/write access
+modes of the exact registered originals. The protected workflow must select
+`guarded-service-v1`. The worker receives access through approved descriptors
+only. Ambient system capabilities, arbitrary commands, and other unsupported
+operations are refused.
+
+Use `workeros managed apply-profile --preview --provision-managed` to show the
+effective scope requested by the registration. Apply without `--preview`,
+then use `workeros managed profile-status PROFILE REVISION --registered-managed`
+to read back the pins. These operations start no workload and show enforcement
+as `not_checked`. Explicit `workeros managed run-approved --workflow WORKFLOW
+--request-id ID`, equivalent JSON or YAML input, and Python
+`workeros.managed_executor.registered_launch(ID, workflow=WORKFLOW)` use the same
+guard. Launch still requires the appointed guard, the exact approved executor,
+live descriptor owners, and a writable delegated leaf the authority can arm
+and retire. `workeros managed revoke-profile PROFILE REVISION` denies new uses
+while leaving authenticated historical readback available. Already released
+workers remain subject to their existing guard and deadlines. Approving a
+new revision does not revoke an older one.
+
+The administrative receipts include `admin_history` for recorded apply,
+commission, and revoke actions. Each entry identifies the revision and
+disposition. New entries record the kernel-authenticated effective UID
+and a decimal Unix nanosecond timestamp. That UID identifies the process
+credential, without identifying the human who authorized it. Older receipts
+can show an unverified actor and a null time. Repeating an exact operation
+preserves the original history.
 
 During managed setup or readback, WorkerOS compiles the pinned policy against live
 bindings and compares the registration with the exact workflow definition, declared
@@ -800,31 +1804,69 @@ different grant capability or an independent observer on this grant must
 use an authorized backend and the required separate provider evidence;
 WorkerOS refuses those inputs here before applying an ACL.
 
-Keep the original document and the returned `grant_plan`. When the same
-profile receipt already exists, an exact repeat checks the grant read-only.
-It never repeats a possibly interrupted ACL write. A changed input conflicts
-with that revision. For a separate readback, save only `grant_plan` to
-`grant.json` and use `workeros roles grant-check < grant.json`. If the
-interrupted reply was lost, retain the original profile and check
-`workeros managed profile-status reports review-1`; reconstruct the exact
-grant plan from the original approval if necessary. A lost or incomplete
-result can leave the declaration recorded and access unknown. Preserve the
-journal and reconcile before any new grant.
+Keep the original document. An exact apply repeat reads back the previously
+recorded grants. A changed input conflicts with that revision. A lost or
+incomplete result may leave only some ACLs present. Check
+`workeros managed profile-status reports review-1` for the recorded plan and
+per-file kernel readback. Resolve any unknown entries before applying a new
+revision. Setup attachment, runtime evidence, scope cleanup and manager
+retirement have separate fields and require their own checks.
 
-Use `workeros roles grant-revoke < grant.json` for explicit cleanup, and
-verify the resulting absence using `roles grant-check`. Profile expiry,
-declaration revocation, and package uninstall do not remove an ACL. Revoke
-file access before uninstalling the trusted CLI when no other administrator
-cleanup route is in place. Revocation applies to future opens; it does not
-close an already-open descriptor.
+Use `workeros managed revoke-profile reports review-1` to retire the exact
+declaration and remove its recorded file ACLs. Run `profile-status` again
+to confirm the individual ACLs are absent. The administrator can update a
+profile by verifying removal on the old revision, approving the new version's
+registrations and applying an explicitly new revision. The steps are separate
+and can leave an interval without access. `roles revoke` affects the
+declaration only. Earlier standalone grants use the exact saved plan with
+`roles grant-check` and `roles grant-revoke`.
+
+The Linux POSIX ACL backend requires manual revocation. Schedule cleanup
+before expiry or uninstall. A request for automatic expiry is refused before
+apply. Revocation prevents new opens through the removed grant. An already
+open descriptor remains usable until its holder closes it.
 
 #### Register a native file capability
 
-Trusted administrator-owned Python code can register a custom operation with
-the same no-start apply entry. The supplied adapter targets Linux named-user
-data ACLs. It supports read (4), write (2), or read and write (6). These are
-file access permissions, so a write registration cannot promise append-only
-access. No registration starts a command or creates a principal.
+The stock CLI can read an administrator-controlled registry with the same
+no-start apply entry. The Linux named-user data ACL backend supports read (4),
+write (2), and read and write (6). A write entry permits file writes and cannot
+limit them to appends. No registration starts a command or creates a principal.
+
+An administrator places the approved registry at
+`/etc/workeros/file-acl-registrations.json`. WorkerOS checks that the fixed file
+and its directories are root-owned and free of group and world write access.
+The file must be a single-link regular file. User-supplied paths and symbolic
+links are refused. Use version 1 and a bounded list of exact ceilings. For
+example, an entry for an independently approved local account and pinned file
+has this shape:
+
+```json
+{
+  "version": 1,
+  "registrations": [{
+    "capability": {"name": "report-data-write", "operation": "replace-report-data", "access": 2},
+    "profile": "reports", "revision": "review-1", "role": "report-editor", "scope": "final-report",
+    "principal_uid": 1234, "path": "/approved/reports/final.txt",
+    "device": "2049", "inode": "123456", "maximum_access": 2, "expires_at": 1893456000
+  }]
+}
+```
+
+Use the actual account UID, file path, device and inode, and the approved
+expiry. Keep the actual role document and its grant limited to that revision
+and scope. Load the registry explicitly for preview and apply:
+
+```sh
+workeros managed apply-profile --registered-file-acl --preview < approved-profile.json
+workeros managed apply-profile --registered-file-acl < approved-profile.json
+```
+
+Confirm the file, account and mask in the preview before applying. With the
+flag set, unavailable, untrusted or nonmatching registry entries refuse
+before a new declaration or grant. The registry must explicitly cover
+every selected grant, including the built-in read capability if selected.
+Existing built-in grants without the flag remain available.
 
 An adapter declares the capability name, operation name and access mask. An
 administrator supplies a ceiling for that capability with an exact profile,
@@ -851,13 +1893,34 @@ Take every `approved_*` value from the host's administrator-controlled policy.
 The document on standard input selects `report-data-write` in both capability
 fields and lists `replace-report-data` as an operation on the single approved
 scope. Its pinned values and expiry must fit the registration. Remove
-`--preview` only after approval. The stock CLI does not load adapter code or
-registrations from a document. Without the trusted registration it refuses the
-custom grant. A host supplying a registry must authorize every grant through
-that registry, including the stock read capability if the host wants it.
-The existing `roles grant-check` and `roles grant-revoke`
-commands consume the returned `grant_plan` and verify the original capability,
-mask and file against the protected journal.
+`--preview` only after approval. The profile on standard input can select an
+approved capability and cannot create its registration. An in-process
+registry and the fixed file flag cannot be combined.
+For several grants in one profile, use a top-level `grants` array in place
+of `grant`. Each item has the same shape as `grant` and requires an exact
+administrator registration. For example, a report reader and an inventory
+editor may have separate operations and separate pinned files under one
+revision. A role can have multiple registered scopes. Each scope must map to
+a distinct file and each grant is checked against its own UID, device,
+inode, operation, mask and expiry. An unenforceable entry is refused. An
+independent observer or meter can be registered separately under the same
+profile. Its provider binding must be verified before use.
+
+Preview checks every proposed file before apply. Apply records the complete
+grant plan, then verifies each ACL in order. If a write or its readback is
+uncertain, apply stops changing files and reports the observed per-file
+state. There is no cross-file atomic transaction. The stored plan allows
+profile status and revocation even after the registrations are removed.
+Automatic expiry (`"expiry":"automatic"` in a grant) requires a different
+host backend. Omit the field or use `"expiry":"manual"` for this backend.
+
+These ACLs govern an existing UID's access. A trusted host can separately
+pin the executable in `HostBindings` and launch it under that existing
+identity. The ACL also applies to other processes running as the same UID.
+Use `"enforcement":"process"` to require executable-bound isolation and get
+a pre-apply refusal from this backend. To enforce that boundary, the host
+must supply an authorized supervisor or a process-scoped capability backend.
+The managed setup commands do not change worker credentials or start a job.
 
 #### Apply an explicitly approved access plan
 

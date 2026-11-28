@@ -67,14 +67,17 @@ authority and protected originals still require their enrolled host adapters.
 
 ### Store and verify terminal evidence
 
-Use the wheel's [example policy](../examples/workflow_policy.json) to require the
+With the [v0.8.0 candidate installed](install-0.8.0.md), use the wheel's
+[example policy](../examples/workflow_policy.json) to require the
 `direct-child` supervisor and capture terminal metadata. The store's parent
 directory must already exist. The installed local store creates a missing
 final directory with owner-only access when it first commits evidence.
+For the published v0.7.0 wheel, follow the
+[tagged configuration instructions](https://github.com/thisistuhinsen/workerOS/blob/v0.7.0/docs/configuration.md#store-and-verify-terminal-evidence).
 
 ```sh
 root=$(mktemp -d)
-examples=$(python -I -c 'from pathlib import Path; import sys; print(Path(sys.prefix) / "share/worker-handoff/examples")')
+examples=$(python -I -c 'from pathlib import Path; import sys; print(Path(sys.prefix) / "share/workeros/examples")')
 policy="$examples/workflow_policy.json"
 workeros-config --check-policy "$policy" \
     --executable sample /usr/bin/true --store archive "$root/archive"
@@ -198,20 +201,21 @@ authority, or adopt a process by PID.
 
 ## Try the standalone recorder example
 
-In the activated environment, run the installed example with two fresh local
-destinations you own.
+Activate the v0.8.0 candidate environment and run the installed example with
+two fresh local destinations you own. For v0.7.0, use the
+[tagged recorder instructions](https://github.com/thisistuhinsen/workerOS/blob/v0.7.0/docs/configuration.md#try-the-standalone-recorder-example).
 
 ```sh
 store=$(mktemp -d)
 mkdir -m 0700 "$store/archive" "$store/review"
-config=$(python -I -c 'from pathlib import Path; import sys; print(Path(sys.prefix) / "share/worker-handoff/examples/evidence_config.json")')
+config=$(python -I -c 'from pathlib import Path; import sys; print(Path(sys.prefix) / "share/workeros/examples/evidence_config.json")')
 export WORKEROS_STORE="$store" WORKEROS_CONFIG="$config"
 workeros-config --example-root "$store" < "$config"
 workeros-config --schema
 ```
 
 The [example configuration](../examples/evidence_config.json) is also under
-`share/worker-handoff/examples` in the Python install prefix. It routes one
+`share/workeros/examples` in the v0.8.0 Python install prefix. It routes one
 synthetic JSON receipt to a required archive and an optional review store. Both
 are owner-only. The archive has a seven-day minimum retention age and the
 review destination uses manual retention. Neither directory has an automatic

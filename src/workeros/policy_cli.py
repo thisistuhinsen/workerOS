@@ -20,7 +20,8 @@ from .original import observe
 from .recording import LocalStore, Persistence, RecordError, RecordKey
 
 
-_SUPPORTED = frozenset(("launch", "record", "readback", "verify_durable", "recover_receipt", "purge", "sweep"))
+_SUPPORTED = frozenset(("launch", "record", "readback", "verify_durable", "recover_receipt", "purge", "sweep",
+                        "owner_append", "owner_append_status"))
 _LAUNCH_RECORD = "launch-terminal"
 _ATTEMPT_FIELDS = ("attempt_id", "worker_name", "workflow", "policy_sha256")
 
@@ -306,9 +307,21 @@ def run_policy_cli(args):
                 except InputError as exc:
                     raise ConfigurationError(str(exc)) from None
             document = decode_policy(data)
-            policy = compile_policy(document, _bindings(args, owned), workflow=args.workflow)
+            if args.registered_owner_append:
+                from .owner_append import open_registered_owner
+
+                _require(not any((args.executable, args.store, args.group_store, args.inherit_fd, args.cwd,
+                                  args.env, args.secret_env, args.stream_fd, args.settled_run)),
+                         "trusted_policy_host_rejects_binding_flags")
+                host = owned.enter_context(open_registered_owner(digest))
+            else:
+                host = _bindings(args, owned)
+            policy = compile_policy(document, host, workflow=args.workflow)
             for workflow in policy.values():
                 _require(workflow.operations <= _SUPPORTED, "installed_operation_unsupported")
+                if args.registered_owner_append:
+                    _require(workflow.operations <= {"owner_append", "owner_append_status"},
+                             "owner_append_registration_requires_append_only_policy")
                 if "launch" in workflow.operations and workflow.cleanup_deadline_ns is None:
                     workflow.cleanup_deadline_ns = workflow.deadline_ns + 2_000_000_000
             if args.check_policy:
@@ -345,6 +358,9 @@ def run_policy_cli(args):
 
 def _reported_exit(request, result):
     operation = request.operation
+    if operation in ("owner_append", "owner_append_status"):
+        return 0 if (result["effect"], result["timeliness"], result.get("readback")) == (
+            "complete", "within_deadline", None) else 3
     if operation == "launch":
         terminal = result["terminal"]
         if (terminal["lifecycle"] != "exited" or terminal["returncode"] != 0

@@ -225,13 +225,62 @@ runpy.run_path(sys.argv[0], run_name='__main__')
         repeat=json.loads(self.command(['apply'],self.doc).stdout); self.assertEqual(repeat['effect'],'unchanged')
         shown=json.loads(self.command(['show','custom_archive','revision_1']).stdout)
         self.assertEqual(shown['roles'][0]['name'],'catalog_curator')
+        original, = shown['admin_history']
+        self.assertEqual((original['action'], original['revision'], original['disposition']),
+                         ('apply', 'revision_1', 'recorded'))
+        self.assertEqual(original['actor'], {'authentication': 'kernel_effective_uid', 'uid': os.getuid()})
+        self.assertGreater(int(original['captured_at_unix_ns']), 0)
+        for current in (receipt, repeat):
+            self.assertEqual(current['admin_history'], [original])
         updated=json.loads(json.dumps(self.doc)); updated['revision']='revision_2'; updated['roles'][0]['operations']=['read']
-        self.assertEqual(json.loads(self.command(['apply'],updated).stdout)['status'],'configured')
-        self.assertEqual(json.loads(self.command(['revoke','custom_archive','revision_1']).stdout)['status'],'revoked')
-        self.assertEqual(json.loads(self.command(['show','custom_archive','revision_1']).stdout)['status'],'revoked')
+        applied = json.loads(self.command(['apply'],updated).stdout)
+        self.assertEqual(applied['status'], 'configured')
+        self.assertEqual(applied['admin_history'][0]['revision'], 'revision_2')
+        revoke = ['revoke', 'custom_archive', 'revision_1']
+        revoked = json.loads(self.command(revoke).stdout)
+        self.assertEqual(revoked['status'], 'revoked')
+        history = revoked['admin_history']
+        self.assertEqual(history[0], original)
+        self.assertEqual(history[1]['action'], 'revoke')
+        self.assertEqual(history[1]['revision'], 'revision_1')
+        self.assertEqual(history[1]['actor'], original['actor'])
+        repeated = json.loads(self.command(revoke).stdout)
+        self.assertEqual((repeated['effect'], repeated['admin_history']), ('unchanged', history))
+        shown = json.loads(self.command(['show','custom_archive','revision_1']).stdout)
+        self.assertEqual((shown['status'], shown['admin_history']), ('revoked', history))
         retry=json.loads(self.command(['apply'],self.doc).stdout)
         self.assertEqual((retry['status'],retry['code']),('refused','revision_revoked'))
         self.assertEqual(json.loads(self.command(['show','custom_archive','revision_2']).stdout)['status'],'configured')
+
+    def test_legacy_history_is_never_attributed_to_the_current_reader_or_retry(self):
+        from unittest.mock import patch
+        from workeros import roles_cli as roles
+
+        profile, revision = self.doc['profile'], self.doc['revision']
+        declaration = roles._canonical(self.doc)
+        digest = sha256(declaration).hexdigest()
+        intent = 'a' * 64
+        with patch.multiple(roles, _PARENT=str(self.root), _UID=os.getuid()):
+            with roles._store(create=True) as store:
+                roles._commit(store, roles._key(profile, revision, 'profile'), declaration)
+                commission = roles._commission_receipt(profile, revision, digest, intent)
+                roles._commit(store, roles._key(profile, revision, 'commission'),
+                              roles._canonical(commission), kind=roles._COMMISSION_KIND)
+            repeated = roles.apply(declaration)
+            repeated_commission = roles.commission(profile, revision, digest, intent)
+            self.assertEqual((repeated['effect'], repeated_commission['effect']), ('unchanged', 'unchanged'))
+            legacy = roles.commission_status(profile, revision)['admin_history']
+            self.assertEqual(repeated_commission['admin_history'], legacy)
+            self.assertEqual([row['action'] for row in legacy], ['apply', 'commission'])
+            with roles._store(create=False) as store:
+                roles._commit(store, roles._key(profile, revision, 'revoke'),
+                              roles._revocation_payload(profile, revision, declaration))
+            revoked = roles.revoke_profile(profile, revision)
+            self.assertEqual(revoked['effect'], 'unchanged')
+            self.assertEqual(revoked['admin_history'][:2], legacy)
+            for row in revoked['admin_history']:
+                self.assertEqual((row['actor'], row['captured_at_unix_ns']),
+                                 ({'authentication': 'unverified'}, None))
 
     def test_custom_independent_principal_is_unqualified(self):
         other=next((x for x in pwd.getpwall() if x.pw_uid != os.getuid()),None)

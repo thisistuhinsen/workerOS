@@ -78,12 +78,47 @@ class FileAclRegistration:
 _BUILTIN = FileAclCapability(CAPABILITY, 'read', 4)
 
 
+def load_registrations(value):
+    """Decode the fixed administrator registry after the caller verifies ownership."""
+    if (type(value) is not dict or value.keys() != {'version', 'registrations'}
+            or type(value['version']) is not int or value['version'] != 1
+            or type(value['registrations']) is not list or len(value['registrations']) > 64):
+        raise Refusal('invalid_native_acl_registration')
+    entries, seen = [], set()
+    for entry in value['registrations']:
+        roles_cli._fields(entry, ('capability', 'profile', 'revision', 'role', 'scope',
+                                  'principal_uid', 'path', 'device', 'inode', 'maximum_access', 'expires_at'))
+        roles_cli._fields(entry['capability'], ('name', 'operation', 'access'))
+        capability = FileAclCapability(**entry['capability'])
+        registration = FileAclRegistration(**{**entry, 'capability': capability})
+        selector = (capability.name, registration.profile, registration.revision,
+                    registration.role, registration.scope)
+        for name in selector:
+            _name(name)
+        if (selector in seen or type(registration.path) is not str
+                or not os.path.isabs(registration.path) or '\0' in registration.path
+                or type(registration.principal_uid) is not int
+                or not 0 < registration.principal_uid < _UNDEF
+                or type(registration.maximum_access) is not int
+                or registration.maximum_access not in (2, 4, 6)
+                or capability.access & registration.maximum_access != capability.access
+                or type(registration.expires_at) is not int
+                or not 0 < registration.expires_at < 2**53
+                or any(type(v) is not str or not v.isascii() or not v.isdecimal()
+                       or len(v) > 20 or str(int(v)) != v for v in (registration.device, registration.inode))
+                or (capability.name == CAPABILITY and capability != _BUILTIN)):
+            raise Refusal('invalid_native_acl_registration')
+        seen.add(selector)
+        entries.append(registration)
+    return tuple(entries)
+
+
 def _acl_entry(tag,perm,ident=_UNDEF): return struct.pack('<HHI',tag,perm,ident)
 
 
-def _acl(uid, access=4):
+def _acl(uid, access=4, *, owner_access=6):
     if type(uid) is not int or not 0 <= uid < _UNDEF: raise Refusal('principal_invalid')
-    return (struct.pack('<I',2)+_acl_entry(1,6)+_acl_entry(2,access,uid)+_acl_entry(4,0)+
+    return (struct.pack('<I',2)+_acl_entry(1,owner_access)+_acl_entry(2,access,uid)+_acl_entry(4,0)+
             _acl_entry(16,access)+_acl_entry(32,0))
 
 
@@ -227,15 +262,26 @@ def _declaration_state(store,doc,marker, *, resolve_account=True):
         return 'unavailable'
 
 
-def _recover(action,doc,role_store):
+def _recover(action,doc,role_store, *, expected=None):
     """Observe or explicitly clean the retained original UID, never replay grant."""
-    with _held(doc) as (parent,fd,info):
+    resource = expected['resource'] if expected is not None else None
+    with _held(doc, resource) as (parent,fd,info):
+        def missing_binding():
+            # A profile grant writes its binding before it can change the ACL.
+            # Check the exact pinned inode and kernel baseline before reporting absence.
+            if expected is not None and stat.S_IMODE(info.st_mode) == 0o600:
+                _no_acl(fd)
+                return {**_response('acl_entry_absent','not_attempted','no_recorded_grant',
+                                    doc,expected['uid'],info,None),
+                        'acl_presence':'absent','cleanup':'not_needed'}
+            return _response('unknown','not_attempted','binding_missing',doc,None,info,None)
+
         store=_journal(parent,create=False)
         if store is None:
-            return _response('unknown','not_attempted','binding_missing',doc,None,info,None)
+            return missing_binding()
         binding=_read(store,RecordKey(_binding_key(doc),'binding'))
         if binding is None:
-            return _response('unknown','not_attempted','binding_missing',doc,None,info,None)
+            return missing_binding()
         try:
             marker=_decode_json(binding)
             fields={'version','profile','revision','declaration','role','scope','principal_uid','device','inode'}
@@ -256,6 +302,9 @@ def _recover(action,doc,role_store):
                 if (marker['capability'] != doc['capability'] or marker['path'] != doc['path']
                         or type(access) is not int or access not in (2,4,6)):
                     raise ValueError()
+            if expected is not None and (marker['principal_uid'], access, operation) != (
+                    expected['uid'], expected['access'], expected['operation']):
+                return _response('unknown','not_attempted','grant_readback_mismatch',doc,None,info,None)
         except (ValueError,TypeError,KeyError):
             return _response('unknown','not_attempted','binding_mismatch',doc,None,info,None)
         uid=marker['principal_uid']; attempt=sha256(binding).hexdigest()
@@ -263,6 +312,7 @@ def _recover(action,doc,role_store):
             return {**_response('unknown','not_attempted','original_uid_unmapped',doc,uid,info,attempt),
                     'declaration':_declaration_state(role_store,doc,marker,resolve_account=action!='revoke'),'appointment':'unverified',
                     'acl_presence':'unknown','cleanup':'unavailable'}
+        exact_plan = expected is not None
         expected=_acl(uid, access); mode=stat.S_IMODE(info.st_mode)
         granted_mode = 0o600 | access << 3
         keys=[RecordKey(attempt,name) for name in ('grant_claim','grant_result','revoke_claim','revoke_result')]
@@ -285,6 +335,8 @@ def _recover(action,doc,role_store):
                 result['next_action']='ACL is absent now; preserve the journal. Historical completion is unconfirmed; do not repeat cleanup.'
             return result
         if presence=='unexpected': return report('unknown','not_attempted','acl_changed','unavailable')
+        if exact_plan and presence=='absent' and all(value is None for value in (claim,grant,rclaim,revoke)):
+            return report('acl_entry_absent','not_attempted','no_recorded_grant','not_needed')
         if action=='check':
             if claim is not None and rclaim is not None and revoke is not None and presence=='absent':
                 return report('acl_entry_removed','not_attempted','readback_verified','complete')
