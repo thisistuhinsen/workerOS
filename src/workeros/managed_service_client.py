@@ -360,12 +360,13 @@ def _handle(request, caller_uid, deadline, *, originals=None):
         return read_history(request, caller_uid)
     entered = False
     request_id = request['request_id']
+    readback = request['operation'] == 'readback'
     holders = ExitStack()
     try:
         config, policy, scope, authority, may_read, host, observe_result, readers = _selection(
             request, caller_uid, originals=originals, resources=holders, deadline=deadline)
         guarded = type(authority) is GuardedServiceAuthority
-        if request['operation'] == 'readback':
+        if readback:
             verify_install(config['wheel_path'], config['wheel_sha256'])
             if guarded:
                 prior = read_history(request, caller_uid, independent_only=True)
@@ -412,14 +413,11 @@ def _handle(request, caller_uid, deadline, *, originals=None):
             return retain_history(request, caller_uid, readers,
                                   _selected_outcome(outcome, policy, scope, authority, sampled_after))
     except (ExecutorRefusal, managed_service.ServiceRefusal) as exc:
-        if str(exc) in ('launch_executor_registration_missing', 'service_caller_denied'):
-            return _service_unavailable(str(exc), request_id, readback=request['operation'] == 'readback')
-        return launch_result('refused', 'not_attempted', str(exc))
+        return _service_unavailable(str(exc), request_id, readback=readback)
     except (OSError, KeyError, TypeError, ValueError, VerificationError, RecordError):
         if entered:
             return launch_result('unknown', 'unknown', 'service_reply_unconfirmed', request_id=request_id)
-        return _service_unavailable('service_binding_unavailable', request_id,
-                                    readback=request['operation'] == 'readback')
+        return _service_unavailable('service_binding_unavailable', request_id, readback=readback)
     finally:
         holders.close()
 
@@ -469,7 +467,7 @@ def serve_connection(connection, *, deadline=None, commissioned=None, pending_ru
         for identifier in request['summary_ids']:
             _digest(identifier)
     workflow, operation = request['workflow'], request['operation']
-    if accept_deadline is not None and operation != 'run':
+    if accept_deadline is not None and (history_only or operation != 'run'):
         deadline = min(deadline, accept_deadline)
     lookup_answered = False
     token = managed_cli._CHECK_WORK_DEADLINE.set(deadline)
@@ -578,6 +576,7 @@ def serve_main(argv):
                     or _peer(listener) != managed_cli._TRUSTED_UID):
                 raise ExecutorRefusal('service_listener_untrusted')
             accept_deadline = monotonic() + managed_cli._TIMEOUT
+            admission_deadline = accept_deadline if commissioned is not None or args.history else None
             lookup_answered = False
             while pending_runs is None or pending_runs:
                 try:
@@ -593,9 +592,13 @@ def serve_main(argv):
                     try:
                         lookup_answered |= serve_connection(
                             client, commissioned=commissioned, pending_runs=pending_runs, originals=originals,
-                            history_only=args.history, accept_deadline=accept_deadline if commissioned is not None else None)
+                            history_only=args.history, accept_deadline=admission_deadline)
                     except (OSError, ValueError, EOFError, TypeError, KeyError):
                         reply_failed = True
+                    if args.history:
+                        if lookup_answered:
+                            break
+                        continue
                     if slots is None or len(pending_runs) < slots:
                         received = True
                         unconfirmed |= reply_failed
